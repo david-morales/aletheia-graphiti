@@ -103,6 +103,16 @@ Only extract facts that:
 - are clearly stated or unambiguously implied in the CURRENT MESSAGE,
     and can be represented as edges in a knowledge graph.
 - Facts should include entity names rather than pronouns whenever possible.
+## RELATION TYPE SELECTION (CRITICAL - READ CAREFULLY)
+Your ONLY valid options for `relation_type` are:
+1. One of the EXACT `fact_type_name` values from the FACT TYPES list above
+2. RELATES_TO (as fallback when no fact type matches)
+
+STRICT RULES:
+- Copy the `fact_type_name` exactly as written (e.g., SPOUSE_OF, BORN_IN, DIRECTED, LOCATED_IN)
+- If a relationship doesn't match any FACT TYPE, you MUST use RELATES_TO - no exceptions
+- ANY invented type (e.g., NAMED_AFTER, FOUNDED, WORKS_AT, MARRIED_TO, ACQUIRED_BY) will be REJECTED
+- Do NOT modify names or add prefixes/suffixes (wrong: PERSON_SPOUSE_OF_PERSON, correct: SPOUSE_OF)
 
 You may use information from the PREVIOUS MESSAGES only to disambiguate references or support continuity.
 
@@ -114,15 +124,11 @@ You may use information from the PREVIOUS MESSAGES only to disambiguate referenc
 1. **Entity Name Validation**: `source_entity_name` and `target_entity_name` must use only the `name` values from the ENTITIES list provided above.
    - **CRITICAL**: Using names not in the list will cause the edge to be rejected
 2. Each fact must involve two **distinct** entities.
-3. Do not emit duplicate or semantically redundant facts.
-4. The `fact` should closely paraphrase the original source sentence(s). Do not verbatim quote the original text.
-5. Use `REFERENCE_TIME` to resolve vague or relative temporal expressions (e.g., "last week").
-6. Do **not** hallucinate or infer temporal bounds from unrelated events.
-
-# RELATION TYPE RULES
-
-- If FACT_TYPES are provided and the relationship matches one of the types (considering the entity type signature), use that fact_type_name as the `relation_type`.
-- Otherwise, derive a `relation_type` from the relationship predicate in SCREAMING_SNAKE_CASE (e.g., WORKS_AT, LIVES_IN, IS_FRIENDS_WITH).
+3. **CRITICAL**: The `relation_type` MUST be one of the FACT TYPES above, or RELATES_TO if no match.
+4. Do not emit duplicate or semantically redundant facts.
+5. The `fact` should closely paraphrase the original source sentence(s). Do not verbatim quote the original text.
+6. Use `REFERENCE_TIME` to resolve vague or relative temporal expressions (e.g., "last week").
+7. Do **not** hallucinate or infer temporal bounds from unrelated events.
 
 # DATETIME RULES
 

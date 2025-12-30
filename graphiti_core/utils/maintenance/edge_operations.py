@@ -422,6 +422,29 @@ async def resolve_extracted_edges(
 
         edge_types_lst.append(extracted_edge_types)
 
+    for extracted_edge, extracted_edge_types in zip(extracted_edges, edge_types_lst, strict=True):
+        allowed_type_names = set(extracted_edge_types)
+        is_custom_name = extracted_edge.name in custom_type_names
+        is_default_name = extracted_edge.name == DEFAULT_EDGE_NAME
+
+        # If custom types are defined, enforce strict type checking
+        if custom_type_names and not is_custom_name and not is_default_name:
+            # LLM invented a type not in the schema - convert to RELATES_TO
+            logger.debug(f'Edge type {extracted_edge.name} not in schema, converting to {DEFAULT_EDGE_NAME}')
+            extracted_edge.name = DEFAULT_EDGE_NAME
+            continue
+
+        if not allowed_type_names:
+            # No custom types are valid for this node pairing. Keep LLM generated
+            # labels, but flip disallowed custom names back to the default.
+            if is_custom_name and extracted_edge.name != DEFAULT_EDGE_NAME:
+                extracted_edge.name = DEFAULT_EDGE_NAME
+            continue
+        if is_custom_name and extracted_edge.name not in allowed_type_names:
+            # Custom name exists but it is not permitted for this source/target
+            # signature, so fall back to the default edge label.
+            extracted_edge.name = DEFAULT_EDGE_NAME
+
     # resolve edges with related edges in the graph and find invalidation candidates
     results: list[tuple[EntityEdge, list[EntityEdge], list[EntityEdge]]] = list(
         await semaphore_gather(

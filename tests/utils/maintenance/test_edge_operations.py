@@ -156,7 +156,91 @@ class OccurredAtEdge(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_resolve_extracted_edges_keeps_unknown_names(monkeypatch):
+async def test_resolve_extracted_edges_resets_unmapped_names(monkeypatch):
+    from graphiti_core.utils.maintenance import edge_operations as edge_ops
+
+    monkeypatch.setattr(edge_ops, 'create_entity_edge_embeddings', AsyncMock(return_value=None))
+    monkeypatch.setattr(EntityEdge, 'get_between_nodes', AsyncMock(return_value=[]))
+
+    async def immediate_gather(*aws, max_coroutines=None):
+        return [await aw for aw in aws]
+
+    monkeypatch.setattr(edge_ops, 'semaphore_gather', immediate_gather)
+    monkeypatch.setattr(edge_ops, 'search', AsyncMock(return_value=SearchResults()))
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(
+        return_value={
+            'duplicate_facts': [],
+            'contradicted_facts': [],
+            'fact_type': 'DEFAULT',
+        }
+    )
+
+    clients = SimpleNamespace(
+        driver=MagicMock(),
+        llm_client=llm_client,
+        embedder=MagicMock(),
+        cross_encoder=MagicMock(),
+    )
+
+    source_node = EntityNode(
+        uuid='source_uuid',
+        name='Document Node',
+        group_id='group_1',
+        labels=['Document'],
+    )
+    target_node = EntityNode(
+        uuid='target_uuid',
+        name='Topic Node',
+        group_id='group_1',
+        labels=['Topic'],
+    )
+
+    extracted_edge = EntityEdge(
+        source_node_uuid=source_node.uuid,
+        target_node_uuid=target_node.uuid,
+        name='OCCURRED_AT',
+        group_id='group_1',
+        fact='Document occurred at somewhere',
+        episodes=[],
+        created_at=datetime.now(timezone.utc),
+        valid_at=None,
+        invalid_at=None,
+    )
+
+    episode = EpisodicNode(
+        uuid='episode_uuid',
+        name='Episode',
+        group_id='group_1',
+        source='message',
+        source_description='desc',
+        content='Episode content',
+        valid_at=datetime.now(timezone.utc),
+    )
+
+    edge_types = {'OCCURRED_AT': OccurredAtEdge}
+    edge_type_map = {('Event', 'Entity'): ['OCCURRED_AT']}
+
+    resolved_edges, invalidated_edges = await resolve_extracted_edges(
+        clients,
+        [extracted_edge],
+        episode,
+        [source_node, target_node],
+        edge_types,
+        edge_type_map,
+    )
+
+    assert resolved_edges[0].name == DEFAULT_EDGE_NAME
+    assert invalidated_edges == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_extracted_edges_converts_unknown_names_to_default(monkeypatch):
+    """When custom edge_types are defined, unknown edge names should be converted to RELATES_TO.
+
+    This ensures strict schema enforcement - the LLM cannot invent arbitrary edge types.
+    """
     from graphiti_core.utils.maintenance import edge_operations as edge_ops
 
     monkeypatch.setattr(edge_ops, 'create_entity_edge_embeddings', AsyncMock(return_value=None))
@@ -230,7 +314,8 @@ async def test_resolve_extracted_edges_keeps_unknown_names(monkeypatch):
         edge_type_map,
     )
 
-    assert resolved_edges[0].name == 'INTERACTED_WITH'
+    # Unknown edge types are converted to RELATES_TO when custom edge_types are defined
+    assert resolved_edges[0].name == DEFAULT_EDGE_NAME
     assert invalidated_edges == []
 
 
