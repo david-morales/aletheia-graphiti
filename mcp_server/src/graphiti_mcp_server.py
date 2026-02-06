@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from graphiti_core import Graphiti
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EpisodeType, EpisodicNode
+from graphiti_core.utils.bulk_utils import RawEpisode
 from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
@@ -385,71 +386,99 @@ def resolve_search_config(search_mode: str, reranker: str, limit: int) -> Search
 
 @mcp.tool()
 async def add_memory(
-    name: str,
-    episode_body: str,
+    name: str | None = None,
+    episode_body: str | None = None,
     group_id: str | None = None,
     source: str = 'text',
     source_description: str = '',
     uuid: str | None = None,
+    episodes: list[dict] | None = None,
 ) -> SuccessResponse | ErrorResponse:
-    """Add an episode to memory. This is the primary way to add information to the graph.
+    """Add information to the knowledge graph.
 
-    This function returns immediately and processes the episode addition in the background.
-    Episodes for the same group_id are processed sequentially to avoid race conditions.
+    For single episodes, provide name + episode_body (queued for async processing).
+    For bulk ingestion, provide episodes list (processed synchronously, returns when done).
 
     Args:
-        name (str): Name of the episode
-        episode_body (str): The content of the episode to persist to memory. When source='json', this must be a
-                           properly escaped JSON string, not a raw Python dictionary. The JSON data will be
-                           automatically processed to extract entities and relationships.
-        group_id (str, optional): A unique ID for this graph. If not provided, uses the default group_id from CLI
-                                 or a generated one.
-        source (str, optional): Source type, must be one of:
-                               - 'text': For plain text content (default)
-                               - 'json': For structured data
-                               - 'message': For conversation-style content
-        source_description (str, optional): Description of the source
-        uuid (str, optional): Optional UUID for the episode
+        name: Name of the episode (single mode).
+        episode_body: Content to persist (single mode). When source='json', must be a JSON string.
+        group_id: Graph partition ID. Uses default if omitted.
+        source: Source type — 'text' (default), 'json', or 'message'.
+        source_description: Description of the source.
+        uuid: Optional UUID for the episode (single mode).
+        episodes: List of episodes for bulk ingestion (bulk mode).
+                  Each dict: {"name": str, "content": str, "source": str, "source_description": str}
 
     Examples:
-        # Adding plain text content
-        add_memory(
-            name="Company News",
-            episode_body="Acme Corp announced a new product line today.",
-            source="text",
-            source_description="news article",
-            group_id="some_arbitrary_string"
-        )
+        # Single episode
+        add_memory(name="News", episode_body="Acme Corp announced a new product.", source="text")
 
-        # Adding structured JSON data
-        # NOTE: episode_body should be a JSON string (standard JSON escaping)
-        add_memory(
-            name="Customer Profile",
-            episode_body='{"company": {"name": "Acme Technologies"}, "products": [{"id": "P001", "name": "CloudSync"}, {"id": "P002", "name": "DataMiner"}]}',
-            source="json",
-            source_description="CRM data"
-        )
+        # Bulk ingestion
+        add_memory(episodes=[
+            {"name": "Doc 1", "content": "...", "source": "text", "source_description": "report"},
+            {"name": "Doc 2", "content": "...", "source": "json", "source_description": "data"},
+        ], group_id="my_graph")
     """
     global graphiti_service, queue_service
 
     if graphiti_service is None or queue_service is None:
         return ErrorResponse(error='Services not initialized')
 
-    try:
-        # Use the provided group_id or fall back to the default from config
-        effective_group_id = group_id or config.graphiti.group_id
+    effective_group_id = group_id or config.graphiti.group_id
 
-        # Try to parse the source as an EpisodeType enum, with fallback to text
-        episode_type = EpisodeType.text  # Default
+    try:
+        # Bulk mode
+        if episodes is not None:
+            if not episodes:
+                return ErrorResponse(error='Episodes list is empty')
+
+            client = await graphiti_service.get_client()
+
+            raw_episodes = []
+            for i, ep in enumerate(episodes):
+                if 'name' not in ep or 'content' not in ep:
+                    missing = [k for k in ('name', 'content') if k not in ep]
+                    return ErrorResponse(
+                        error=f"Episode at index {i} missing required key(s): {', '.join(missing)}"
+                    )
+
+                ep_source = ep.get('source', 'text')
+                try:
+                    episode_type = EpisodeType[ep_source.lower()]
+                except (KeyError, AttributeError):
+                    episode_type = EpisodeType.text
+
+                raw_episodes.append(RawEpisode(
+                    name=ep['name'],
+                    content=ep['content'],
+                    source_description=ep.get('source_description', ''),
+                    source=episode_type,
+                    reference_time=datetime.now(),
+                ))
+
+            results = await client.add_episode_bulk(
+                bulk_episodes=raw_episodes,
+                group_id=effective_group_id,
+                entity_types=graphiti_service.entity_types,
+            )
+
+            return SuccessResponse(
+                message=f"Bulk ingested {len(raw_episodes)} episodes into '{effective_group_id}': "
+                        f"{len(results.nodes)} nodes, {len(results.edges)} edges created"
+            )
+
+        # Single mode (existing behavior)
+        if not name or not episode_body:
+            return ErrorResponse(error='Provide name + episode_body for single mode, or episodes for bulk mode')
+
+        episode_type = EpisodeType.text
         if source:
             try:
                 episode_type = EpisodeType[source.lower()]
             except (KeyError, AttributeError):
-                # If the source doesn't match any enum value, use text as default
-                logger.warning(f"Unknown source type '{source}', using 'text' as default")
+                logger.warning(f"Unknown source type '{source}', using 'text'")
                 episode_type = EpisodeType.text
 
-        # Submit to queue service for async processing
         await queue_service.add_episode(
             group_id=effective_group_id,
             name=name,
@@ -457,16 +486,16 @@ async def add_memory(
             source_description=source_description,
             episode_type=episode_type,
             entity_types=graphiti_service.entity_types,
-            uuid=uuid or None,  # Ensure None is passed if uuid is None
+            uuid=uuid or None,
         )
 
         return SuccessResponse(
             message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
         )
+
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f'Error queuing episode: {error_msg}')
-        return ErrorResponse(error=f'Error queuing episode: {error_msg}')
+        logger.error(f'Error in add_memory: {e}')
+        return ErrorResponse(error=f'Error adding memory: {e}')
 
 
 @mcp.tool()
