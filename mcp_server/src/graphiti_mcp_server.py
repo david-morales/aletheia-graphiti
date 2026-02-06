@@ -8,13 +8,33 @@ import asyncio
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from graphiti_core import Graphiti
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EpisodeType, EpisodicNode
+from graphiti_core.search.search_config import SearchConfig
+from graphiti_core.search.search_config_recipes import (
+    COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+    COMBINED_HYBRID_SEARCH_MMR,
+    COMBINED_HYBRID_SEARCH_RRF,
+    COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
+    COMMUNITY_HYBRID_SEARCH_MMR,
+    COMMUNITY_HYBRID_SEARCH_RRF,
+    EDGE_HYBRID_SEARCH_CROSS_ENCODER,
+    EDGE_HYBRID_SEARCH_EPISODE_MENTIONS,
+    EDGE_HYBRID_SEARCH_MMR,
+    EDGE_HYBRID_SEARCH_NODE_DISTANCE,
+    EDGE_HYBRID_SEARCH_RRF,
+    NODE_HYBRID_SEARCH_CROSS_ENCODER,
+    NODE_HYBRID_SEARCH_EPISODE_MENTIONS,
+    NODE_HYBRID_SEARCH_MMR,
+    NODE_HYBRID_SEARCH_NODE_DISTANCE,
+    NODE_HYBRID_SEARCH_RRF,
+)
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.fastmcp import FastMCP
@@ -23,17 +43,18 @@ from starlette.responses import JSONResponse
 
 from config.schema import GraphitiConfig, ServerConfig
 from models.response_types import (
+    CommunityBuildResponse,
+    EpisodeContextResponse,
     EpisodeSearchResponse,
     ErrorResponse,
-    FactSearchResponse,
-    NodeResult,
-    NodeSearchResponse,
+    ExploreResponse,
+    SearchResponse,
     StatusResponse,
     SuccessResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from services.queue_service import QueueService
-from utils.formatting import format_fact_result
+from utils.formatting import format_community_result, format_edge_result
 
 # Load .env file from mcp_server directory
 mcp_server_dir = Path(__file__).parent.parent
@@ -319,6 +340,41 @@ class GraphitiService:
         return self.client
 
 
+# Recipe lookup: (search_mode, reranker) -> SearchConfig
+SEARCH_RECIPES: dict[tuple[str, str], SearchConfig] = {
+    ('combined', 'rrf'): COMBINED_HYBRID_SEARCH_RRF,
+    ('combined', 'mmr'): COMBINED_HYBRID_SEARCH_MMR,
+    ('combined', 'cross_encoder'): COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+    ('edges', 'rrf'): EDGE_HYBRID_SEARCH_RRF,
+    ('edges', 'mmr'): EDGE_HYBRID_SEARCH_MMR,
+    ('edges', 'node_distance'): EDGE_HYBRID_SEARCH_NODE_DISTANCE,
+    ('edges', 'episode_mentions'): EDGE_HYBRID_SEARCH_EPISODE_MENTIONS,
+    ('edges', 'cross_encoder'): EDGE_HYBRID_SEARCH_CROSS_ENCODER,
+    ('nodes', 'rrf'): NODE_HYBRID_SEARCH_RRF,
+    ('nodes', 'mmr'): NODE_HYBRID_SEARCH_MMR,
+    ('nodes', 'node_distance'): NODE_HYBRID_SEARCH_NODE_DISTANCE,
+    ('nodes', 'episode_mentions'): NODE_HYBRID_SEARCH_EPISODE_MENTIONS,
+    ('nodes', 'cross_encoder'): NODE_HYBRID_SEARCH_CROSS_ENCODER,
+    ('communities', 'rrf'): COMMUNITY_HYBRID_SEARCH_RRF,
+    ('communities', 'mmr'): COMMUNITY_HYBRID_SEARCH_MMR,
+    ('communities', 'cross_encoder'): COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
+}
+
+
+def resolve_search_config(search_mode: str, reranker: str, limit: int) -> SearchConfig:
+    """Map search_mode + reranker to a SearchConfig recipe."""
+    key = (search_mode.lower(), reranker.lower())
+    recipe = SEARCH_RECIPES.get(key)
+    if recipe is None:
+        raise ValueError(
+            f"Invalid search_mode='{search_mode}' + reranker='{reranker}'. "
+            f"Valid combinations: {list(SEARCH_RECIPES.keys())}"
+        )
+    config = recipe.model_copy(deep=True)
+    config.limit = limit
+    return config
+
+
 @mcp.tool()
 async def add_memory(
     name: str,
@@ -406,19 +462,35 @@ async def add_memory(
 
 
 @mcp.tool()
-async def search_nodes(
+async def search(
     query: str,
     group_ids: list[str] | None = None,
-    max_nodes: int = 10,
+    search_mode: str = 'combined',
+    reranker: str = 'rrf',
+    center_node_uuid: str | None = None,
+    bfs_origin_node_uuids: list[str] | None = None,
     entity_types: list[str] | None = None,
-) -> NodeSearchResponse | ErrorResponse:
-    """Search for nodes in the graph memory.
+    edge_types: list[str] | None = None,
+    valid_at: str | None = None,
+    limit: int = 10,
+) -> SearchResponse | ErrorResponse:
+    """Search the knowledge graph with full control over search strategy.
+
+    Supports multiple search modes (nodes, edges, communities, or combined), reranking
+    strategies, graph traversal from known starting nodes, and temporal/type filtering.
 
     Args:
-        query: The search query
-        group_ids: Optional list of group IDs to filter results
-        max_nodes: Maximum number of nodes to return (default: 10)
-        entity_types: Optional list of entity type names to filter by
+        query: Natural language search query.
+        group_ids: Search across these graph partitions. Omit to use the default.
+        search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
+        reranker: Reranking strategy — "rrf" (default), "mmr", "cross_encoder",
+                  "node_distance" (requires center_node_uuid), or "episode_mentions".
+        center_node_uuid: Rerank results by proximity to this node.
+        bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
+        entity_types: Only return nodes with these labels (e.g. ["Person", "Organization"]).
+        edge_types: Only return edges of these types (e.g. ["OWNERSHIP", "SANCTION"]).
+        valid_at: ISO date string — only return facts valid at this date.
+        limit: Maximum results to return (default 10).
     """
     global graphiti_service
 
@@ -428,7 +500,6 @@ async def search_nodes(
     try:
         client = await graphiti_service.get_client()
 
-        # Use the provided group_ids or fall back to the default from config if none provided
         effective_group_ids = (
             group_ids
             if group_ids is not None
@@ -437,106 +508,81 @@ async def search_nodes(
             else []
         )
 
-        # Create search filters
-        search_filters = SearchFilters(
-            node_labels=entity_types,
-        )
+        search_config = resolve_search_config(search_mode, reranker, limit)
 
-        # Use the search_ method with node search config
-        from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
+        search_filters = SearchFilters()
+        if entity_types:
+            search_filters.node_labels = entity_types
+        if edge_types:
+            search_filters.edge_types = edge_types
+        if valid_at:
+            from graphiti_core.search.search_filters import DateFilter, ComparisonOperator
+
+            valid_date = datetime.fromisoformat(valid_at)
+            search_filters.valid_at = [
+                [
+                    DateFilter(
+                        date=valid_date,
+                        comparison_operator=ComparisonOperator.less_than_equal,
+                    ),
+                ]
+            ]
+            search_filters.invalid_at = [
+                [
+                    DateFilter(
+                        date=valid_date,
+                        comparison_operator=ComparisonOperator.greater_than,
+                    ),
+                ],
+                [
+                    DateFilter(
+                        date=None,
+                        comparison_operator=ComparisonOperator.is_null,
+                    ),
+                ],
+            ]
 
         results = await client.search_(
             query=query,
-            config=NODE_HYBRID_SEARCH_RRF,
+            config=search_config,
             group_ids=effective_group_ids,
+            center_node_uuid=center_node_uuid,
+            bfs_origin_node_uuids=bfs_origin_node_uuids,
             search_filter=search_filters,
         )
 
-        # Extract nodes from results
-        nodes = results.nodes[:max_nodes] if results.nodes else []
+        node_results = [
+            {
+                'uuid': n.uuid,
+                'name': n.name,
+                'labels': n.labels or [],
+                'created_at': n.created_at.isoformat() if n.created_at else None,
+                'summary': n.summary,
+                'group_id': n.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (n.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+            for n in (results.nodes or [])
+        ]
 
-        if not nodes:
-            return NodeSearchResponse(message='No relevant nodes found', nodes=[])
+        edge_results = [format_edge_result(e) for e in (results.edges or [])]
+        community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        # Format the results
-        node_results = []
-        for node in nodes:
-            # Get attributes and ensure no embeddings are included
-            attrs = node.attributes if hasattr(node, 'attributes') else {}
-            # Remove any embedding keys that might be in attributes
-            attrs = {k: v for k, v in attrs.items() if 'embedding' not in k.lower()}
-
-            node_results.append(
-                NodeResult(
-                    uuid=node.uuid,
-                    name=node.name,
-                    labels=node.labels if node.labels else [],
-                    created_at=node.created_at.isoformat() if node.created_at else None,
-                    summary=node.summary,
-                    group_id=node.group_id,
-                    attributes=attrs,
-                )
-            )
-
-        return NodeSearchResponse(message='Nodes retrieved successfully', nodes=node_results)
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f'Error searching nodes: {error_msg}')
-        return ErrorResponse(error=f'Error searching nodes: {error_msg}')
-
-
-@mcp.tool()
-async def search_memory_facts(
-    query: str,
-    group_ids: list[str] | None = None,
-    max_facts: int = 10,
-    center_node_uuid: str | None = None,
-) -> FactSearchResponse | ErrorResponse:
-    """Search the graph memory for relevant facts.
-
-    Args:
-        query: The search query
-        group_ids: Optional list of group IDs to filter results
-        max_facts: Maximum number of facts to return (default: 10)
-        center_node_uuid: Optional UUID of a node to center the search around
-    """
-    global graphiti_service
-
-    if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
-
-    try:
-        # Validate max_facts parameter
-        if max_facts <= 0:
-            return ErrorResponse(error='max_facts must be a positive integer')
-
-        client = await graphiti_service.get_client()
-
-        # Use the provided group_ids or fall back to the default from config if none provided
-        effective_group_ids = (
-            group_ids
-            if group_ids is not None
-            else [config.graphiti.group_id]
-            if config.graphiti.group_id
-            else []
+        return SearchResponse(
+            message=f'Found {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
+            nodes=node_results,
+            edges=edge_results,
+            communities=community_results,
         )
 
-        relevant_edges = await client.search(
-            group_ids=effective_group_ids,
-            query=query,
-            num_results=max_facts,
-            center_node_uuid=center_node_uuid,
-        )
-
-        if not relevant_edges:
-            return FactSearchResponse(message='No relevant facts found', facts=[])
-
-        facts = [format_fact_result(edge) for edge in relevant_edges]
-        return FactSearchResponse(message='Facts retrieved successfully', facts=facts)
+    except ValueError as e:
+        return ErrorResponse(error=str(e))
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f'Error searching facts: {error_msg}')
-        return ErrorResponse(error=f'Error searching facts: {error_msg}')
+        logger.error(f'Error in search: {e}')
+        return ErrorResponse(error=f'Search error: {e}')
 
 
 @mcp.tool()
@@ -589,33 +635,6 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
         error_msg = str(e)
         logger.error(f'Error deleting episode: {error_msg}')
         return ErrorResponse(error=f'Error deleting episode: {error_msg}')
-
-
-@mcp.tool()
-async def get_entity_edge(uuid: str) -> dict[str, Any] | ErrorResponse:
-    """Get an entity edge from the graph memory by its UUID.
-
-    Args:
-        uuid: UUID of the entity edge to retrieve
-    """
-    global graphiti_service
-
-    if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
-
-    try:
-        client = await graphiti_service.get_client()
-
-        # Get the entity edge directly using the EntityEdge class method
-        entity_edge = await EntityEdge.get_by_uuid(client.driver, uuid)
-
-        # Use the format_fact_result function to serialize the edge
-        # Return the Python dict directly - MCP will handle serialization
-        return format_fact_result(entity_edge)
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f'Error getting entity edge: {error_msg}')
-        return ErrorResponse(error=f'Error getting entity edge: {error_msg}')
 
 
 @mcp.tool()
