@@ -144,33 +144,38 @@ config: GraphitiConfig
 
 # MCP server instructions
 GRAPHITI_MCP_INSTRUCTIONS = """
-Graphiti is a memory service for AI agents built on a knowledge graph. Graphiti performs well
-with dynamic data such as user interactions, changing enterprise data, and external information.
+Graphiti is a knowledge graph memory service. It transforms information into a richly
+connected network of entities (nodes), facts (edges), and communities, organized by
+group_id for separate knowledge domains.
 
-Graphiti transforms information into a richly connected knowledge network, allowing you to 
-capture relationships between concepts, entities, and information. The system organizes data as episodes 
-(content snippets), nodes (entities), and facts (relationships between entities), creating a dynamic, 
-queryable memory store that evolves with new information. Graphiti supports multiple data formats, including 
-structured JSON data, enabling seamless integration with existing data pipelines and systems.
+Key tools:
 
-Facts contain temporal metadata, allowing you to track the time of creation and whether a fact is invalid 
-(superseded by new information).
+1. search — Unified search with control over strategy (nodes/edges/communities/combined),
+   reranking (rrf/mmr/cross_encoder/node_distance), temporal filters, type filters,
+   BFS traversal from known nodes, and cross-graph queries via group_ids.
 
-Key capabilities:
-1. Add episodes (text, messages, or JSON) to the knowledge graph with the add_memory tool
-2. Search for nodes (entities) in the graph using natural language queries with search_nodes
-3. Find relevant facts (relationships between entities) with search_facts
-4. Retrieve specific entity edges or episodes by UUID
-5. Manage the knowledge graph with tools like delete_episode, delete_entity_edge, and clear_graph
+2. explore_node — Deep dive on a specific entity. Provide a name or UUID and get the
+   full neighborhood: connected nodes, relationships, and community memberships.
 
-The server connects to a database for persistent storage and uses language models for certain operations. 
-Each piece of information is organized by group_id, allowing you to maintain separate knowledge domains.
+3. add_memory — Add episodes (text, JSON, or messages) to the graph. Supports single
+   async episodes and bulk synchronous ingestion.
 
-When adding information, provide descriptive names and detailed content to improve search quality. 
-When searching, use specific queries and consider filtering by group_id for more relevant results.
+4. build_communities — Cluster entities into communities for high-level overview queries.
+   Run after ingestion, then search with search_mode="communities".
 
-For optimal performance, ensure the database is properly configured and accessible, and valid 
-API keys are provided for any language model operations.
+5. get_episode_context — Inspect what was extracted from specific episodes (nodes + edges).
+
+6. get_episodes — List recent episodes by group_id.
+
+7. delete_entity_edge / delete_episode — Remove specific relationships or episodes.
+
+8. clear_graph / get_status — Graph management and health checks.
+
+Tips:
+- Use group_ids to search across multiple graphs simultaneously.
+- Use center_node_uuid with reranker="node_distance" to find nearby entities.
+- Use bfs_origin_node_uuids to traverse the graph from known starting points.
+- Use valid_at to filter for temporally valid facts.
 """
 
 # MCP server instance
