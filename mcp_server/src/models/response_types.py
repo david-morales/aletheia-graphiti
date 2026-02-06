@@ -45,9 +45,8 @@ class StatusResponse(TypedDict):
 
 class EdgeResult(TypedDict):
     uuid: str
+    name: str
     fact: str
-    source_node_name: str
-    target_node_name: str
     source_node_uuid: str
     target_node_uuid: str
     created_at: str | None

@@ -60,9 +60,8 @@ def test_community_build_response_structure():
 def test_edge_result_structure():
     edge = EdgeResult(
         uuid='edge-1',
+        name='SANCTION',
         fact='Entity A is related to Entity B',
-        source_node_name='Entity A',
-        target_node_name='Entity B',
         source_node_uuid='uuid-a',
         target_node_uuid='uuid-b',
         created_at='2026-01-01T00:00:00',
@@ -70,6 +69,7 @@ def test_edge_result_structure():
         invalid_at=None,
         group_id='test_group',
     )
+    assert edge['name'] == 'SANCTION'
     assert edge['fact'] == 'Entity A is related to Entity B'
 
 

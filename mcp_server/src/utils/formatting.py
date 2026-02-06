@@ -54,9 +54,8 @@ def format_edge_result(edge: EntityEdge) -> dict[str, Any]:
     """Format an entity edge into an EdgeResult dict."""
     return {
         'uuid': edge.uuid,
+        'name': edge.name,
         'fact': edge.fact,
-        'source_node_name': edge.source_node_name,
-        'target_node_name': edge.target_node_name,
         'source_node_uuid': edge.source_node_uuid,
         'target_node_uuid': edge.target_node_uuid,
         'created_at': edge.created_at.isoformat() if edge.created_at else None,
