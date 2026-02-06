@@ -700,7 +700,7 @@ async def explore_node(
             config=explore_config,
             group_ids=effective_group_ids,
             center_node_uuid=resolved_uuid,
-            bfs_origin_node_uuids=[resolved_uuid],
+            bfs_origin_node_uuids=[resolved_uuid] if resolved_uuid else None,
             search_filter=search_filters,
         )
 
