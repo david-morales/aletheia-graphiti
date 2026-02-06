@@ -41,3 +41,51 @@ class EpisodeSearchResponse(TypedDict):
 class StatusResponse(TypedDict):
     status: str
     message: str
+
+
+class EdgeResult(TypedDict):
+    uuid: str
+    fact: str
+    source_node_name: str
+    target_node_name: str
+    source_node_uuid: str
+    target_node_uuid: str
+    created_at: str | None
+    valid_at: str | None
+    invalid_at: str | None
+    group_id: str
+
+
+class CommunityResult(TypedDict):
+    uuid: str
+    name: str
+    summary: str
+    member_count: int
+    group_id: str
+
+
+class SearchResponse(TypedDict):
+    message: str
+    nodes: list[NodeResult]
+    edges: list[EdgeResult]
+    communities: list[CommunityResult]
+
+
+class ExploreResponse(TypedDict):
+    message: str
+    center_node: NodeResult | None
+    nodes: list[NodeResult]
+    edges: list[EdgeResult]
+    communities: list[CommunityResult]
+
+
+class EpisodeContextResponse(TypedDict):
+    message: str
+    nodes: list[NodeResult]
+    edges: list[EdgeResult]
+
+
+class CommunityBuildResponse(TypedDict):
+    message: str
+    community_count: int
+    communities: list[CommunityResult]
