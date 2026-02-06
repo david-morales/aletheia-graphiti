@@ -227,6 +227,14 @@ class GraphitiAppConfig(BaseModel):
             self.episode_id_prefix = ''
 
 
+class SearchDefaultsConfig(BaseModel):
+    """Default search configuration, overridable per use case."""
+
+    default_reranker: str = Field(default='rrf', description='Default reranker strategy')
+    default_limit: int = Field(default=10, description='Default result limit')
+    bfs_max_depth: int = Field(default=3, description='Default BFS depth for explore_node')
+
+
 class GraphitiConfig(BaseSettings):
     """Graphiti configuration with YAML and environment support."""
 
@@ -235,6 +243,7 @@ class GraphitiConfig(BaseSettings):
     embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     graphiti: GraphitiAppConfig = Field(default_factory=GraphitiAppConfig)
+    search: SearchDefaultsConfig = Field(default_factory=SearchDefaultsConfig)
 
     # Additional server options
     destroy_graph: bool = Field(default=False, description='Clear graph on startup')
