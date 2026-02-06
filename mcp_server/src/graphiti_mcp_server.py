@@ -757,6 +757,105 @@ async def explore_node(
 
 
 @mcp.tool()
+async def get_episode_context(
+    episode_uuids: list[str],
+) -> EpisodeContextResponse | ErrorResponse:
+    """Get all entities and relationships extracted from specific episodes.
+
+    Returns the nodes and edges that were created when these episodes were ingested.
+    Pair with get_episodes to first list episodes, then inspect what was extracted.
+
+    Args:
+        episode_uuids: List of episode UUIDs to inspect.
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    if not episode_uuids:
+        return ErrorResponse(error='Provide at least one episode UUID')
+
+    try:
+        client = await graphiti_service.get_client()
+
+        results = await client.get_nodes_and_edges_by_episode(episode_uuids)
+
+        node_results = [
+            {
+                'uuid': n.uuid,
+                'name': n.name,
+                'labels': n.labels or [],
+                'created_at': n.created_at.isoformat() if n.created_at else None,
+                'summary': n.summary,
+                'group_id': n.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (n.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+            for n in (results.nodes or [])
+        ]
+
+        edge_results = [format_edge_result(e) for e in (results.edges or [])]
+
+        return EpisodeContextResponse(
+            message=f'Found {len(node_results)} nodes and {len(edge_results)} edges from {len(episode_uuids)} episodes',
+            nodes=node_results,
+            edges=edge_results,
+        )
+
+    except Exception as e:
+        logger.error(f'Error in get_episode_context: {e}')
+        return ErrorResponse(error=f'Episode context error: {e}')
+
+
+@mcp.tool()
+async def build_communities(
+    group_ids: list[str],
+) -> CommunityBuildResponse | ErrorResponse:
+    """Build communities by clustering entities in the knowledge graph.
+
+    Uses label propagation to detect communities of related entities, then
+    generates summaries for each community. Communities must be built before
+    they can be searched with search(search_mode="communities").
+
+    Args:
+        group_ids: Which graph partitions to cluster.
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    if not group_ids:
+        return ErrorResponse(error='Provide at least one group_id')
+
+    try:
+        client = await graphiti_service.get_client()
+
+        community_nodes, community_edges = await client.build_communities(
+            group_ids=group_ids,
+        )
+
+        community_results = [
+            format_community_result(c, member_count=0)
+            for c in community_nodes
+        ]
+
+        return CommunityBuildResponse(
+            message=f'Built {len(community_nodes)} communities across {len(group_ids)} graphs',
+            community_count=len(community_nodes),
+            communities=community_results,
+        )
+
+    except Exception as e:
+        logger.error(f'Error building communities: {e}')
+        return ErrorResponse(error=f'Community build error: {e}')
+
+
+@mcp.tool()
 async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
     """Delete an entity edge from the graph memory.
 
