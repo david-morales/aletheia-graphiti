@@ -16,7 +16,15 @@ from dotenv import load_dotenv
 from graphiti_core import Graphiti
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EpisodeType, EpisodicNode
-from graphiti_core.search.search_config import SearchConfig
+from graphiti_core.search.search_config import (
+    EdgeReranker,
+    EdgeSearchConfig,
+    EdgeSearchMethod,
+    NodeReranker,
+    NodeSearchConfig,
+    NodeSearchMethod,
+    SearchConfig,
+)
 from graphiti_core.search.search_config_recipes import (
     COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
     COMBINED_HYBRID_SEARCH_MMR,
