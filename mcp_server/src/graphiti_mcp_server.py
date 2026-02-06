@@ -586,6 +586,169 @@ async def search(
 
 
 @mcp.tool()
+async def explore_node(
+    node_name: str | None = None,
+    node_uuid: str | None = None,
+    group_ids: list[str] | None = None,
+    depth: int = 2,
+    edge_types: list[str] | None = None,
+    limit: int = 20,
+) -> ExploreResponse | ErrorResponse:
+    """Explore everything connected to a specific entity in the knowledge graph.
+
+    Resolves a node by name or UUID, then expands outward via graph traversal.
+    Results are ranked by proximity to the center node.
+
+    Args:
+        node_name: Find the node by name (performs a quick search). Provide this or node_uuid.
+        node_uuid: Expand directly from this node UUID. Provide this or node_name.
+        group_ids: Which graph partitions to explore. Omit for default.
+        depth: How many hops to traverse (1-4, default 2).
+        edge_types: Only traverse these relationship types (e.g. ["OWNERSHIP"]).
+        limit: Maximum results to return (default 20).
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    if not node_name and not node_uuid:
+        return ErrorResponse(error='Provide either node_name or node_uuid')
+
+    try:
+        client = await graphiti_service.get_client()
+
+        effective_group_ids = (
+            group_ids
+            if group_ids is not None
+            else [config.graphiti.group_id]
+            if config.graphiti.group_id
+            else []
+        )
+
+        # Resolve node UUID from name if needed
+        resolved_uuid = node_uuid
+        center_node_result = None
+
+        if node_name and not node_uuid:
+            resolve_results = await client.search_(
+                query=node_name,
+                config=NODE_HYBRID_SEARCH_RRF,
+                group_ids=effective_group_ids,
+            )
+            if not resolve_results.nodes:
+                return ExploreResponse(
+                    message=f'No node found matching "{node_name}"',
+                    center_node=None,
+                    nodes=[],
+                    edges=[],
+                    communities=[],
+                )
+            best_match = resolve_results.nodes[0]
+            resolved_uuid = best_match.uuid
+            center_node_result = {
+                'uuid': best_match.uuid,
+                'name': best_match.name,
+                'labels': best_match.labels or [],
+                'created_at': best_match.created_at.isoformat() if best_match.created_at else None,
+                'summary': best_match.summary,
+                'group_id': best_match.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (best_match.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+
+        # Build a node_distance config with BFS
+        explore_config = SearchConfig(
+            edge_config=EdgeSearchConfig(
+                search_methods=[
+                    EdgeSearchMethod.bm25,
+                    EdgeSearchMethod.cosine_similarity,
+                    EdgeSearchMethod.bfs,
+                ],
+                reranker=EdgeReranker.node_distance,
+                bfs_max_depth=min(depth, 4),
+            ),
+            node_config=NodeSearchConfig(
+                search_methods=[
+                    NodeSearchMethod.bm25,
+                    NodeSearchMethod.cosine_similarity,
+                    NodeSearchMethod.bfs,
+                ],
+                reranker=NodeReranker.node_distance,
+                bfs_max_depth=min(depth, 4),
+            ),
+            limit=limit,
+        )
+
+        search_filters = SearchFilters()
+        if edge_types:
+            search_filters.edge_types = edge_types
+
+        results = await client.search_(
+            query=node_name or '',
+            config=explore_config,
+            group_ids=effective_group_ids,
+            center_node_uuid=resolved_uuid,
+            bfs_origin_node_uuids=[resolved_uuid],
+            search_filter=search_filters,
+        )
+
+        node_results = [
+            {
+                'uuid': n.uuid,
+                'name': n.name,
+                'labels': n.labels or [],
+                'created_at': n.created_at.isoformat() if n.created_at else None,
+                'summary': n.summary,
+                'group_id': n.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (n.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+            for n in (results.nodes or [])
+        ]
+
+        edge_results = [format_edge_result(e) for e in (results.edges or [])]
+        community_results = [format_community_result(c) for c in (results.communities or [])]
+
+        # If we only have a UUID, try to find center node in results
+        if node_uuid and not center_node_result:
+            for n in results.nodes or []:
+                if n.uuid == node_uuid:
+                    center_node_result = {
+                        'uuid': n.uuid,
+                        'name': n.name,
+                        'labels': n.labels or [],
+                        'created_at': n.created_at.isoformat() if n.created_at else None,
+                        'summary': n.summary,
+                        'group_id': n.group_id,
+                        'attributes': {
+                            k: v
+                            for k, v in (n.attributes or {}).items()
+                            if 'embedding' not in k.lower()
+                        },
+                    }
+                    break
+
+        return ExploreResponse(
+            message=f'Explored "{node_name or node_uuid}": {len(node_results)} nodes, {len(edge_results)} edges',
+            center_node=center_node_result,
+            nodes=node_results,
+            edges=edge_results,
+            communities=community_results,
+        )
+
+    except Exception as e:
+        logger.error(f'Error in explore_node: {e}')
+        return ErrorResponse(error=f'Explore error: {e}')
+
+
+@mcp.tool()
 async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
     """Delete an entity edge from the graph memory.
 
