@@ -130,6 +130,35 @@ async def extract_edges(
     # Uses a greedy approach based on the Handshake Flights Problem.
     covering_chunks = generate_covering_chunks(nodes, MAX_NODES)
 
+    def _resolve_entity_name(name: str, name_to_idx: dict[str, int]) -> str | None:
+        """Resolve an LLM-returned entity name against the chunk's entity list.
+
+        Tries (in order):
+        1. Exact match
+        2. Case-insensitive match
+        3. Case-insensitive containment (LLM name contained in chunk name,
+           or chunk name contained in LLM name) — picks the longest match
+        """
+        # 1. Exact
+        if name in name_to_idx:
+            return name
+
+        # 2. Case-insensitive
+        name_lower = name.lower()
+        for canonical in name_to_idx:
+            if canonical.lower() == name_lower:
+                return canonical
+
+        # 3. Containment (shortest entity names first to prefer specific matches)
+        best: str | None = None
+        for canonical in name_to_idx:
+            canonical_lower = canonical.lower()
+            if name_lower in canonical_lower or canonical_lower in name_lower:
+                # Prefer the match with the highest overlap ratio
+                if best is None or len(canonical) > len(best):
+                    best = canonical
+        return best
+
     async def extract_edges_for_chunk(
         chunk: list[EntityNode],
     ) -> list[ExtractedEdge]:
@@ -165,21 +194,26 @@ async def extract_edges(
             source_name = edge_data.source_entity_name
             target_name = edge_data.target_entity_name
 
-            # Validate LLM-returned names exist in the chunk
-            if source_name not in chunk_name_to_idx:
+            # Resolve LLM-returned names against chunk entities
+            resolved_source = _resolve_entity_name(source_name, chunk_name_to_idx)
+            if resolved_source is None:
                 logger.warning(
                     f'Source entity name "{source_name}" not found in chunk '
                     f'for edge {edge_data.relation_type}'
                 )
                 continue
 
-            if target_name not in chunk_name_to_idx:
+            resolved_target = _resolve_entity_name(target_name, chunk_name_to_idx)
+            if resolved_target is None:
                 logger.warning(
                     f'Target entity name "{target_name}" not found in chunk '
                     f'for edge {edge_data.relation_type}'
                 )
                 continue
 
+            # Rewrite to canonical names so downstream UUID lookup succeeds
+            edge_data.source_entity_name = resolved_source
+            edge_data.target_entity_name = resolved_target
             valid_edges.append(edge_data)
 
         return valid_edges

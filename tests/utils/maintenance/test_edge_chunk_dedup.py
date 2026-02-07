@@ -333,3 +333,194 @@ async def test_single_chunk_no_regression():
 
     assert len(edges) == 1
     assert edges[0].fact == 'Alice knows Bob'
+
+
+# ---------------------------------------------------------------------------
+# Name resolution tests (H2 fix: case-insensitive + containment matching)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_case_insensitive_name_resolution():
+    """LLM returns 'M/Y TANGO' but chunk has 'M/Y Tango' — should match."""
+    node_a = _make_node('M/Y Tango')
+    node_b = _make_node('Viktor Vekselberg')
+
+    episode = _make_episode('M/Y Tango is owned by Viktor Vekselberg.')
+
+    fake_chunks = [
+        ([node_a, node_b], [0, 1]),
+    ]
+
+    chunk_responses = [
+        [
+            {
+                'source_entity_name': 'M/Y TANGO',  # Wrong case
+                'target_entity_name': 'Viktor Vekselberg',
+                'relation_type': 'OWNERSHIP',
+                'fact': 'M/Y Tango is owned by Viktor Vekselberg',
+                'valid_at': None,
+                'invalid_at': None,
+            }
+        ],
+    ]
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(side_effect=_llm_response_sequence(chunk_responses))
+
+    clients = SimpleNamespace(llm_client=llm_client)
+
+    with patch(
+        'graphiti_core.utils.maintenance.edge_operations.generate_covering_chunks',
+        return_value=fake_chunks,
+    ):
+        edges = await extract_edges(
+            clients,
+            episode,
+            [node_a, node_b],
+            [],
+            edge_type_map={},
+        )
+
+    assert len(edges) == 1
+    # Name was rewritten to canonical form — confirmed by correct source UUID
+    assert edges[0].source_node_uuid == node_a.uuid
+
+
+@pytest.mark.asyncio
+async def test_containment_name_resolution_abbreviated():
+    """LLM returns 'RUSAL' but chunk has 'United Company RUSAL' — should match
+    via containment (LLM name contained in chunk name)."""
+    node_a = _make_node('United Company RUSAL')
+    node_b = _make_node('Oleg Deripaska')
+
+    episode = _make_episode('RUSAL is controlled by Oleg Deripaska.')
+
+    fake_chunks = [
+        ([node_a, node_b], [0, 1]),
+    ]
+
+    chunk_responses = [
+        [
+            {
+                'source_entity_name': 'RUSAL',  # Abbreviated
+                'target_entity_name': 'Oleg Deripaska',
+                'relation_type': 'OWNERSHIP',
+                'fact': 'RUSAL is controlled by Oleg Deripaska',
+                'valid_at': None,
+                'invalid_at': None,
+            }
+        ],
+    ]
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(side_effect=_llm_response_sequence(chunk_responses))
+
+    clients = SimpleNamespace(llm_client=llm_client)
+
+    with patch(
+        'graphiti_core.utils.maintenance.edge_operations.generate_covering_chunks',
+        return_value=fake_chunks,
+    ):
+        edges = await extract_edges(
+            clients,
+            episode,
+            [node_a, node_b],
+            [],
+            edge_type_map={},
+        )
+
+    assert len(edges) == 1
+    assert edges[0].source_node_uuid == node_a.uuid
+
+
+@pytest.mark.asyncio
+async def test_containment_name_resolution_extended():
+    """LLM returns 'Arinter Management Inc.' but chunk has 'Arinter Management'
+    — should match via containment (chunk name contained in LLM name)."""
+    node_a = _make_node('Arinter Management')
+    node_b = _make_node('Some Person')
+
+    episode = _make_episode('Arinter Management Inc. employs Some Person.')
+
+    fake_chunks = [
+        ([node_a, node_b], [0, 1]),
+    ]
+
+    chunk_responses = [
+        [
+            {
+                'source_entity_name': 'Arinter Management Inc.',  # Extended
+                'target_entity_name': 'Some Person',
+                'relation_type': 'EMPLOYMENT',
+                'fact': 'Arinter Management Inc. employs Some Person',
+                'valid_at': None,
+                'invalid_at': None,
+            }
+        ],
+    ]
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(side_effect=_llm_response_sequence(chunk_responses))
+
+    clients = SimpleNamespace(llm_client=llm_client)
+
+    with patch(
+        'graphiti_core.utils.maintenance.edge_operations.generate_covering_chunks',
+        return_value=fake_chunks,
+    ):
+        edges = await extract_edges(
+            clients,
+            episode,
+            [node_a, node_b],
+            [],
+            edge_type_map={},
+        )
+
+    assert len(edges) == 1
+    assert edges[0].source_node_uuid == node_a.uuid
+
+
+@pytest.mark.asyncio
+async def test_hallucinated_name_still_rejected():
+    """LLM returns a completely hallucinated name — should still be rejected."""
+    node_a = _make_node('Alice')
+    node_b = _make_node('Bob')
+
+    episode = _make_episode('Alice and Bob work together.')
+
+    fake_chunks = [
+        ([node_a, node_b], [0, 1]),
+    ]
+
+    chunk_responses = [
+        [
+            {
+                'source_entity_name': 'Alice',
+                'target_entity_name': 'Completely Invented Person',
+                'relation_type': 'KNOWS',
+                'fact': 'Alice knows Completely Invented Person',
+                'valid_at': None,
+                'invalid_at': None,
+            }
+        ],
+    ]
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(side_effect=_llm_response_sequence(chunk_responses))
+
+    clients = SimpleNamespace(llm_client=llm_client)
+
+    with patch(
+        'graphiti_core.utils.maintenance.edge_operations.generate_covering_chunks',
+        return_value=fake_chunks,
+    ):
+        edges = await extract_edges(
+            clients,
+            episode,
+            [node_a, node_b],
+            [],
+            edge_type_map={},
+        )
+
+    assert len(edges) == 0
