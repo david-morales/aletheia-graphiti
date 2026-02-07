@@ -130,30 +130,9 @@ async def extract_edges(
     # Uses a greedy approach based on the Handshake Flights Problem.
     covering_chunks = generate_covering_chunks(nodes, MAX_NODES)
 
-    # Pre-assign pairs to chunks to avoid duplicate edge extraction.
-    # Each pair is assigned to the first chunk that contains it.
-    processed_pairs: set[frozenset[int]] = set()
-    chunk_assigned_pairs: list[set[frozenset[int]]] = []
-
-    for _, global_indices in covering_chunks:
-        assigned_pairs: set[frozenset[int]] = set()
-        for i, idx_i in enumerate(global_indices):
-            for idx_j in global_indices[i + 1 :]:
-                pair = frozenset([idx_i, idx_j])
-                if pair not in processed_pairs:
-                    processed_pairs.add(pair)
-                    assigned_pairs.add(pair)
-        chunk_assigned_pairs.append(assigned_pairs)
-
     async def extract_edges_for_chunk(
         chunk: list[EntityNode],
-        global_indices: list[int],
-        assigned_pairs: set[frozenset[int]],
     ) -> list[ExtractedEdge]:
-        # Skip chunks with no assigned pairs (all pairs already processed)
-        if not assigned_pairs:
-            return []
-
         # Build name-to-local-index mapping for this chunk
         chunk_name_to_idx: dict[str, int] = {node.name: idx for idx, node in enumerate(chunk)}
 
@@ -179,7 +158,7 @@ async def extract_edges(
         )
         chunk_edges_data = ExtractedEdges(**llm_response).edges
 
-        # Validate entity names and filter to assigned pairs
+        # Validate entity names exist in the chunk
         valid_edges: list[ExtractedEdge] = []
 
         for edge_data in chunk_edges_data:
@@ -201,16 +180,7 @@ async def extract_edges(
                 )
                 continue
 
-            # Map to global indices for pair tracking
-            source_local_idx = chunk_name_to_idx[source_name]
-            target_local_idx = chunk_name_to_idx[target_name]
-            mapped_source = global_indices[source_local_idx]
-            mapped_target = global_indices[target_local_idx]
-
-            # Only include edges for pairs assigned to this chunk
-            edge_pair = frozenset([mapped_source, mapped_target])
-            if edge_pair in assigned_pairs:
-                valid_edges.append(edge_data)
+            valid_edges.append(edge_data)
 
         return valid_edges
 
@@ -218,18 +188,25 @@ async def extract_edges(
     chunk_results: list[list[ExtractedEdge]] = list(
         await semaphore_gather(
             *[
-                extract_edges_for_chunk(chunk, global_indices, assigned_pairs)
-                for (chunk, global_indices), assigned_pairs in zip(
-                    covering_chunks, chunk_assigned_pairs, strict=True
-                )
+                extract_edges_for_chunk(chunk)
+                for chunk, _ in covering_chunks
             ]
         )
     )
 
-    # Combine results from all chunks
+    # Combine results from all chunks and deduplicate across overlapping chunks
     edges_data: list[ExtractedEdge] = []
+    seen_facts: set[tuple[str, str, str]] = set()
     for chunk_edges in chunk_results:
-        edges_data.extend(chunk_edges)
+        for edge in chunk_edges:
+            key = (
+                edge.source_entity_name,
+                edge.target_entity_name,
+                _normalize_string_exact(edge.fact),
+            )
+            if key not in seen_facts:
+                seen_facts.add(key)
+                edges_data.append(edge)
 
     end = time()
     logger.debug(f'Extracted new edges: {edges_data} in {(end - start) * 1000} ms')
