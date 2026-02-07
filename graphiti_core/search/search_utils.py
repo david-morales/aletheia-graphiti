@@ -206,7 +206,7 @@ async def edge_fulltext_search(
         search_filter, driver.provider
     )
 
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         filter_queries.append('e.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
 
@@ -384,7 +384,7 @@ async def edge_similarity_search(
         search_filter, driver.provider
     )
 
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         filter_queries.append('e.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
 
@@ -522,7 +522,7 @@ async def edge_bfs_search(
         search_filter, driver.provider
     )
 
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         filter_queries.append('e.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
 
@@ -656,7 +656,7 @@ async def node_fulltext_search(
         search_filter, driver.provider
     )
 
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         filter_queries.append('n.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
 
@@ -745,7 +745,7 @@ async def node_similarity_search(
         search_filter, driver.provider
     )
 
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         filter_queries.append('n.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
 
@@ -869,7 +869,7 @@ async def node_bfs_search(
         search_filter, driver.provider
     )
 
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         filter_queries.append('n.group_id IN $group_ids')
         filter_queries.append('origin.group_id IN $group_ids')
         filter_params['group_ids'] = group_ids
@@ -962,7 +962,7 @@ async def episode_fulltext_search(
 
     filter_params: dict[str, Any] = {}
     group_filter_query: LiteralString = ''
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         group_filter_query += '\nAND e.group_id IN $group_ids'
         filter_params['group_ids'] = group_ids
 
@@ -1050,7 +1050,7 @@ async def community_fulltext_search(
 
     filter_params: dict[str, Any] = {}
     group_filter_query: LiteralString = ''
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         group_filter_query = 'WHERE c.group_id IN $group_ids'
         filter_params['group_ids'] = group_ids
 
@@ -1137,7 +1137,7 @@ async def community_similarity_search(
     query_params: dict[str, Any] = {}
 
     group_filter_query: LiteralString = ''
-    if group_ids is not None:
+    if group_ids is not None and len(group_ids) > 0:
         group_filter_query += ' WHERE c.group_id IN $group_ids'
         query_params['group_ids'] = group_ids
 
