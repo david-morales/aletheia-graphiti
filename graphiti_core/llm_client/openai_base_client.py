@@ -63,7 +63,10 @@ class BaseOpenAIClient(LLMClient):
             config = LLMConfig()
 
         super().__init__(config, cache)
-        self.max_tokens = max_tokens
+        # Only override max_tokens if the caller explicitly passed a non-default value;
+        # otherwise, keep the value set by super().__init__ from config.max_tokens.
+        if max_tokens != DEFAULT_MAX_TOKENS:
+            self.max_tokens = max_tokens
         self.reasoning = reasoning
         self.verbosity = verbosity
 
