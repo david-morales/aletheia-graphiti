@@ -165,3 +165,61 @@ async def retrieve_episodes(
 
     episodes = [get_episodic_node_from_record(record) for record in result]
     return list(reversed(episodes))  # Return in chronological order
+
+
+async def detect_orphan_nodes(
+    driver: GraphDriver, group_id: str | None = None
+) -> list[str]:
+    """Detect entity nodes with no remaining edges.
+
+    Args:
+        driver: The graph driver instance.
+        group_id: Optional group_id to scope the search.
+
+    Returns:
+        List of UUIDs of orphaned entity nodes.
+    """
+    if group_id is not None:
+        query = """
+            MATCH (n:Entity {group_id: $group_id})
+            WHERE NOT (n)--()
+            RETURN n.uuid AS uuid
+        """
+        records, _, _ = await driver.execute_query(query, group_id=group_id)
+    else:
+        query = """
+            MATCH (n:Entity)
+            WHERE NOT (n)--()
+            RETURN n.uuid AS uuid
+        """
+        records, _, _ = await driver.execute_query(query)
+
+    return [record['uuid'] for record in records]
+
+
+async def remove_orphan_nodes(
+    driver: GraphDriver, group_id: str | None = None
+) -> list[str]:
+    """Remove entity nodes with no remaining edges.
+
+    Args:
+        driver: The graph driver instance.
+        group_id: Optional group_id to scope the cleanup.
+
+    Returns:
+        List of UUIDs of removed orphan nodes.
+    """
+    orphan_uuids = await detect_orphan_nodes(driver, group_id)
+    if not orphan_uuids:
+        return []
+
+    await driver.execute_query(
+        """
+        MATCH (n:Entity)
+        WHERE n.uuid IN $uuids
+        DELETE n
+        """,
+        uuids=orphan_uuids,
+    )
+    logger.info(f'Removed {len(orphan_uuids)} orphan nodes')
+    return orphan_uuids

@@ -1555,3 +1555,18 @@ class Graphiti:
         await Node.delete_by_uuids(self.driver, [node.uuid for node in nodes_to_delete])
 
         await episode.delete(self.driver)
+
+    async def remove_orphan_nodes(self, group_id: str | None = None) -> list[str]:
+        """Remove entity nodes with no remaining edge connections.
+
+        Args:
+            group_id: Optional group_id to scope the cleanup.
+
+        Returns:
+            List of UUIDs of removed orphan nodes.
+        """
+        from graphiti_core.utils.maintenance.graph_data_operations import (
+            remove_orphan_nodes,
+        )
+
+        return await remove_orphan_nodes(self.driver, group_id)
