@@ -960,13 +960,16 @@ class Graphiti:
                 communities = []
                 community_edges = []
                 if update_communities:
-                    communities, community_edges = await semaphore_gather(
+                    community_results = await semaphore_gather(
                         *[
                             update_community(self.driver, self.llm_client, self.embedder, node)
                             for node in nodes
                         ],
                         max_coroutines=self.max_coroutines,
                     )
+                    for result_communities, result_edges in community_results:
+                        communities.extend(result_communities)
+                        community_edges.extend(result_edges)
 
                 end = time()
 
