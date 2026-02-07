@@ -17,6 +17,8 @@ from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.edge_operations import build_community_edges
 
 MAX_COMMUNITY_BUILD_CONCURRENCY = 10
+MAX_ITERATIONS = 100
+OSCILLATION_WINDOW = 5
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +97,12 @@ def label_propagation(projection: dict[str, list[Neighbor]]) -> list[list[str]]:
     # 2. Each node will take on the community of the plurality of its neighbors
     # 3. Ties are broken by going to the largest community
     # 4. Continue until no communities change during propagation
+    # 5. Safety: cap iterations and detect oscillation via state hashing
 
     community_map = {uuid: i for i, uuid in enumerate(projection.keys())}
+    state_history: list[int] = []
 
-    while True:
+    for _iteration in range(MAX_ITERATIONS):
         no_change = True
         new_community_map: dict[str, int] = {}
 
@@ -128,6 +132,21 @@ def label_propagation(projection: dict[str, list[Neighbor]]) -> list[list[str]]:
             break
 
         community_map = new_community_map
+
+        # Oscillation detection: hash current state and check recent history
+        state_hash = hash(tuple(sorted(community_map.items())))
+        if state_hash in state_history[-OSCILLATION_WINDOW:]:
+            logger.warning(
+                'Label propagation detected oscillation at iteration %d, stopping.',
+                _iteration + 1,
+            )
+            break
+        state_history.append(state_hash)
+    else:
+        logger.warning(
+            'Label propagation reached maximum iterations (%d) without converging.',
+            MAX_ITERATIONS,
+        )
 
     community_cluster_map = defaultdict(list)
     for uuid, community in community_map.items():
