@@ -483,6 +483,9 @@ class EpisodicNode(Node):
 
 class EntityNode(Node):
     name_embedding: list[float] | None = Field(default=None, description='embedding of the name')
+    summary_embedding: list[float] | None = Field(
+        default=None, description='embedding of the summary'
+    )
     summary: str = Field(description='regional summary of surrounding edges', default_factory=str)
     attributes: dict[str, Any] = Field(
         default={}, description='Additional attributes of the node. Dependent on node labels'
@@ -496,6 +499,15 @@ class EntityNode(Node):
         logger.debug(f'embedded {text} in {end - start} ms')
 
         return self.name_embedding
+
+    async def generate_summary_embedding(self, embedder: EmbedderClient):
+        start = time()
+        text = self.summary.replace('\n', ' ')
+        self.summary_embedding = await embedder.create(input_data=[text])
+        end = time()
+        logger.debug(f'embedded summary for {self.name} in {end - start} ms')
+
+        return self.summary_embedding
 
     async def load_name_embedding(self, driver: GraphDriver):
         if driver.graph_operations_interface:
@@ -537,6 +549,7 @@ class EntityNode(Node):
             'uuid': self.uuid,
             'name': self.name,
             'name_embedding': self.name_embedding,
+            'summary_embedding': self.summary_embedding,
             'group_id': self.group_id,
             'summary': self.summary,
             'created_at': self.created_at,
@@ -1018,6 +1031,7 @@ def get_entity_node_from_record(record: Any, provider: GraphProvider) -> EntityN
         attributes.pop('name', None)
         attributes.pop('group_id', None)
         attributes.pop('name_embedding', None)
+        attributes.pop('summary_embedding', None)
         attributes.pop('summary', None)
         attributes.pop('created_at', None)
         attributes.pop('labels', None)

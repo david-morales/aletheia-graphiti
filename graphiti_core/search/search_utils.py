@@ -846,6 +846,67 @@ async def node_similarity_search(
     return nodes
 
 
+async def node_summary_similarity_search(
+    driver: GraphDriver,
+    search_vector: list[float],
+    search_filter: SearchFilters,
+    group_ids: list[str] | None = None,
+    limit=RELEVANT_SCHEMA_LIMIT,
+    min_score: float = DEFAULT_MIN_SCORE,
+) -> list[EntityNode]:
+    """Search nodes by summary embedding similarity."""
+    filter_queries, filter_params = node_search_filter_query_constructor(
+        search_filter, driver.provider
+    )
+
+    if group_ids is not None and len(group_ids) > 0:
+        filter_queries.append('n.group_id IN $group_ids')
+        filter_params['group_ids'] = group_ids
+
+    # Only consider nodes that have a summary embedding
+    filter_queries.append('n.summary_embedding IS NOT NULL')
+
+    filter_query = ''
+    if filter_queries:
+        filter_query = ' WHERE ' + (' AND '.join(filter_queries))
+
+    search_vector_var = '$search_vector'
+    if driver.provider == GraphProvider.KUZU:
+        search_vector_var = f'CAST($search_vector AS FLOAT[{len(search_vector)}])'
+
+    query = (
+        """
+        MATCH (n:Entity)
+        """
+        + filter_query
+        + """
+        WITH n, """
+        + get_vector_cosine_func_query('n.summary_embedding', search_vector_var, driver.provider)
+        + """ AS score
+        WHERE score > $min_score
+        RETURN
+        """
+        + get_entity_node_return_query(driver.provider)
+        + """
+        ORDER BY score DESC
+        LIMIT $limit
+        """
+    )
+
+    records, _, _ = await driver.execute_query(
+        query,
+        search_vector=search_vector,
+        limit=limit,
+        min_score=min_score,
+        routing_='r',
+        **filter_params,
+    )
+
+    nodes = [get_entity_node_from_record(record, driver.provider) for record in records]
+
+    return nodes
+
+
 async def node_bfs_search(
     driver: GraphDriver,
     bfs_origin_node_uuids: list[str] | None,
