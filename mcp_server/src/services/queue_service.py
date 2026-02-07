@@ -18,6 +18,8 @@ class QueueService:
         self._episode_queues: dict[str, asyncio.Queue] = {}
         # Dictionary to track if a worker is running for each group_id
         self._queue_workers: dict[str, bool] = {}
+        # Strong references to worker tasks to prevent garbage collection
+        self._worker_tasks: dict[str, asyncio.Task] = {}
         # Store the graphiti client after initialization
         self._graphiti_client: Any = None
 
@@ -42,7 +44,9 @@ class QueueService:
 
         # Start a worker for this queue if one isn't already running
         if not self._queue_workers.get(group_id, False):
-            asyncio.create_task(self._process_episode_queue(group_id))
+            task = asyncio.create_task(self._process_episode_queue(group_id))
+            self._worker_tasks[group_id] = task
+            task.add_done_callback(lambda _t: self._worker_tasks.pop(group_id, None))
 
         return self._episode_queues[group_id].qsize()
 
