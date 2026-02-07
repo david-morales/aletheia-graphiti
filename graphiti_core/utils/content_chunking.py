@@ -63,9 +63,10 @@ def should_chunk(content: str, episode_type: EpisodeType) -> bool:
     1. Large enough to potentially cause LLM issues (>= CHUNK_MIN_TOKENS)
     2. High entity density (many entities per token)
 
-    Short content processes fine regardless of density. This targets the specific
-    failure case of large entity-dense inputs while preserving context for
-    prose/narrative content and avoiding unnecessary chunking of small inputs.
+    Text episodes are never chunked: they are prose/narrative documents (e.g.,
+    aviation safety reports, markdown records) where entity naming depends on
+    full-document context. Chunking text episodes into independent LLM calls
+    loses cross-entity context and produces noisy entity names.
 
     Args:
         content: The content to evaluate
@@ -74,6 +75,10 @@ def should_chunk(content: str, episode_type: EpisodeType) -> bool:
     Returns:
         True if content is large and has high entity density
     """
+    # Text episodes need full document context for entity naming
+    if episode_type == EpisodeType.text:
+        return False
+
     tokens = estimate_tokens(content)
 
     # Short content always processes fine - no need to chunk
