@@ -486,6 +486,14 @@ async def _resolve_with_llm(
         if resolved_node.uuid != extracted_node.uuid:
             state.duplicate_pairs.append((extracted_node, resolved_node))
 
+        # Register the resolved node so later resolutions in the same batch
+        # can reference it by name.  Fixes cross-referencing among extracted
+        # nodes (e.g., LLM says "UC RUSAL is duplicate of RUSAL" where both
+        # are new extractions from the same episode).
+        resolved_lower = resolved_node.name.lower()
+        if resolved_lower not in existing_nodes_by_name:
+            existing_nodes_by_name[resolved_lower] = resolved_node
+
 
 async def resolve_extracted_nodes(
     clients: GraphitiClients,

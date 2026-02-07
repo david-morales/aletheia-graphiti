@@ -191,3 +191,83 @@ async def test_empty_duplicate_name_means_no_duplicate():
     )
 
     assert state.resolved_nodes[0] == extracted
+
+
+# ---------------------------------------------------------------------------
+# Same-batch cross-referencing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_same_batch_cross_reference():
+    """Multiple extracted nodes from the same episode where LLM says later
+    ones are duplicates of an earlier one (e.g., 'UC RUSAL' -> 'RUSAL').
+    Both are new extractions -- no existing graph node."""
+    ext_rusal = _make_node('RUSAL', uuid='ext-rusal')
+    ext_uc = _make_node('UC RUSAL', uuid='ext-uc')
+    ext_full = _make_node('United Company RUSAL', uuid='ext-full')
+    ext_cyrillic = _make_node('РУСАЛ', uuid='ext-cyrillic')
+
+    state = _make_state(4)
+    indexes = _make_indexes([])  # No existing nodes in graph
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(return_value={
+        'entity_resolutions': [
+            {'id': 0, 'name': 'RUSAL', 'duplicate_name': ''},
+            {'id': 1, 'name': 'UC RUSAL', 'duplicate_name': 'RUSAL'},
+            {'id': 2, 'name': 'United Company RUSAL', 'duplicate_name': 'RUSAL'},
+            {'id': 3, 'name': 'РУСАЛ', 'duplicate_name': 'RUSAL'},
+        ]
+    })
+
+    await _resolve_with_llm(
+        llm_client,
+        [ext_rusal, ext_uc, ext_full, ext_cyrillic],
+        indexes, state,
+        episode=None, previous_episodes=None, entity_types=None,
+    )
+
+    # First node is new (no duplicate)
+    assert state.resolved_nodes[0] == ext_rusal
+    # All others resolve to RUSAL
+    assert state.resolved_nodes[1] == ext_rusal
+    assert state.resolved_nodes[2] == ext_rusal
+    assert state.resolved_nodes[3] == ext_rusal
+    # UUID map points all to the same node
+    assert state.uuid_map[ext_uc.uuid] == ext_rusal.uuid
+    assert state.uuid_map[ext_full.uuid] == ext_rusal.uuid
+    assert state.uuid_map[ext_cyrillic.uuid] == ext_rusal.uuid
+
+
+@pytest.mark.asyncio
+async def test_same_batch_cross_reference_with_containment():
+    """Same-batch where LLM returns an abbreviated name that needs
+    containment matching against a previously-resolved batch node."""
+    ext_full = _make_node('United Company RUSAL', uuid='ext-full')
+    ext_short = _make_node('РУСАЛ', uuid='ext-cyrillic')
+
+    state = _make_state(2)
+    indexes = _make_indexes([])  # No existing nodes
+
+    llm_client = MagicMock()
+    llm_client.generate_response = AsyncMock(return_value={
+        'entity_resolutions': [
+            {'id': 0, 'name': 'United Company RUSAL', 'duplicate_name': ''},
+            # LLM says duplicate of "RUSAL" -- not exact for
+            # "United Company RUSAL" but containment should find it
+            {'id': 1, 'name': 'РУСАЛ', 'duplicate_name': 'RUSAL'},
+        ]
+    })
+
+    await _resolve_with_llm(
+        llm_client,
+        [ext_full, ext_short],
+        indexes, state,
+        episode=None, previous_episodes=None, entity_types=None,
+    )
+
+    # First node resolves as new
+    assert state.resolved_nodes[0] == ext_full
+    # Second resolves to first via containment ("rusal" in "united company rusal")
+    assert state.resolved_nodes[1] == ext_full
