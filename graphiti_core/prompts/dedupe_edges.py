@@ -72,6 +72,13 @@ def resolve_edge(context: dict[str, Any]) -> list[Message]:
         Guidelines:
         1. Some facts may be very similar but will have key differences, particularly around numeric values in the facts.
             Do not mark these facts as duplicates.
+        2. Consider active and passive voice as equivalent when comparing facts
+            (e.g., "A owns B" and "B is owned by A" express the same relationship).
+        3. Treat numeric format variations as equivalent when the underlying value is the same
+            (e.g., "$6 billion" and "$6,000,000,000" and "6B USD" are the same amount).
+        4. Consider known aliases and alternate names when comparing entity references
+            (e.g., if "al-Shabaab" and "Harakat al-Shabaab al-Mujahideen" refer to the same entity,
+            facts about them should be compared as potentially duplicate).
 
         <EXISTING FACTS>
         {context['existing_edges']}
