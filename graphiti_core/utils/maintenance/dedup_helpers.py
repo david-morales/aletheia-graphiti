@@ -205,10 +205,7 @@ def _resolve_with_similarity(
         normalized_exact = _normalize_string_exact(node.name)
         normalized_fuzzy = _normalize_name_for_fuzzy(node.name)
 
-        if not _has_high_entropy(normalized_fuzzy):
-            state.unresolved_indices.append(idx)
-            continue
-
+        # Exact match check runs first — always reliable regardless of name length.
         existing_matches = indexes.normalized_existing.get(normalized_exact, [])
         if len(existing_matches) == 1:
             match = existing_matches[0]
@@ -218,6 +215,12 @@ def _resolve_with_similarity(
                 state.duplicate_pairs.append((node, match))
             continue
         if len(existing_matches) > 1:
+            state.unresolved_indices.append(idx)
+            continue
+
+        # Entropy gate: short/low-entropy names are unreliable for fuzzy matching,
+        # so defer them to the LLM instead of risking false fuzzy positives.
+        if not _has_high_entropy(normalized_fuzzy):
             state.unresolved_indices.append(idx)
             continue
 
