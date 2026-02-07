@@ -300,13 +300,13 @@ class EntityEdge(Edge):
                 pass
 
         query = """
-            MATCH (n:Entity)-[e:RELATES_TO {uuid: $uuid}]->(m:Entity)
+            MATCH (n:Entity)-[e {uuid: $uuid}]->(m:Entity)
             RETURN e.fact_embedding AS fact_embedding
         """
 
         if driver.provider == GraphProvider.NEPTUNE:
             query = """
-                MATCH (n:Entity)-[e:RELATES_TO {uuid: $uuid}]->(m:Entity)
+                MATCH (n:Entity)-[e {uuid: $uuid}]->(m:Entity)
                 RETURN [x IN split(e.fact_embedding, ",") | toFloat(x)] as fact_embedding
             """
 
@@ -375,7 +375,7 @@ class EntityEdge(Edge):
                 pass
 
         match_query = """
-            MATCH (n:Entity)-[e:RELATES_TO {uuid: $uuid}]->(m:Entity)
+            MATCH (n:Entity)-[e {uuid: $uuid}]->(m:Entity)
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """
@@ -411,7 +411,7 @@ class EntityEdge(Edge):
                 pass
 
         match_query = """
-            MATCH (n:Entity {uuid: $source_node_uuid})-[e:RELATES_TO]->(m:Entity {uuid: $target_node_uuid})
+            MATCH (n:Entity {uuid: $source_node_uuid})-[e]->(m:Entity {uuid: $target_node_uuid})
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """
@@ -447,7 +447,7 @@ class EntityEdge(Edge):
             return []
 
         match_query = """
-            MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
+            MATCH (n:Entity)-[e]->(m:Entity)
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """
@@ -497,7 +497,7 @@ class EntityEdge(Edge):
         )
 
         match_query = """
-            MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
+            MATCH (n:Entity)-[e]->(m:Entity)
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """
@@ -542,7 +542,7 @@ class EntityEdge(Edge):
                 pass
 
         match_query = """
-            MATCH (n:Entity {uuid: $node_uuid})-[e:RELATES_TO]-(m:Entity)
+            MATCH (n:Entity {uuid: $node_uuid})-[e]-(m:Entity)
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """

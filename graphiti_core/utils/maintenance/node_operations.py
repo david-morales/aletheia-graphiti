@@ -379,9 +379,10 @@ async def _resolve_with_llm(
         for candidate in indexes.existing_nodes
     ]
 
-    # Build name -> node mapping for resolving duplicates by name
+    # Build name -> node mapping for resolving duplicates by name.
+    # Use case-insensitive keys so LLM variations like "spain" vs "Spain" still match.
     existing_nodes_by_name: dict[str, EntityNode] = {
-        node.name: node for node in indexes.existing_nodes
+        node.name.lower(): node for node in indexes.existing_nodes
     }
 
     context = {
@@ -450,8 +451,8 @@ async def _resolve_with_llm(
         resolved_node: EntityNode
         if not duplicate_name:
             resolved_node = extracted_node
-        elif duplicate_name in existing_nodes_by_name:
-            resolved_node = existing_nodes_by_name[duplicate_name]
+        elif duplicate_name.lower() in existing_nodes_by_name:
+            resolved_node = existing_nodes_by_name[duplicate_name.lower()]
         else:
             logger.warning(
                 'Invalid duplicate_name %r for extracted node %s; treating as no duplicate.',
