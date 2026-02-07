@@ -14,8 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import json
 import logging
+import random
 import typing
 from abc import abstractmethod
 from typing import Any, ClassVar
@@ -47,6 +49,9 @@ class BaseOpenAIClient(LLMClient):
 
     # Class-level constants
     MAX_RETRIES: ClassVar[int] = 2
+    MAX_RATE_LIMIT_RETRIES: ClassVar[int] = 5
+    RATE_LIMIT_BASE_DELAY: ClassVar[float] = 1.0
+    RATE_LIMIT_MAX_DELAY: ClassVar[float] = 60.0
 
     def __init__(
         self,
@@ -212,6 +217,7 @@ class BaseOpenAIClient(LLMClient):
             span.add_attributes(attributes)
 
             retry_count = 0
+            rate_limit_retry_count = 0
             last_error = None
 
             while retry_count <= self.MAX_RETRIES:
@@ -220,8 +226,26 @@ class BaseOpenAIClient(LLMClient):
                         messages, response_model, max_tokens, model_size
                     )
                     return response
-                except (RateLimitError, RefusalError):
-                    # These errors should not trigger retries
+                except RateLimitError:
+                    rate_limit_retry_count += 1
+                    if rate_limit_retry_count > self.MAX_RATE_LIMIT_RETRIES:
+                        logger.error(
+                            f'Max rate limit retries ({self.MAX_RATE_LIMIT_RETRIES}) exceeded'
+                        )
+                        span.set_status('error', 'rate_limit_exceeded')
+                        raise
+                    delay = min(
+                        self.RATE_LIMIT_BASE_DELAY * (2 ** (rate_limit_retry_count - 1))
+                        + random.uniform(0, 1),
+                        self.RATE_LIMIT_MAX_DELAY,
+                    )
+                    logger.warning(
+                        f'Rate limited. Retrying in {delay:.1f}s '
+                        f'(attempt {rate_limit_retry_count}/{self.MAX_RATE_LIMIT_RETRIES})'
+                    )
+                    await asyncio.sleep(delay)
+                except RefusalError:
+                    # Refusal errors should not trigger retries
                     span.set_status('error', str(last_error))
                     raise
                 except (
