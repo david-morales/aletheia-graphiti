@@ -552,6 +552,7 @@ async def edge_bfs_search(
             """)
 
         records = []
+        seen_uuids: set[str] = set()
         for match_query in match_queries:
             sub_records, _, _ = await driver.execute_query(
                 match_query
@@ -568,7 +569,11 @@ async def edge_bfs_search(
                 routing_='r',
                 **filter_params,
             )
-            records.extend(sub_records)
+            for record in sub_records:
+                uuid = record['uuid']
+                if uuid not in seen_uuids:
+                    seen_uuids.add(uuid)
+                    records.append(record)
     else:
         if driver.provider == GraphProvider.NEPTUNE:
             # Use wildcard traversal to support custom edge types (LOCATED_IN, MEMBER_OF, etc.)
@@ -981,6 +986,7 @@ async def node_bfs_search(
             """)
 
     records = []
+    seen_uuids: set[str] = set()
     for match_query in match_queries:
         sub_records, _, _ = await driver.execute_query(
             match_query
@@ -997,7 +1003,11 @@ async def node_bfs_search(
             routing_='r',
             **filter_params,
         )
-        records.extend(sub_records)
+        for record in sub_records:
+            uuid = record['uuid']
+            if uuid not in seen_uuids:
+                seen_uuids.add(uuid)
+                records.append(record)
 
     nodes = [get_entity_node_from_record(record, driver.provider) for record in records]
 
