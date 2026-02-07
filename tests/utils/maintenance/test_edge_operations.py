@@ -231,7 +231,7 @@ async def test_resolve_extracted_edges_resets_unmapped_names(monkeypatch):
         edge_type_map,
     )
 
-    assert resolved_edges[0].name == DEFAULT_EDGE_NAME
+    assert resolved_edges[0].name == 'RELATES_TO'
     assert invalidated_edges == []
 
 
@@ -315,7 +315,7 @@ async def test_resolve_extracted_edges_converts_unknown_names_to_default(monkeyp
     )
 
     # Unknown edge types are converted to RELATES_TO when custom edge_types are defined
-    assert resolved_edges[0].name == DEFAULT_EDGE_NAME
+    assert resolved_edges[0].name == 'RELATES_TO'
     assert invalidated_edges == []
 
 

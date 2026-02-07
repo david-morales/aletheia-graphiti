@@ -422,6 +422,9 @@ async def resolve_extracted_edges(
 
         edge_types_lst.append(extracted_edge_types)
 
+    custom_type_names = set(edge_types or {})
+    DEFAULT_EDGE_NAME = 'RELATES_TO'
+
     for extracted_edge, extracted_edge_types in zip(extracted_edges, edge_types_lst, strict=True):
         allowed_type_names = set(extracted_edge_types)
         is_custom_name = extracted_edge.name in custom_type_names
