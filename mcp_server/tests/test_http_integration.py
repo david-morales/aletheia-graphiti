@@ -45,11 +45,15 @@ async def test_http_transport(base_url: str = 'http://localhost:8000'):
 
                 expected = [
                     'add_memory',
-                    'search_memory_nodes',
-                    'search_memory_facts',
+                    'search',
+                    'explore_node',
+                    'get_episode_context',
+                    'build_communities',
                     'get_episodes',
                     'delete_episode',
+                    'delete_entity_edge',
                     'clear_graph',
+                    'get_status',
                 ]
 
                 found = [t for t in expected if t in tools]
@@ -93,8 +97,8 @@ async def test_http_transport(base_url: str = 'http://localhost:8000'):
 
             try:
                 result = await session.call_tool(
-                    'search_memory_nodes',
-                    {'query': 'integration test episode', 'group_ids': [test_group_id], 'limit': 5},
+                    'search',
+                    {'query': 'integration test episode', 'group_ids': [test_group_id], 'limit': 5, 'search_mode': 'nodes'},
                 )
 
                 if result.content and result.content[0].text:
@@ -135,7 +139,7 @@ async def test_http_transport(base_url: str = 'http://localhost:8000'):
             # Test 5: Clear graph
             print('\n🧹 Test 5: Clearing graph...')
             try:
-                result = await session.call_tool('clear_graph', {'group_id': test_group_id})
+                result = await session.call_tool('clear_graph', {'group_ids': [test_group_id]})
 
                 if result.content and result.content[0].text:
                     response = result.content[0].text

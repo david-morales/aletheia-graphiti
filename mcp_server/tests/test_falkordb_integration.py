@@ -93,7 +93,7 @@ class GraphitiFalkorDBIntegrationTest:
             'source_description': 'Integration test for FalkorDB backend',
         }
 
-        result = await self.call_mcp_tool('add_episode', episode_data)
+        result = await self.call_mcp_tool('add_memory', episode_data)
 
         if 'error' in result:
             print(f'   ❌ Add episode failed: {result["error"]}')
@@ -111,7 +111,7 @@ class GraphitiFalkorDBIntegrationTest:
 
         # Test node search
         search_result = await self.call_mcp_tool(
-            'search_nodes', {'query': 'FalkorDB test episode', 'limit': 5}
+            'search', {'query': 'FalkorDB test episode', 'limit': 5}
         )
 
         if 'error' in search_result:

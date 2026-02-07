@@ -203,7 +203,7 @@ async def graphiti_test_client(
         finally:
             # Cleanup: Clear test data
             with contextlib.suppress(Exception):
-                await session.call_tool('clear_graph', {'group_id': test_group_id})
+                await session.call_tool('clear_graph', {'group_ids': [test_group_id]})
 
             await session.close()
 

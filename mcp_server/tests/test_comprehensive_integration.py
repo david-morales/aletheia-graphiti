@@ -128,7 +128,7 @@ class GraphitiTestClient:
 
         while (time.time() - start_time) < max_wait:
             result, _ = await self.call_tool_with_metrics(
-                'get_episodes', {'group_id': self.test_group_id, 'last_n': 100}
+                'get_episodes', {'group_ids': [self.test_group_id], 'max_episodes': 100}
             )
 
             if result:
@@ -156,12 +156,13 @@ class TestCoreOperations:
 
             required_tools = {
                 'add_memory',
-                'search_memory_nodes',
-                'search_memory_facts',
+                'search',
+                'explore_node',
+                'get_episode_context',
+                'build_communities',
                 'get_episodes',
                 'delete_episode',
                 'delete_entity_edge',
-                'get_entity_edge',
                 'clear_graph',
                 'get_status',
             }
@@ -269,8 +270,8 @@ class TestSearchOperations:
 
             # Search for nodes
             result, metric = await client.call_tool_with_metrics(
-                'search_memory_nodes',
-                {'query': 'AI product features', 'group_id': client.test_group_id, 'limit': 10},
+                'search',
+                {'query': 'AI product features', 'group_ids': [client.test_group_id], 'search_mode': 'nodes', 'limit': 10},
             )
 
             assert metric.success
@@ -296,10 +297,11 @@ class TestSearchOperations:
 
             # Search with date filter
             result, metric = await client.call_tool_with_metrics(
-                'search_memory_facts',
+                'search',
                 {
                     'query': 'company information',
-                    'group_id': client.test_group_id,
+                    'group_ids': [client.test_group_id],
+                    'search_mode': 'edges',
                     'created_after': '2020-01-01T00:00:00Z',
                     'limit': 20,
                 },
@@ -334,8 +336,8 @@ class TestSearchOperations:
 
             # Test semantic + keyword search
             result, metric = await client.call_tool_with_metrics(
-                'search_memory_nodes',
-                {'query': 'Neo4j graph database', 'group_id': client.test_group_id, 'limit': 10},
+                'search',
+                {'query': 'Neo4j graph database', 'group_ids': [client.test_group_id], 'search_mode': 'nodes', 'limit': 10},
             )
 
             assert metric.success
@@ -365,7 +367,7 @@ class TestEpisodeManagement:
 
             # Test pagination
             result, metric = await client.call_tool_with_metrics(
-                'get_episodes', {'group_id': client.test_group_id, 'last_n': 3}
+                'get_episodes', {'group_ids': [client.test_group_id], 'max_episodes': 3}
             )
 
             assert metric.success
@@ -392,7 +394,7 @@ class TestEpisodeManagement:
 
             # Get episode UUID
             result, _ = await client.call_tool_with_metrics(
-                'get_episodes', {'group_id': client.test_group_id, 'last_n': 1}
+                'get_episodes', {'group_ids': [client.test_group_id], 'max_episodes': 1}
             )
 
             episodes = json.loads(result) if isinstance(result, str) else result
@@ -430,8 +432,8 @@ class TestEntityAndEdgeOperations:
 
             # Search for nodes to get UUIDs
             result, _ = await client.call_tool_with_metrics(
-                'search_memory_nodes',
-                {'query': 'TechCorp', 'group_id': client.test_group_id, 'limit': 5},
+                'search',
+                {'query': 'TechCorp', 'group_ids': [client.test_group_id], 'search_mode': 'nodes', 'limit': 5},
             )
 
             # Note: This test assumes edges are created between entities
@@ -528,10 +530,10 @@ class TestPerformance:
                     },
                 ),
                 (
-                    'search_memory_nodes',
-                    {'query': 'test', 'group_id': client.test_group_id, 'limit': 10},
+                    'search',
+                    {'query': 'test', 'group_ids': [client.test_group_id], 'search_mode': 'nodes', 'limit': 10},
                 ),
-                ('get_episodes', {'group_id': client.test_group_id, 'last_n': 10}),
+                ('get_episodes', {'group_ids': [client.test_group_id], 'max_episodes': 10}),
             ]
 
             for tool_name, args in operations:
@@ -543,7 +545,7 @@ class TestPerformance:
                 # Basic latency assertions
                 if tool_name == 'get_episodes':
                     assert metric.duration < 2, f'{tool_name} too slow'
-                elif tool_name == 'search_memory_nodes':
+                elif tool_name == 'search':
                     assert metric.duration < 10, f'{tool_name} too slow'
 
     @pytest.mark.asyncio

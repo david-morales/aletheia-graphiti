@@ -62,10 +62,10 @@ async def test_stdio():
                     print(f'   ✅ Memory added: {result.content[0].text[:100]}')
 
                 # Test search
-                print('\n🔍 Testing search_memory_nodes...')
+                print('\n🔍 Testing search...')
                 result = await session.call_tool(
-                    'search_memory_nodes',
-                    {'query': 'test', 'group_ids': ['test_group'], 'limit': 5},
+                    'search',
+                    {'query': 'test', 'group_ids': ['test_group'], 'search_mode': 'nodes', 'limit': 5},
                 )
 
                 if result.content:

@@ -56,13 +56,15 @@ class MCPTransportTester:
 
             expected_tools = [
                 'add_memory',
-                'search_memory_nodes',
-                'search_memory_facts',
+                'search',
+                'explore_node',
+                'get_episode_context',
+                'build_communities',
                 'get_episodes',
                 'delete_episode',
-                'get_entity_edge',
                 'delete_entity_edge',
                 'clear_graph',
+                'get_status',
             ]
 
             print(f'   ✅ Found {len(tools)} tools')
@@ -126,15 +128,15 @@ class MCPTransportTester:
 
     async def test_search_nodes(self) -> bool:
         """Test searching for nodes."""
-        print('\n🔍 Testing search_memory_nodes...')
+        print('\n🔍 Testing search (nodes)...')
 
         # Wait a bit for the memory to be processed
         await asyncio.sleep(2)
 
         try:
             result = await self.session.call_tool(
-                'search_memory_nodes',
-                {'query': 'test episode', 'group_ids': [self.test_group_id], 'limit': 5},
+                'search',
+                {'query': 'test episode', 'group_ids': [self.test_group_id], 'limit': 5, 'search_mode': 'nodes'},
             )
 
             if result.content:
@@ -187,7 +189,7 @@ class MCPTransportTester:
         print('\n🧹 Testing clear_graph...')
 
         try:
-            result = await self.session.call_tool('clear_graph', {'group_id': self.test_group_id})
+            result = await self.session.call_tool('clear_graph', {'group_ids': [self.test_group_id]})
 
             if result.content:
                 content = result.content[0]

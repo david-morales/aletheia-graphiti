@@ -71,7 +71,7 @@ class LoadTester:
                 operation = random.choice(
                     [
                         'add_memory',
-                        'search_memory_nodes',
+                        'search',
                         'get_episodes',
                     ]
                 )
@@ -84,16 +84,17 @@ class LoadTester:
                         'source_description': 'load test',
                         'group_id': group_id,
                     }
-                elif operation == 'search_memory_nodes':
+                elif operation == 'search':
                     args = {
                         'query': random.choice(['performance', 'architecture', 'test', 'data']),
-                        'group_id': group_id,
+                        'group_ids': [group_id],
                         'limit': 10,
+                        'search_mode': 'nodes',
                     }
                 else:  # get_episodes
                     args = {
-                        'group_id': group_id,
-                        'last_n': 10,
+                        'group_ids': [group_id],
+                        'max_episodes': 10,
                     }
 
                 # Execute operation with timeout
@@ -326,12 +327,13 @@ class TestLoadScenarios:
             long_tasks = []
             for i in range(100):  # Many more than typical pool size
                 task = session.call_tool(
-                    'search_memory_nodes',
+                    'search',
                     {
                         'query': f'complex query {i} '
                         + ' '.join([TestDataGenerator.fake.word() for _ in range(10)]),
-                        'group_id': group_id,
+                        'group_ids': [group_id],
                         'limit': 100,
+                        'search_mode': 'nodes',
                     },
                 )
                 long_tasks.append(task)

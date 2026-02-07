@@ -71,13 +71,15 @@ class GraphitiMCPIntegrationTest:
 
             expected_tools = [
                 'add_memory',
-                'search_memory_nodes',
-                'search_memory_facts',
+                'search',
+                'explore_node',
+                'get_episode_context',
+                'build_communities',
                 'get_episodes',
                 'delete_episode',
                 'delete_entity_edge',
-                'get_entity_edge',
                 'clear_graph',
+                'get_status',
             ]
 
             available_tools = len([tool for tool in expected_tools if tool in tools])
@@ -191,7 +193,7 @@ class GraphitiMCPIntegrationTest:
             try:
                 # Check if we have any episodes
                 result = await self.call_tool(
-                    'get_episodes', {'group_id': self.test_group_id, 'last_n': 10}
+                    'get_episodes', {'group_ids': [self.test_group_id], 'max_episodes': 10}
                 )
 
                 # Parse the JSON result if it's a string
@@ -222,15 +224,16 @@ class GraphitiMCPIntegrationTest:
 
         results = {}
 
-        # Test search_memory_nodes
-        print('   Testing search_memory_nodes...')
+        # Test search (nodes)
+        print('   Testing search (nodes)...')
         try:
             result = await self.call_tool(
-                'search_memory_nodes',
+                'search',
                 {
                     'query': 'Acme Corp product launch AI',
                     'group_ids': [self.test_group_id],
-                    'max_nodes': 5,
+                    'search_mode': 'nodes',
+                    'limit': 5,
                 },
             )
 
@@ -254,15 +257,16 @@ class GraphitiMCPIntegrationTest:
             print(f'   ❌ Node search error: {e}')
             results['nodes'] = False
 
-        # Test search_memory_facts
-        print('   Testing search_memory_facts...')
+        # Test search (edges)
+        print('   Testing search (edges)...')
         try:
             result = await self.call_tool(
-                'search_memory_facts',
+                'search',
                 {
                     'query': 'company products software TechCorp',
                     'group_ids': [self.test_group_id],
-                    'max_facts': 5,
+                    'search_mode': 'edges',
+                    'limit': 5,
                 },
             )
 
@@ -270,17 +274,17 @@ class GraphitiMCPIntegrationTest:
             if isinstance(result, str):
                 try:
                     parsed = json.loads(result)
-                    facts = parsed.get('facts', [])
-                    success = isinstance(facts, list)
-                    print(f'   ✅ Fact search returned {len(facts)} facts')
+                    edges = parsed.get('edges', [])
+                    success = isinstance(edges, list)
+                    print(f'   ✅ Edge search returned {len(edges)} edges')
                 except json.JSONDecodeError:
-                    success = 'facts' in result.lower() and 'successfully' in result.lower()
+                    success = 'edges' in result.lower() and 'successfully' in result.lower()
                     if success:
-                        print('   ✅ Fact search completed successfully')
+                        print('   ✅ Edge search completed successfully')
 
             results['facts'] = success
             if not success:
-                print(f'   ❌ Fact search failed: {result}')
+                print(f'   ❌ Edge search failed: {result}')
 
         except Exception as e:
             print(f'   ❌ Fact search error: {e}')
@@ -294,7 +298,7 @@ class GraphitiMCPIntegrationTest:
 
         try:
             result = await self.call_tool(
-                'get_episodes', {'group_id': self.test_group_id, 'last_n': 10}
+                'get_episodes', {'group_ids': [self.test_group_id], 'max_episodes': 10}
             )
 
             if isinstance(result, str):
@@ -333,11 +337,12 @@ class GraphitiMCPIntegrationTest:
         print('   Testing nonexistent group handling...')
         try:
             result = await self.call_tool(
-                'search_memory_nodes',
+                'search',
                 {
                     'query': 'nonexistent data',
                     'group_ids': ['nonexistent_group_12345'],
-                    'max_nodes': 5,
+                    'search_mode': 'nodes',
+                    'limit': 5,
                 },
             )
 
@@ -360,8 +365,8 @@ class GraphitiMCPIntegrationTest:
         print('   Testing empty query handling...')
         try:
             result = await self.call_tool(
-                'search_memory_nodes',
-                {'query': '', 'group_ids': [self.test_group_id], 'max_nodes': 5},
+                'search',
+                {'query': '', 'group_ids': [self.test_group_id], 'search_mode': 'nodes', 'limit': 5},
             )
 
             # Should handle gracefully

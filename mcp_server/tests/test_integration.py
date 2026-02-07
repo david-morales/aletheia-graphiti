@@ -153,7 +153,7 @@ class MCPIntegrationTest:
 
             # Check if we have any episodes
             result = await self.call_mcp_tool(
-                'get_episodes', {'group_id': self.test_group_id, 'last_n': 10}
+                'get_episodes', {'group_ids': [self.test_group_id], 'max_episodes': 10}
             )
 
             if not isinstance(result, dict) or 'error' in result:
@@ -171,14 +171,15 @@ class MCPIntegrationTest:
 
         results = {}
 
-        # Test search_memory_nodes
-        print('   Testing search_memory_nodes...')
+        # Test search (nodes)
+        print('   Testing search (nodes)...')
         result = await self.call_mcp_tool(
-            'search_memory_nodes',
+            'search',
             {
                 'query': 'Acme Corp product launch',
                 'group_ids': [self.test_group_id],
-                'max_nodes': 5,
+                'limit': 5,
+                'search_mode': 'nodes',
             },
         )
 
@@ -190,23 +191,24 @@ class MCPIntegrationTest:
             print(f'   ✅ Node search returned {len(nodes)} nodes')
             results['nodes'] = True
 
-        # Test search_memory_facts
-        print('   Testing search_memory_facts...')
+        # Test search (edges)
+        print('   Testing search (edges)...')
         result = await self.call_mcp_tool(
-            'search_memory_facts',
+            'search',
             {
                 'query': 'company products software',
                 'group_ids': [self.test_group_id],
-                'max_facts': 5,
+                'limit': 5,
+                'search_mode': 'edges',
             },
         )
 
         if 'error' in result:
-            print(f'   ❌ Fact search failed: {result["error"]}')
+            print(f'   ❌ Edge search failed: {result["error"]}')
             results['facts'] = False
         else:
-            facts = result.get('facts', [])
-            print(f'   ✅ Fact search returned {len(facts)} facts')
+            edges = result.get('edges', [])
+            print(f'   ✅ Edge search returned {len(edges)} edges')
             results['facts'] = True
 
         return results
@@ -216,7 +218,7 @@ class MCPIntegrationTest:
         print('📚 Testing episode retrieval...')
 
         result = await self.call_mcp_tool(
-            'get_episodes', {'group_id': self.test_group_id, 'last_n': 10}
+            'get_episodes', {'group_ids': [self.test_group_id], 'max_episodes': 10}
         )
 
         if 'error' in result:
@@ -246,8 +248,8 @@ class MCPIntegrationTest:
         # Test with invalid group_id
         print('   Testing invalid group_id...')
         result = await self.call_mcp_tool(
-            'search_memory_nodes',
-            {'query': 'nonexistent data', 'group_ids': ['nonexistent_group'], 'max_nodes': 5},
+            'search',
+            {'query': 'nonexistent data', 'group_ids': ['nonexistent_group'], 'limit': 5, 'search_mode': 'nodes'},
         )
 
         # Should not error, just return empty results
@@ -262,7 +264,7 @@ class MCPIntegrationTest:
         # Test empty query
         print('   Testing empty query...')
         result = await self.call_mcp_tool(
-            'search_memory_nodes', {'query': '', 'group_ids': [self.test_group_id], 'max_nodes': 5}
+            'search', {'query': '', 'group_ids': [self.test_group_id], 'limit': 5, 'search_mode': 'nodes'}
         )
 
         if 'error' not in result:

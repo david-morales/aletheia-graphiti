@@ -43,7 +43,7 @@ class TestAsyncQueueManagement:
             await asyncio.sleep(10)  # Allow time for sequential processing
 
             # Retrieve episodes and verify order
-            result = await session.call_tool('get_episodes', {'group_id': group_id, 'last_n': 10})
+            result = await session.call_tool('get_episodes', {'group_ids': [group_id], 'max_episodes': 10})
 
             processed_episodes = json.loads(result.content[0].text)['episodes']
 
@@ -163,11 +163,12 @@ class TestConcurrentOperations:
             search_tasks = []
             for query in search_queries:
                 task = session.call_tool(
-                    'search_memory_nodes',
+                    'search',
                     {
                         'query': query,
-                        'group_id': group_id,
+                        'group_ids': [group_id],
                         'limit': 10,
+                        'search_mode': 'nodes',
                     },
                 )
                 search_tasks.append(task)
@@ -206,11 +207,12 @@ class TestConcurrentOperations:
             # Search operation
             operations.append(
                 session.call_tool(
-                    'search_memory_nodes',
+                    'search',
                     {
                         'query': 'test',
-                        'group_id': group_id,
+                        'group_ids': [group_id],
                         'limit': 5,
+                        'search_mode': 'nodes',
                     },
                 )
             )
@@ -220,8 +222,8 @@ class TestConcurrentOperations:
                 session.call_tool(
                     'get_episodes',
                     {
-                        'group_id': group_id,
-                        'last_n': 10,
+                        'group_ids': [group_id],
+                        'max_episodes': 10,
                     },
                 )
             )
@@ -434,8 +436,8 @@ class TestAsyncStreamHandling:
             result = await session.call_tool(
                 'get_episodes',
                 {
-                    'group_id': group_id,
-                    'last_n': 100,  # Request all
+                    'group_ids': [group_id],
+                    'max_episodes': 100,  # Request all
                 },
             )
 
@@ -473,8 +475,8 @@ class TestAsyncStreamHandling:
                 result = await session.call_tool(
                     'get_episodes',
                     {
-                        'group_id': group_id,
-                        'last_n': 100,
+                        'group_ids': [group_id],
+                        'max_episodes': 100,
                     },
                 )
 
