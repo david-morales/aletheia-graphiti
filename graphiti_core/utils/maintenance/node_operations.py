@@ -454,12 +454,32 @@ async def _resolve_with_llm(
         elif duplicate_name.lower() in existing_nodes_by_name:
             resolved_node = existing_nodes_by_name[duplicate_name.lower()]
         else:
-            logger.warning(
-                'Invalid duplicate_name %r for extracted node %s; treating as no duplicate.',
-                duplicate_name,
-                extracted_node.uuid,
-            )
-            resolved_node = extracted_node
+            # Fallback: case-insensitive containment matching.
+            # Handles LLM returning abbreviated names like "RUSAL" when
+            # the existing node is "United Company RUSAL".
+            dup_lower = duplicate_name.lower()
+            best_match: EntityNode | None = None
+            best_len = 0
+            for canon_lower, node in existing_nodes_by_name.items():
+                if dup_lower in canon_lower or canon_lower in dup_lower:
+                    if len(canon_lower) > best_len:
+                        best_match = node
+                        best_len = len(canon_lower)
+            if best_match is not None:
+                logger.info(
+                    'Resolved duplicate_name %r to %r via containment for node %s',
+                    duplicate_name,
+                    best_match.name,
+                    extracted_node.uuid,
+                )
+                resolved_node = best_match
+            else:
+                logger.warning(
+                    'Invalid duplicate_name %r for extracted node %s; treating as no duplicate.',
+                    duplicate_name,
+                    extracted_node.uuid,
+                )
+                resolved_node = extracted_node
 
         state.resolved_nodes[original_index] = resolved_node
         state.uuid_map[extracted_node.uuid] = resolved_node.uuid
