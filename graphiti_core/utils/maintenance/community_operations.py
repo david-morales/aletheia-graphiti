@@ -54,29 +54,36 @@ async def get_community_clusters(
     for group_id in group_ids:
         projection: dict[str, list[Neighbor]] = {}
         nodes = await EntityNode.get_by_group_ids(driver, [group_id])
-        for node in nodes:
-            match_query = """
-                MATCH (n:Entity {group_id: $group_id, uuid: $uuid})-[e:RELATES_TO]-(m: Entity {group_id: $group_id})
-            """
-            if driver.provider == GraphProvider.KUZU:
-                match_query = """
-                MATCH (n:Entity {group_id: $group_id, uuid: $uuid})-[:RELATES_TO]-(e:RelatesToNode_)-[:RELATES_TO]-(m: Entity {group_id: $group_id})
-                """
-            records, _, _ = await driver.execute_query(
-                match_query
-                + """
-                WITH count(e) AS count, m.uuid AS uuid
-                RETURN
-                    uuid,
-                    count
-                """,
-                uuid=node.uuid,
-                group_id=group_id,
-            )
 
-            projection[node.uuid] = [
-                Neighbor(node_uuid=record['uuid'], edge_count=record['count']) for record in records
-            ]
+        if not nodes:
+            continue
+
+        # Batch query: get all neighbors for all nodes in this group at once
+        batch_query = """
+            MATCH (n:Entity {group_id: $group_id})-[e:RELATES_TO]-(m:Entity {group_id: $group_id})
+            WITH n.uuid AS source_uuid, count(e) AS edge_count, m.uuid AS neighbor_uuid
+            RETURN source_uuid, neighbor_uuid, edge_count
+        """
+        if driver.provider == GraphProvider.KUZU:
+            batch_query = """
+                MATCH (n:Entity {group_id: $group_id})-[:RELATES_TO]-(e:RelatesToNode_)-[:RELATES_TO]-(m:Entity {group_id: $group_id})
+                WITH n.uuid AS source_uuid, count(e) AS edge_count, m.uuid AS neighbor_uuid
+                RETURN source_uuid, neighbor_uuid, edge_count
+            """
+
+        records, _, _ = await driver.execute_query(batch_query, group_id=group_id)
+
+        # Initialize all nodes with empty neighbor lists (including isolated nodes)
+        for node in nodes:
+            projection[node.uuid] = []
+
+        # Populate neighbor lists from batch results
+        for record in records:
+            source = record['source_uuid']
+            if source in projection:
+                projection[source].append(
+                    Neighbor(node_uuid=record['neighbor_uuid'], edge_count=record['edge_count'])
+                )
 
         cluster_uuids = label_propagation(projection)
 
