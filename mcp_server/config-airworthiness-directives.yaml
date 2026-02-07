@@ -1,0 +1,50 @@
+# Graphiti MCP Server Configuration - Airworthiness Directives
+# EASA Airworthiness Directives (AD, EAD, PAD) for aviation safety compliance
+
+server:
+  transport: "stdio"
+  host: "127.0.0.1"
+  port: 8000
+
+llm:
+  provider: "openai"
+  model: "gpt-4o-mini"
+  max_tokens: 4096
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      api_url: "https://api.openai.com/v1"
+
+embedder:
+  provider: "openai"
+  model: "text-embedding-3-small"
+  dimensions: 1024
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      api_url: "https://api.openai.com/v1"
+
+database:
+  provider: "falkordb"
+
+  providers:
+    falkordb:
+      uri: "redis://localhost:6379"
+      database: "airworthiness_directives"
+
+graphiti:
+  group_id: "airworthiness_directives"
+  user_id: "claude_desktop"
+  entity_types:
+    - name: "AirworthinessDirective"
+      description: "Regulatory document (AD, EAD, PAD) mandating corrective action for an unsafe condition in aircraft, engines, or components"
+    - name: "DesignApprovalHolder"
+      description: "Organization holding design approval for an aviation product (Type Certificate Holder, manufacturer like Airbus, Boeing, Pratt & Whitney)"
+    - name: "AircraftType"
+      description: "Certificated aircraft type or model covered by a Type Certificate (e.g., A320-214, Boeing 737-800)"
+    - name: "Authority"
+      description: "Aviation regulatory authority that issues airworthiness directives (EASA, FAA, TCCA, ANAC)"
+    - name: "ServiceBulletin"
+      description: "Technical document issued by a manufacturer describing modifications, inspections, or procedures referenced in ADs"

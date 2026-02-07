@@ -1,0 +1,45 @@
+# Graphiti MCP Server Configuration - FollowTheMoney Ontology
+
+server:
+  transport: "stdio"
+  host: "127.0.0.1"
+  port: 8000
+
+llm:
+  provider: "openai"
+  model: "gpt-4o-mini"
+  max_tokens: 4096
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      api_url: "https://api.openai.com/v1"
+
+embedder:
+  provider: "openai"
+  model: "text-embedding-3-small"
+  dimensions: 1024
+
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      api_url: "https://api.openai.com/v1"
+
+database:
+  provider: "falkordb"
+
+  providers:
+    falkordb:
+      uri: "redis://localhost:6379"
+      database: "followthemoney"
+
+graphiti:
+  group_id: "followthemoney"
+  user_id: "claude_desktop"
+  entity_types:
+    - name: "Schema"
+      description: "FTM schema type definition"
+    - name: "Property"
+      description: "FTM property definition"
+    - name: "Entity"
+      description: "FTM entity type"

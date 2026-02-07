@@ -1,7 +1,7 @@
-# Graphiti MCP Server Configuration for FalkorDB
+# Graphiti MCP Server Configuration - Aviation Safety Quality
 
 server:
-  transport: "stdio"  # stdio for Claude Desktop
+  transport: "stdio"
   host: "127.0.0.1"
   port: 8000
 
@@ -31,12 +31,10 @@ database:
   providers:
     falkordb:
       uri: "redis://localhost:6379"
-      username: "knowledge"
-      password: "knowledgeG3#"
-      database: "aviation-mode-hybrid"
+      database: "aviation_safety_quality"
 
 graphiti:
-  group_id: "\\_"
+  group_id: "aviation_safety_quality"
   user_id: "claude_desktop"
   entity_types:
     - name: "Aircraft"
