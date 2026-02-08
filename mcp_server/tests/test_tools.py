@@ -1004,3 +1004,56 @@ class TestSchemaConstraints:
         assert 'rrf' in reranker_annotation.__args__
         assert 'mmr' in reranker_annotation.__args__
         assert 'cross_encoder' in reranker_annotation.__args__
+
+
+# ---------------------------------------------------------------------------
+# TestDynamicRegistration
+# ---------------------------------------------------------------------------
+
+class TestDynamicRegistration:
+    """Verify that dynamic tool registration and resources work."""
+
+    def test_register_dynamic_tools_adds_tools_to_mcp(self):
+        from domain_profile import DomainProfile, EntityTypeInfo, EdgeTypeInfo
+        from graphiti_mcp_server import register_dynamic_tools, mcp
+
+        profile = DomainProfile(
+            group_id='test_graph',
+            entity_types={
+                'Aircraft': EntityTypeInfo('Aircraft', 10, 'Test aircraft', ['PH-KZB']),
+            },
+            edge_types={
+                'OPERATED_BY': EdgeTypeInfo('OPERATED_BY', 5, 'Test link', 'Aircraft -> Airline'),
+            },
+            time_range=None,
+        )
+
+        register_dynamic_tools(profile)
+
+        # Verify tools are registered with dynamic descriptions
+        tools = mcp._tool_manager._tools
+        assert 'search' in tools
+        assert 'Aircraft' in tools['search'].description
+        assert 'explore_node' in tools
+        assert 'search_ontology' in tools
+        assert 'explore_ontology' in tools
+
+    def test_register_resources_adds_three_resources(self):
+        from domain_profile import DomainProfile, EntityTypeInfo
+        from graphiti_mcp_server import register_resources, mcp
+
+        profile = DomainProfile(
+            group_id='test_graph',
+            entity_types={
+                'Aircraft': EntityTypeInfo('Aircraft', 10, 'Test', ['PH-KZB']),
+            },
+            edge_types={},
+            time_range=None,
+        )
+
+        register_resources(profile)
+
+        resources = mcp._resource_manager._resources
+        assert any('domain_summary' in str(uri) for uri in resources)
+        assert any('entity_catalog' in str(uri) for uri in resources)
+        assert any('relationship_types' in str(uri) for uri in resources)

@@ -47,10 +47,19 @@ from graphiti_core.search.search_config_recipes import (
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.resources.types import TextResource
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from config.schema import GraphitiConfig, ServerConfig
+from domain_profile import DomainProfile, build_domain_profile
+from tool_descriptions import (
+    build_instructions,
+    build_search_description,
+    build_explore_node_description,
+    build_search_ontology_description,
+    build_explore_ontology_description,
+)
 from models.response_types import (
     CommunityBuildResponse,
     EpisodeContextResponse,
@@ -548,7 +557,6 @@ async def add_memory(
         return ErrorResponse(error=f'Error adding memory: {e}')
 
 
-@mcp.tool()
 async def search(
     query: str,
     group_ids: list[str] | None = None,
@@ -672,7 +680,6 @@ async def search(
         return ErrorResponse(error=f'Search error: {e}')
 
 
-@mcp.tool()
 async def explore_node(
     node_name: str | None = None,
     node_uuid: str | None = None,
@@ -1150,7 +1157,6 @@ async def get_status() -> StatusResponse:
         )
 
 
-@mcp.tool()
 async def search_ontology(
     query: str,
     search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
@@ -1221,7 +1227,6 @@ async def search_ontology(
         return ErrorResponse(error=f'Ontology search error: {e}')
 
 
-@mcp.tool()
 async def explore_ontology(
     node_name: str | None = None,
     node_uuid: str | None = None,
@@ -1375,6 +1380,52 @@ async def explore_ontology(
 async def health_check(request) -> JSONResponse:
     """Health check endpoint for Docker and load balancers."""
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
+
+
+def register_dynamic_tools(profile: DomainProfile) -> None:
+    """Register the 4 main tools with dynamic descriptions from the DomainProfile."""
+    # Remove any existing registrations (e.g., if called multiple times)
+    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology'):
+        if name in mcp._tool_manager._tools:
+            del mcp._tool_manager._tools[name]
+
+    mcp.add_tool(search, description=build_search_description(profile))
+    mcp.add_tool(explore_node, description=build_explore_node_description(profile))
+    mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
+    mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
+
+    # Update MCP instructions
+    mcp._mcp_server.instructions = build_instructions(profile)
+
+    logger.info('Registered tools with dynamic descriptions')
+
+
+def register_resources(profile: DomainProfile) -> None:
+    """Register MCP resources with rendered content from the DomainProfile."""
+    domain_summary = TextResource(
+        uri='graphiti://domain_summary',
+        name='Domain Summary',
+        description='Overview of entity types, relationship types, and data in this knowledge graph',
+        text=profile.render_domain_summary(),
+    )
+    entity_catalog = TextResource(
+        uri='graphiti://entity_catalog',
+        name='Entity Catalog',
+        description='Detailed listing of all entity types with descriptions and sample entities',
+        text=profile.render_entity_catalog(),
+    )
+    relationship_types = TextResource(
+        uri='graphiti://relationship_types',
+        name='Relationship Types',
+        description='All relationship types with descriptions and source/target patterns',
+        text=profile.render_relationship_types(),
+    )
+
+    mcp.add_resource(domain_summary)
+    mcp.add_resource(entity_catalog)
+    mcp.add_resource(relationship_types)
+
+    logger.info(f'Registered 3 MCP resources for {profile.group_id}')
 
 
 async def initialize_server() -> ServerConfig:
