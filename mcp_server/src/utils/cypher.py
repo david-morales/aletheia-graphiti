@@ -314,3 +314,77 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
         fixes.append('Stripped PROFILE/EXPLAIN prefix (not supported in FalkorDB)')
 
     return query, fixes
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Security whitelist — fail-safe keyword gate
+# ---------------------------------------------------------------------------
+
+_BLOCKED_KEYWORDS: set[str] = {
+    'CREATE', 'DELETE', 'DETACH', 'SET', 'MERGE', 'REMOVE',
+    'DROP', 'FOREACH', 'LOAD', 'CSV',
+}
+
+# Patterns for stripping non-keyword tokens before scanning
+_STRING_LITERAL_RE = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+_BACKTICK_IDENT_RE = re.compile(r'`[^`]*`')
+_PROPERTY_ACCESS_RE = re.compile(r'\.(\w+)')
+_CALL_PROCEDURE_RE = re.compile(r'\bCALL\s+([\w.]+)', re.IGNORECASE)
+
+
+def _extract_keyword_tokens(query: str) -> list[str]:
+    """Extract keyword-level tokens from a Cypher query for security scanning.
+
+    Strips string literals, backtick-quoted identifiers, and property-access
+    names so that blocked keywords inside those contexts are not matched.
+    Returns uppercase tokens.
+    """
+    # 1. Remove string literals (replace with placeholder to preserve spacing)
+    cleaned = _STRING_LITERAL_RE.sub(' _STR_ ', query)
+    # 2. Remove backtick-quoted identifiers
+    cleaned = _BACKTICK_IDENT_RE.sub(' _BT_ ', cleaned)
+    # 3. Remove property access (.word) so e.g. n.description won't match
+    cleaned = _PROPERTY_ACCESS_RE.sub(' ', cleaned)
+    # 4. Split on non-word characters and return uppercase tokens
+    tokens = re.findall(r'\b[A-Za-z_]\w*\b', cleaned)
+    return [t.upper() for t in tokens]
+
+
+def _check_whitelist(query: str) -> CypherError | None:
+    """Stage 3: reject queries containing write/admin Cypher keywords.
+
+    Returns a CypherError with stage='security' and reason='write_operation'
+    if a blocked keyword is found.  Returns None if the query is clean.
+    """
+    # Special check: CALL is allowed only for db.* procedures
+    for m in _CALL_PROCEDURE_RE.finditer(query):
+        proc_name = m.group(1).lower()
+        if not proc_name.startswith('db.'):
+            return CypherError(
+                stage='security',
+                reason='write_operation',
+                found=m.group(0),
+                explanation=(
+                    f'Only CALL db.* procedures are allowed for read-only access. '
+                    f'Found: {m.group(1)}'
+                ),
+                suggestion='Use CALL db.labels() or CALL db.relationshipTypes() for schema introspection.',
+                doc_hint='Read-only procedure namespaces: db.*',
+            )
+
+    tokens = _extract_keyword_tokens(query)
+    for token in tokens:
+        if token in _BLOCKED_KEYWORDS:
+            return CypherError(
+                stage='security',
+                reason='write_operation',
+                found=token,
+                explanation=(
+                    f'Write operation "{token}" is not allowed. '
+                    f'This endpoint only accepts read-only Cypher queries.'
+                ),
+                suggestion='Use MATCH ... RETURN for read-only queries.',
+                doc_hint='Allowed operations: MATCH, OPTIONAL MATCH, WHERE, WITH, RETURN, ORDER BY, SKIP, LIMIT, UNION, UNWIND, CALL db.*',
+            )
+
+    return None

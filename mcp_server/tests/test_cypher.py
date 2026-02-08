@@ -10,6 +10,7 @@ from utils.cypher import (
     CypherError,
     SanitizedQuery,
     _check_falkordb_dialect,
+    _check_whitelist,
     _fix_falkordb_dialect,
     _fix_llm_syntax,
 )
@@ -225,3 +226,72 @@ class TestStage2Ordering:
         err = _check_falkordb_dialect(query)
         assert err is not None
         assert err.reason == 'apoc_unsupported'
+
+
+class TestStage3SecurityWhitelist:
+    def test_allow_simple_match_return(self):
+        assert _check_whitelist('MATCH (n) RETURN n') is None
+
+    def test_allow_optional_match(self):
+        assert _check_whitelist('MATCH (n) OPTIONAL MATCH (n)-[r]->(m) RETURN n, m') is None
+
+    def test_allow_where_with_order_skip_limit(self):
+        query = 'MATCH (n) WHERE n.name = "X" WITH n ORDER BY n.name SKIP 10 LIMIT 20 RETURN n'
+        assert _check_whitelist(query) is None
+
+    def test_allow_unwind(self):
+        assert _check_whitelist("UNWIND ['a','b'] AS x MATCH (n) WHERE n.name = x RETURN n") is None
+
+    def test_allow_union(self):
+        query = 'MATCH (n:Aircraft) RETURN n.name UNION MATCH (n:Operator) RETURN n.name'
+        assert _check_whitelist(query) is None
+
+    def test_allow_call_db_labels(self):
+        assert _check_whitelist('CALL db.labels()') is None
+
+    def test_allow_call_db_relationshipTypes(self):
+        assert _check_whitelist('CALL db.relationshipTypes()') is None
+
+    def test_reject_create(self):
+        err = _check_whitelist('CREATE (n:Test {name: "test"})')
+        assert err is not None
+        assert err.stage == 'security'
+        assert 'read-only' in err.explanation.lower()
+
+    def test_reject_delete(self):
+        err = _check_whitelist('MATCH (n) DELETE n')
+        assert err is not None
+        assert err.reason == 'write_operation'
+
+    def test_reject_set(self):
+        assert _check_whitelist('MATCH (n) SET n.name = "new"') is not None
+
+    def test_reject_merge(self):
+        assert _check_whitelist('MERGE (n:Test {name: "test"})') is not None
+
+    def test_reject_remove(self):
+        assert _check_whitelist('MATCH (n) REMOVE n.name') is not None
+
+    def test_reject_drop(self):
+        assert _check_whitelist('DROP INDEX ON :Person(name)') is not None
+
+    def test_reject_detach_delete(self):
+        assert _check_whitelist('MATCH (n) DETACH DELETE n') is not None
+
+    def test_reject_call_dbms(self):
+        assert _check_whitelist('CALL dbms.security.changePassword("new")') is not None
+
+    def test_keywords_case_insensitive(self):
+        assert _check_whitelist('match (n) return n') is None
+        assert _check_whitelist('create (n:Test)') is not None
+
+    def test_reject_foreach(self):
+        assert _check_whitelist('FOREACH (n IN nodes(path) | SET n.visited = true)') is not None
+
+    def test_keyword_inside_string_not_matched(self):
+        # "DELETE" inside a string literal should NOT trigger rejection
+        assert _check_whitelist('MATCH (n) WHERE n.name = "DELETE ME" RETURN n') is None
+
+    def test_keyword_in_property_not_matched(self):
+        # n.description should not trigger on any keyword
+        assert _check_whitelist('MATCH (n) RETURN n.description') is None
