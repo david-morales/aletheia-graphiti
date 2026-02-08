@@ -146,12 +146,16 @@ def nodes(context: dict[str, Any]) -> list[Message]:
         {{
             name: "name of the candidate entity",
             entity_types: ["Entity", "<optional additional label>", ...],
+            entity_type_description: "Description of what the entity type represents",
             ...<additional attributes such as summaries or metadata>
         }}
 
         For each of the above ENTITIES, determine if the entity is a duplicate of any of the EXISTING ENTITIES.
 
         Entities should only be considered duplicates if they refer to the *same real-world object or concept*.
+        Use the entity_type_description to understand what properties or identifiers define each entity type.
+        If two entities of the same type share a unique identifier described in the type definition
+        (e.g. a code, registration number, or ID), they likely refer to the same entity even if their names differ.
 
         Do NOT mark entities as duplicates if:
         - They are related but distinct.
