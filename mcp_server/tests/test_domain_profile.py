@@ -133,3 +133,50 @@ class TestBuildDomainProfile:
 
         assert len(profile.entity_types) == 0
         assert len(profile.edge_types) == 0
+
+
+class TestOntologyEnrichment:
+    @pytest.mark.asyncio
+    async def test_enriches_entity_descriptions_from_ontology(self):
+        """Entity types get descriptions from ontology node summaries."""
+        label_records = [
+            {'entity_type': ['Entity', 'Aircraft'], 'count': 10},
+        ]
+        driver = make_mock_driver(label_records, [], {'Aircraft': [{'name': 'PH-KZB'}]})
+        mock_client = MagicMock()
+        mock_client.driver = driver
+
+        # Ontology client returns nodes with summaries
+        ontology_client = MagicMock()
+        ontology_driver = AsyncMock()
+
+        async def ontology_execute(query, **kwargs):
+            if 'n.name' in query and 'n.summary' in query:
+                return (
+                    [{'name': 'Aircraft', 'summary': 'Aircraft involved in an occurrence with type and registration'}],
+                    ['name', 'summary'],
+                    None,
+                )
+            return ([], [], None)
+
+        ontology_driver.execute_query = ontology_execute
+        ontology_client.driver = ontology_driver
+
+        profile = await build_domain_profile(mock_client, 'test', ontology_client=ontology_client)
+
+        assert 'Aircraft' in profile.entity_types
+        assert 'registration' in profile.entity_types['Aircraft'].description
+
+    @pytest.mark.asyncio
+    async def test_works_without_ontology_client(self):
+        """Profile builds fine with no ontology client — descriptions stay empty."""
+        label_records = [
+            {'entity_type': ['Entity', 'Aircraft'], 'count': 10},
+        ]
+        driver = make_mock_driver(label_records, [], {})
+        mock_client = MagicMock()
+        mock_client.driver = driver
+
+        profile = await build_domain_profile(mock_client, 'test', ontology_client=None)
+
+        assert profile.entity_types['Aircraft'].description == ''

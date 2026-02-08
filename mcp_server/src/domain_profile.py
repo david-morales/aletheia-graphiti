@@ -124,6 +124,36 @@ async def _query_time_range(driver, group_id: str) -> tuple[str, str] | None:
     return None
 
 
+async def _enrich_from_ontology(
+    ontology_driver,
+    entity_types: dict[str, EntityTypeInfo],
+    edge_types: dict[str, EdgeTypeInfo],
+) -> None:
+    """Enrich entity and edge type descriptions from ontology graph node summaries."""
+    query = (
+        'MATCH (n:Entity) '
+        'WHERE n.summary IS NOT NULL '
+        'RETURN n.name AS name, n.summary AS summary'
+    )
+    try:
+        records, _, _ = await ontology_driver.execute_query(query)
+    except Exception as e:
+        logger.warning(f'Failed to query ontology descriptions: {e}')
+        return
+
+    for record in records:
+        name = record.get('name', '')
+        summary = record.get('summary', '')
+        if not name or not summary:
+            continue
+        if name in entity_types:
+            entity_types[name].description = summary
+        # Edge types may match ontology relationship classes
+        upper_name = name.upper().replace(' ', '_')
+        if upper_name in edge_types:
+            edge_types[upper_name].description = summary
+
+
 async def build_domain_profile(
     client,
     group_id: str,
@@ -142,6 +172,14 @@ async def build_domain_profile(
 
     # Query time range
     time_range = await _query_time_range(driver, group_id)
+
+    # Enrich from ontology if available
+    if ontology_client is not None:
+        await _enrich_from_ontology(
+            ontology_client.driver,
+            entity_types,
+            edge_types,
+        )
 
     profile = DomainProfile(
         group_id=group_id,
