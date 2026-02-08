@@ -6,7 +6,13 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
-from utils.cypher import CypherError, SanitizedQuery, _fix_llm_syntax
+from utils.cypher import (
+    CypherError,
+    SanitizedQuery,
+    _check_falkordb_dialect,
+    _fix_falkordb_dialect,
+    _fix_llm_syntax,
+)
 
 
 class TestDataModels:
@@ -112,3 +118,110 @@ class TestStage1LLMFixups:
         query = '```cypher\nMATCH (n) WHERE n.name = \u201cBoeing\u201d\n```'
         fixed, fixes = _fix_llm_syntax(query)
         assert len(fixes) >= 2  # code block + smart quotes + RETURN injection
+
+
+class TestStage2Reject:
+    def test_reject_apoc(self):
+        query = "MATCH (n) CALL apoc.path.expand(n, 'KNOWS>', '', 1, 3) YIELD path RETURN path"
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'apoc_unsupported'
+        assert 'variable-length' in err.suggestion.lower()
+        assert err.doc_hint != ''
+
+    def test_reject_pattern_comprehension(self):
+        query = 'MATCH (n:Occurrence) RETURN n.name, [(n)-[:INVOLVED_AIRCRAFT]->(a) | a.name] AS aircraft'
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'pattern_comprehension_unsupported'
+        assert 'collect' in err.suggestion.lower()
+
+    def test_reject_exists_subquery(self):
+        query = 'MATCH (n:Aircraft) WHERE EXISTS { MATCH (n)<-[:INVOLVED_AIRCRAFT]-(o) } RETURN n'
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'exists_subquery_unsupported'
+
+    def test_reject_call_subquery(self):
+        query = 'MATCH (n:Occurrence) CALL { WITH n MATCH (n)-[:OPERATED_BY]->(op) RETURN op } RETURN n, op'
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'call_subquery_unsupported'
+        assert 'OPTIONAL MATCH' in err.suggestion
+
+    def test_reject_map_projection(self):
+        query = 'MATCH (n:Occurrence) RETURN n {.name, .date_value, .description}'
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'map_projection_unsupported'
+        assert 'individually' in err.suggestion.lower()
+
+    def test_pass_clean_query(self):
+        query = 'MATCH (n:Occurrence) RETURN n.name, n.date_value'
+        assert _check_falkordb_dialect(query) is None
+
+    def test_pass_variable_length_path(self):
+        query = 'MATCH path = (a)-[*1..3]->(b) RETURN path'
+        assert _check_falkordb_dialect(query) is None
+
+    def test_pass_exists_pattern(self):
+        query = 'MATCH (n:Aircraft) WHERE EXISTS((n)<-[:INVOLVED_AIRCRAFT]-()) RETURN n'
+        assert _check_falkordb_dialect(query) is None
+
+
+class TestStage2AutoFix:
+    def test_strip_date_function(self):
+        query = "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "date(" not in fixed
+        assert "'2024-06-01'" in fixed
+        assert any('date' in f.lower() for f in fixes)
+
+    def test_strip_datetime_function(self):
+        query = "MATCH (o) WHERE o.ts > datetime('2024-06-01T10:00:00') RETURN o"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "datetime(" not in fixed
+        assert "'2024-06-01T10:00:00'" in fixed
+
+    def test_fix_lower_to_toLower(self):
+        query = "MATCH (n) WHERE lower(n.name) = 'boeing' RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'lower(' not in fixed
+        assert 'toLower(' in fixed
+
+    def test_fix_LOWER_to_toLower(self):
+        query = "MATCH (n) WHERE LOWER(n.name) = 'boeing' RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'LOWER(' not in fixed
+        assert 'toLower(' in fixed
+
+    def test_fix_upper_to_toUpper(self):
+        query = "MATCH (n) WHERE upper(n.name) = 'BOEING' RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'upper(' not in fixed
+        assert 'toUpper(' in fixed
+
+    def test_strip_profile_prefix(self):
+        query = 'PROFILE MATCH (n:Occurrence) RETURN count(n)'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert not fixed.strip().startswith('PROFILE')
+        assert 'MATCH' in fixed
+
+    def test_strip_explain_prefix(self):
+        query = 'EXPLAIN MATCH (n:Occurrence) RETURN count(n)'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert not fixed.strip().startswith('EXPLAIN')
+
+    def test_no_fix_needed(self):
+        query = 'MATCH (n:Occurrence) RETURN n.name, count(n)'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert fixes == []
+
+
+class TestStage2Ordering:
+    def test_apoc_with_date_rejects_on_apoc(self):
+        query = "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'apoc_unsupported'
