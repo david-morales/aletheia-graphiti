@@ -13,6 +13,17 @@ from pydantic_settings import (
 )
 
 
+def deep_merge(base: dict, overlay: dict) -> dict:
+    """Deep-merge overlay onto base. Dicts merge recursively, all else replaces."""
+    result = base.copy()
+    for key, value in overlay.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 class YamlSettingsSource(PydanticBaseSettingsSource):
     """Custom settings source for loading from YAML files."""
 
@@ -68,6 +79,19 @@ class YamlSettingsSource(PydanticBaseSettingsSource):
 
         with open(self.config_path) as f:
             raw_config = yaml.safe_load(f) or {}
+
+        # Resolve base config if referenced
+        if 'base' in raw_config:
+            base_ref = raw_config.pop('base')
+            base_path = (self.config_path.parent / base_ref).resolve()
+            if not base_path.exists():
+                raise FileNotFoundError(
+                    f"Base config not found: {base_path} "
+                    f"(referenced from {self.config_path})"
+                )
+            with open(base_path) as f:
+                base_config = yaml.safe_load(f) or {}
+            raw_config = deep_merge(base_config, raw_config)
 
         # Expand environment variables
         return self._expand_env_vars(raw_config)
