@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
 
 @dataclass
@@ -453,3 +454,190 @@ def validate_and_sanitize(query: str, limit: int = DEFAULT_LIMIT) -> SanitizedQu
         query=query,
         auto_fixes=fixes_1 + fixes_2 + fixes_4,
     )
+
+
+# ---------------------------------------------------------------------------
+# Result formatting
+# ---------------------------------------------------------------------------
+
+ResultType = Literal['scalar', 'tabular', 'graph', 'path', 'error']
+
+
+def _classify_result(
+    records: list[dict[str, Any]], header: list[str]
+) -> ResultType:
+    """Classify the result type based on record shape and value types.
+
+    Classification rules (checked in order):
+    - scalar: 0 records, OR 1 record with exactly 1 column
+    - path: any value has both ``nodes`` and ``edges`` attributes
+    - graph: any value has a ``labels`` attribute (Node) or ``relation`` attribute (Edge)
+    - tabular: everything else (multiple records with primitive values)
+    """
+    if len(records) == 0:
+        return 'scalar'
+    if len(records) == 1 and len(header) <= 1:
+        return 'scalar'
+
+    # Inspect all values for graph/path objects
+    for record in records:
+        for value in record.values():
+            # Path: has both nodes and edges
+            if hasattr(value, 'nodes') and hasattr(value, 'edges'):
+                return 'path'
+            # Graph: Node (has labels) or Edge (has relation)
+            if hasattr(value, 'labels') or hasattr(value, 'relation'):
+                return 'graph'
+
+    return 'tabular'
+
+
+def _format_scalar(records: list[dict[str, Any]], header: list[str]) -> dict[str, Any]:
+    """Format a scalar result (0 or 1 record with 1 column)."""
+    if len(records) == 0:
+        return {'result': None}
+    # Single record — return the sole value
+    record = records[0]
+    if header:
+        return {'result': record[header[0]]}
+    # Fallback: get first value from dict
+    return {'result': next(iter(record.values()), None)}
+
+
+def _format_tabular(
+    records: list[dict[str, Any]], header: list[str]
+) -> dict[str, Any]:
+    """Format tabular results as columnar array-of-arrays (token-efficient)."""
+    rows = [[record[col] for col in header] for record in records]
+    return {'columns': header, 'rows': rows}
+
+
+def _format_node(node: Any) -> dict[str, Any]:
+    """Format a FalkorDB Node into a serialisable dict, filtering :Entity label."""
+    labels = [lbl for lbl in (node.labels if hasattr(node, 'labels') else []) if lbl != 'Entity']
+    props = node.properties if hasattr(node, 'properties') else {}
+    return {
+        'id': node.id if hasattr(node, 'id') else None,
+        'labels': labels,
+        'properties': dict(props),
+    }
+
+
+def _format_edge(edge: Any) -> dict[str, Any]:
+    """Format a FalkorDB Edge into a serialisable dict."""
+    return {
+        'id': edge.id if hasattr(edge, 'id') else None,
+        'type': edge.relation if hasattr(edge, 'relation') else None,
+        'src': edge.src_node if hasattr(edge, 'src_node') else None,
+        'dest': edge.dest_node if hasattr(edge, 'dest_node') else None,
+    }
+
+
+def _format_graph(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Format graph results — collect unique nodes and edges."""
+    nodes_seen: set[int] = set()
+    edges_seen: set[int] = set()
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    for record in records:
+        for value in record.values():
+            if hasattr(value, 'labels'):
+                nid = value.id if hasattr(value, 'id') else id(value)
+                if nid not in nodes_seen:
+                    nodes_seen.add(nid)
+                    nodes.append(_format_node(value))
+            elif hasattr(value, 'relation'):
+                eid = value.id if hasattr(value, 'id') else id(value)
+                if eid not in edges_seen:
+                    edges_seen.add(eid)
+                    edges.append(_format_edge(value))
+
+    return {'nodes': nodes, 'edges': edges}
+
+
+def _format_path(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Format path results — alternating node/edge sequence per path."""
+    paths: list[list[dict[str, Any]]] = []
+
+    for record in records:
+        for value in record.values():
+            if not (hasattr(value, 'nodes') and hasattr(value, 'edges')):
+                continue
+            # nodes/edges may be properties or callables
+            path_nodes = value.nodes() if callable(value.nodes) else value.nodes
+            path_edges = value.edges() if callable(value.edges) else value.edges
+
+            steps: list[dict[str, Any]] = []
+            for i, node in enumerate(path_nodes):
+                steps.append(_format_node(node))
+                if i < len(path_edges):
+                    steps.append(_format_edge(path_edges[i]))
+            paths.append(steps)
+
+    return {'steps': paths}
+
+
+def format_result(
+    records: list[dict[str, Any]],
+    header: list[str],
+    query: str,
+    auto_fixes: list[str],
+    execution_ms: float,
+    limit: int,
+) -> dict[str, Any]:
+    """Classify results and build a typed JSON envelope with metadata.
+
+    Uses the N+1 trick for truncation detection: if ``len(records) > limit``,
+    the result set is truncated to ``limit`` rows and ``truncated`` is set to
+    ``True``.
+    """
+    # Truncation detection (N+1 trick)
+    truncated = len(records) > limit
+    if truncated:
+        records = records[:limit]
+
+    result_type = _classify_result(records, header)
+
+    # Build type-specific payload
+    if result_type == 'scalar':
+        payload = _format_scalar(records, header)
+    elif result_type == 'graph':
+        payload = _format_graph(records)
+    elif result_type == 'path':
+        payload = _format_path(records)
+    else:
+        payload = _format_tabular(records, header)
+
+    # Metadata envelope (always present)
+    envelope: dict[str, Any] = {
+        'query': query,
+        'auto_fixes': auto_fixes,
+        'type': result_type,
+        'row_count': len(records),
+        'truncated': truncated,
+        'limit_applied': limit,
+        'execution_ms': execution_ms,
+    }
+
+    # Merge type-specific payload into envelope
+    envelope.update(payload)
+
+    return envelope
+
+
+def format_error(query: str, error: CypherError) -> dict[str, Any]:
+    """Format a CypherError into the standard envelope structure."""
+    return {
+        'query': query,
+        'type': 'error',
+        'error': {
+            'stage': error.stage,
+            'reason': error.reason,
+            'found': error.found,
+            'explanation': error.explanation,
+            'suggestion': error.suggestion,
+            'doc_hint': error.doc_hint,
+        },
+        'execution_ms': 0,
+    }

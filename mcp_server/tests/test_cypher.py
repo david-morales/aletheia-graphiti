@@ -15,6 +15,8 @@ from utils.cypher import (
     _fix_falkordb_dialect,
     _fix_llm_syntax,
     _inject_safety,
+    format_error,
+    format_result,
     validate_and_sanitize,
 )
 
@@ -385,3 +387,94 @@ class TestPipelineOrchestration:
         assert 'RETURN' in result.query
         assert 'LIMIT' in result.query
         assert len(result.auto_fixes) >= 2
+
+
+class TestResultFormatter:
+    def test_scalar_single_value(self):
+        records = [{'count': 47}]
+        header = ['count']
+        result = format_result(records, header, 'MATCH (n) RETURN count(n)', [], 5.0, 200)
+        assert result['type'] == 'scalar'
+        assert result['result'] == 47
+        assert result['row_count'] == 1
+        assert result['truncated'] is False
+
+    def test_scalar_null_result(self):
+        records = []
+        header = []
+        result = format_result(records, header, 'MATCH (n) RETURN count(n)', [], 1.0, 200)
+        assert result['type'] == 'scalar'
+        assert result['result'] is None
+        assert result['row_count'] == 0
+
+    def test_tabular_multiple_rows(self):
+        records = [
+            {'name': 'Boeing 737', 'count': 12},
+            {'name': 'Airbus A320', 'count': 8},
+        ]
+        header = ['name', 'count']
+        result = format_result(records, header, 'MATCH ...', [], 3.0, 200)
+        assert result['type'] == 'tabular'
+        assert result['columns'] == ['name', 'count']
+        assert result['rows'] == [['Boeing 737', 12], ['Airbus A320', 8]]
+        assert result['row_count'] == 2
+        assert result['truncated'] is False
+
+    def test_tabular_token_efficient_no_repeated_keys(self):
+        records = [{'a': 1, 'b': 2}, {'a': 3, 'b': 4}]
+        header = ['a', 'b']
+        result = format_result(records, header, 'MATCH ...', [], 1.0, 200)
+        assert isinstance(result['rows'][0], list)
+        assert isinstance(result['rows'][1], list)
+
+    def test_truncation_n_plus_1(self):
+        records = [{'n': i} for i in range(201)]
+        header = ['n']
+        result = format_result(records, header, 'MATCH ...', [], 10.0, 200)
+        assert result['truncated'] is True
+        assert result['row_count'] == 200
+        assert len(result['rows']) == 200
+
+    def test_no_truncation_exact_limit(self):
+        records = [{'n': i} for i in range(200)]
+        header = ['n']
+        result = format_result(records, header, 'MATCH ...', [], 10.0, 200)
+        assert result['truncated'] is False
+        assert result['row_count'] == 200
+
+    def test_no_truncation_under_limit(self):
+        records = [{'n': i} for i in range(50)]
+        header = ['n']
+        result = format_result(records, header, 'MATCH ...', [], 10.0, 200)
+        assert result['truncated'] is False
+        assert result['row_count'] == 50
+
+    def test_metadata_envelope_present(self):
+        records = [{'count': 5}]
+        header = ['count']
+        fixes = ['Injected LIMIT 200']
+        result = format_result(records, header, 'MATCH (n) RETURN count(n) LIMIT 201', fixes, 23.0, 200)
+        assert result['query'] == 'MATCH (n) RETURN count(n) LIMIT 201'
+        assert result['auto_fixes'] == fixes
+        assert result['execution_ms'] == 23.0
+        assert result['limit_applied'] == 200
+
+    def test_single_row_multiple_columns_is_tabular(self):
+        records = [{'name': 'Boeing', 'count': 5}]
+        header = ['name', 'count']
+        result = format_result(records, header, 'MATCH ...', [], 1.0, 200)
+        assert result['type'] == 'tabular'
+
+    def test_error_envelope_structure(self):
+        err = CypherError(
+            stage='security',
+            reason='write_operation',
+            found='CREATE',
+            explanation='Write not allowed.',
+            suggestion='Use MATCH instead.',
+        )
+        result = format_error('CREATE (n:Test)', err)
+        assert result['type'] == 'error'
+        assert result['query'] == 'CREATE (n:Test)'
+        assert result['error']['stage'] == 'security'
+        assert result['execution_ms'] == 0
