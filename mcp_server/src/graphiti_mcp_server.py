@@ -1562,6 +1562,24 @@ async def initialize_server() -> ServerConfig:
     queue_service = QueueService()
     await graphiti_service.initialize()
 
+    # Build domain profile from graph introspection
+    try:
+        profile_client = await graphiti_service.get_client()
+        ontology_client = graphiti_service.ontology_client
+        domain_profile = await build_domain_profile(
+            profile_client,
+            group_id=config.graphiti.group_id,
+            ontology_client=ontology_client,
+        )
+        register_dynamic_tools(domain_profile)
+        register_resources(domain_profile)
+    except Exception as e:
+        logger.warning(f'Failed to build domain profile, using static descriptions: {e}')
+        # Fall back: register tools with their docstrings as descriptions
+        for fn in (search, explore_node, search_ontology, explore_ontology):
+            if fn.__name__ not in mcp._tool_manager._tools:
+                mcp.add_tool(fn)
+
     # Set global client for backward compatibility
     graphiti_client = await graphiti_service.get_client()
     semaphore = graphiti_service.semaphore
