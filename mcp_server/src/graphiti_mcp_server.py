@@ -201,6 +201,7 @@ class GraphitiService:
         self.semaphore_limit = semaphore_limit
         self.semaphore = asyncio.Semaphore(semaphore_limit)
         self.client: Graphiti | None = None
+        self.ontology_client: Graphiti | None = None
         self.entity_types = None
 
     async def initialize(self) -> None:
@@ -316,6 +317,38 @@ class GraphitiService:
 
             # Build indices
             await self.client.build_indices_and_constraints()
+
+            # Initialize ontology client if configured
+            if self.config.graphiti.ontology_graph:
+                try:
+                    ontology_graph_name = self.config.graphiti.ontology_graph
+                    if self.config.database.provider.lower() == 'falkordb':
+                        from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+                        ontology_driver = FalkorDriver(
+                            host=db_config['host'],
+                            port=db_config['port'],
+                            username=db_config.get('username'),
+                            password=db_config['password'],
+                            database=ontology_graph_name,
+                        )
+
+                        self.ontology_client = Graphiti(
+                            graph_driver=ontology_driver,
+                            llm_client=None,
+                            embedder=embedder_client,
+                        )
+                    else:
+                        logger.warning(
+                            f'Ontology graph not supported for {self.config.database.provider} provider'
+                        )
+
+                    if self.ontology_client:
+                        await self.ontology_client.build_indices_and_constraints()
+                        logger.info(f'Ontology graph connected: {ontology_graph_name}')
+                except Exception as e:
+                    logger.warning(f'Failed to connect to ontology graph: {e}')
+                    self.ontology_client = None
 
             logger.info('Successfully initialized Graphiti client')
 

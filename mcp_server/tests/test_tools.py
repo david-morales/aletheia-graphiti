@@ -110,6 +110,7 @@ def make_mock_services(group_id: str = 'test-group'):
     mock_graphiti_service = AsyncMock()
     mock_graphiti_service.get_client = AsyncMock(return_value=mock_client)
     mock_graphiti_service.entity_types = None
+    mock_graphiti_service.ontology_client = None
 
     mock_queue_service = AsyncMock()
 
@@ -791,3 +792,17 @@ class TestOntologyConfig:
             ontology_graph='my_ontology',
         )
         assert app_config.ontology_graph == 'my_ontology'
+
+
+# ---------------------------------------------------------------------------
+# TestOntologyClientInit
+# ---------------------------------------------------------------------------
+
+class TestOntologyClientInit:
+    """Tests for ontology client initialization in make_mock_services."""
+
+    def test_make_mock_services_includes_ontology_client(self):
+        """Verify the mock services factory exposes ontology_client."""
+        svc, queue, cfg, client = make_mock_services()
+        # graphiti_service should have ontology_client attribute
+        assert hasattr(svc, 'ontology_client')
