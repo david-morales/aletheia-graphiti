@@ -1522,7 +1522,9 @@ async def run_cypher(query: str) -> dict[str, Any]:
         client = await graphiti_service.get_client()
         driver = client.driver
 
-        # Execute via GRAPH.RO_QUERY for read-only enforcement
+        # Access FalkorDB graph directly for ro_query (read-only enforcement).
+        # The public execute_query() uses graph.query() (read-write), so we
+        # must use the internal _get_graph/_database — same pattern as graphiti_core.
         graph = driver._get_graph(driver._database)
 
         start_time = time.time()
@@ -1542,19 +1544,15 @@ async def run_cypher(query: str) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
-        return {
-            'query': sanitized.query,
-            'type': 'error',
-            'error': {
-                'stage': 'execution',
-                'reason': 'query_failed',
-                'found': str(e),
-                'explanation': f'FalkorDB returned an error: {e}',
-                'suggestion': 'Check your Cypher syntax. Use get_schema to verify label and property names.',
-            },
-            'auto_fixes': sanitized.auto_fixes,
-            'execution_ms': 0,
-        }
+        result = format_error(sanitized.query, CypherError(
+            stage='execution',
+            reason='query_failed',
+            found=str(e),
+            explanation=f'FalkorDB returned an error: {e}',
+            suggestion='Check your Cypher syntax. Use get_schema to verify label and property names.',
+        ))
+        result['auto_fixes'] = sanitized.auto_fixes
+        return result
 
 
 def register_dynamic_tools(profile: DomainProfile) -> None:

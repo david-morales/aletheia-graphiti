@@ -678,6 +678,42 @@ class TestRunCypher:
         assert 'auto_fixes' in result
         assert len(result['auto_fixes']) >= 1  # At least date fix
 
+    @pytest.mark.asyncio
+    async def test_execution_error_returns_error_type(self):
+        from graphiti_mcp_server import run_cypher
+
+        mock_graph = AsyncMock()
+        mock_graph.ro_query = AsyncMock(side_effect=Exception("Unknown function 'foo'"))
+
+        mock_driver = MagicMock()
+        mock_driver._get_graph = MagicMock(return_value=mock_graph)
+        mock_driver._database = 'test_db'
+
+        mock_client = MagicMock()
+        mock_client.driver = mock_driver
+
+        mock_svc = AsyncMock()
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
+        mock_svc.config = MagicMock()
+        mock_svc.config.graphiti.group_id = 'test_graph'
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await run_cypher(query='MATCH (n) RETURN foo(n)')
+
+        assert result['type'] == 'error'
+        assert result['error']['stage'] == 'execution'
+        assert 'auto_fixes' in result
+
+    @pytest.mark.asyncio
+    async def test_service_not_ready_returns_error(self):
+        from graphiti_mcp_server import run_cypher
+
+        with patch('graphiti_mcp_server.graphiti_service', None):
+            result = await run_cypher(query='MATCH (n) RETURN n')
+
+        assert result['type'] == 'error'
+        assert result['error']['stage'] == 'initialization'
+
 
 # ---------------------------------------------------------------------------
 # get_schema tool tests
