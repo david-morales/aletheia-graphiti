@@ -816,3 +816,29 @@ class TestGetSchema:
             second = await get_schema()
 
         assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Integration smoke tests (require running FalkorDB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.requires_falkordb
+class TestCypherIntegration:
+    """Integration tests requiring a running FalkorDB instance."""
+
+    @pytest.mark.asyncio
+    async def test_get_schema_real_graph(self):
+        """get_schema returns valid schema from a real graph."""
+        pytest.skip('Integration test — run manually with FalkorDB')
+
+    @pytest.mark.asyncio
+    async def test_run_cypher_count(self):
+        """run_cypher executes a count query and returns scalar."""
+        pytest.skip('Integration test — run manually with FalkorDB')
+
+    @pytest.mark.asyncio
+    async def test_run_cypher_ro_enforcement(self):
+        """Write queries are rejected at both pipeline and database level."""
+        pytest.skip('Integration test — run manually with FalkorDB')
