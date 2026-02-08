@@ -62,13 +62,26 @@ class Versions(TypedDict):
 
 
 def edge(context: dict[str, Any]) -> list[Message]:
+    has_fact_types = bool(context.get('edge_types'))
     edge_types_section = ''
-    if context.get('edge_types'):
+    if has_fact_types:
         edge_types_section = f"""
 <FACT_TYPES>
 {to_prompt_json(context['edge_types'])}
 </FACT_TYPES>
 """
+
+    if has_fact_types:
+        relation_type_rules = (
+            '- The `relation_type` must be one of the `fact_type_name` values from FACT_TYPES.\n'
+            '- Choose the FACT_TYPE whose description and entity type signature best matches the relationship.\n'
+            '- Do NOT invent or derive new relation types — only use the provided FACT_TYPES.'
+        )
+    else:
+        relation_type_rules = (
+            '- Derive a `relation_type` from the relationship predicate in '
+            'SCREAMING_SNAKE_CASE (e.g., WORKS_AT, LIVES_IN, IS_FRIENDS_WITH).'
+        )
 
     return [
         Message(
@@ -121,8 +134,7 @@ You may use information from the PREVIOUS MESSAGES only to disambiguate referenc
 
 # RELATION TYPE RULES
 
-- If FACT_TYPES are provided and the relationship matches one of the types (considering the entity type signature), use that fact_type_name as the `relation_type`.
-- Otherwise, derive a `relation_type` from the relationship predicate in SCREAMING_SNAKE_CASE (e.g., WORKS_AT, LIVES_IN, IS_FRIENDS_WITH).
+{relation_type_rules}
 
 # DATETIME RULES
 
