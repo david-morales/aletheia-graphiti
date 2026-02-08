@@ -88,3 +88,39 @@ class CommunityBuildResponse(TypedDict):
     message: str
     community_count: int
     communities: list[CommunityResult]
+
+
+class SchemaNodeInfo(TypedDict):
+    count: int
+    properties: list[str]
+    sampled: bool
+
+
+class SchemaRelationshipInfo(TypedDict):
+    count: int
+    patterns: list[list[str]]
+
+
+class SchemaResponse(TypedDict):
+    type: str  # Always "schema"
+    graph_name: str
+    domain: str
+    node_labels: dict[str, SchemaNodeInfo]
+    relationship_types: dict[str, SchemaRelationshipInfo]
+
+
+class CypherResultResponse(TypedDict, total=False):
+    query: str
+    auto_fixes: list[str]
+    type: str  # "scalar", "tabular", "graph", "path", "error"
+    result: Any
+    columns: list[str]
+    rows: list[list[Any]]
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    steps: list[dict[str, Any]]
+    error: dict[str, str]
+    row_count: int
+    truncated: bool
+    limit_applied: int
+    execution_ms: float
