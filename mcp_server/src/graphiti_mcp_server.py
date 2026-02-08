@@ -171,6 +171,15 @@ Key tools:
 
 8. clear_graph / get_status — Graph management and health checks.
 
+9. search_ontology — Search the companion ontology graph for schema definitions,
+   entity types, properties, and relationships. Use this to understand what types
+   of entities and relationships exist in the knowledge graph.
+
+10. explore_ontology — Deep dive on a specific ontology class. Shows properties,
+    relationships, and parent classes for a given type.
+
+Note: Ontology tools (9-10) are only available when an ontology graph is configured.
+
 Tips:
 - Use group_ids to search across multiple graphs simultaneously.
 - Use center_node_uuid with reranker="node_distance" to find nearby entities.
@@ -1435,7 +1444,12 @@ async def initialize_server() -> ServerConfig:
     logger.info(f'  - Embedder: {config.embedder.provider} / {config.embedder.model}')
     logger.info(f'  - Database: {config.database.provider}')
     logger.info(f'  - Group ID: {config.graphiti.group_id}')
+    if config.graphiti.ontology_graph:
+        logger.info(f'  - Ontology graph: {config.graphiti.ontology_graph}')
     logger.info(f'  - Transport: {config.server.transport}')
+
+    # Set dynamic MCP server name based on group_id
+    mcp._mcp_server.name = f'Graphiti - {config.graphiti.group_id}'
 
     # Log graphiti-core version
     try:
