@@ -31,6 +31,61 @@ class DomainProfile:
     edge_types: dict[str, EdgeTypeInfo] = field(default_factory=dict)
     time_range: tuple[str, str] | None = None
 
+    def entity_type_names(self) -> list[str]:
+        return sorted(self.entity_types.keys())
+
+    def edge_type_names(self) -> list[str]:
+        return sorted(self.edge_types.keys())
+
+    def render_domain_summary(self) -> str:
+        lines = [f'# Knowledge Graph: {self.group_id}', '']
+
+        if not self.entity_types:
+            lines.append('This graph contains no entities yet.')
+            return '\n'.join(lines)
+
+        lines.append('## Entity Types')
+        for info in sorted(self.entity_types.values(), key=lambda x: -x.count):
+            desc = f' -- {info.description}' if info.description else ''
+            lines.append(f'- {info.label} ({info.count}){desc}')
+
+        lines.append('')
+        lines.append('## Relationship Types')
+        if self.edge_types:
+            for info in sorted(self.edge_types.values(), key=lambda x: -x.count):
+                desc = f' -- {info.description}' if info.description else ''
+                lines.append(f'- {info.name} ({info.count}){desc}')
+        else:
+            lines.append('No relationships found.')
+
+        if self.time_range:
+            lines.append('')
+            lines.append('## Time Range')
+            lines.append(f'Earliest: {self.time_range[0]}')
+            lines.append(f'Latest: {self.time_range[1]}')
+
+        return '\n'.join(lines)
+
+    def render_entity_catalog(self) -> str:
+        lines = [f'# Entity Catalog: {self.group_id}', '']
+        for info in sorted(self.entity_types.values(), key=lambda x: -x.count):
+            lines.append(f'## {info.label}')
+            if info.description:
+                lines.append(info.description)
+            lines.append(f'Count: {info.count}')
+            if info.sample_names:
+                lines.append(f'Examples: {", ".join(info.sample_names)}')
+            lines.append('')
+        return '\n'.join(lines)
+
+    def render_relationship_types(self) -> str:
+        lines = [f'# Relationship Types: {self.group_id}', '']
+        for info in sorted(self.edge_types.values(), key=lambda x: -x.count):
+            pattern = f' ({info.source_target_pattern})' if info.source_target_pattern else ''
+            desc = f' -- {info.description}' if info.description else ''
+            lines.append(f'- **{info.name}**{pattern}{desc} [{info.count} facts]')
+        return '\n'.join(lines)
+
 
 # Internal labels that should not appear as entity types
 _INTERNAL_LABELS = frozenset({'Entity', 'Episodic', 'Community'})

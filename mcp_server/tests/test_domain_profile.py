@@ -180,3 +180,59 @@ class TestOntologyEnrichment:
         profile = await build_domain_profile(mock_client, 'test', ontology_client=None)
 
         assert profile.entity_types['Aircraft'].description == ''
+
+
+class TestDomainProfileRendering:
+    def _make_profile(self):
+        return DomainProfile(
+            group_id='aviation_safety',
+            entity_types={
+                'Aircraft': EntityTypeInfo('Aircraft', 47, 'Aircraft with type and registration', ['PH-KZB', 'EC-MYC']),
+                'Occurrence': EntityTypeInfo('Occurrence', 23, 'Aviation safety occurrence', ['Runway excursion LEMD']),
+            },
+            edge_types={
+                'OPERATED_BY': EdgeTypeInfo('OPERATED_BY', 31, 'Links aircraft to airline', 'Aircraft -> Airline'),
+                'LOCATED_IN': EdgeTypeInfo('LOCATED_IN', 18, 'Links to country', 'Airport -> Country'),
+            },
+            time_range=('2019-03-10', '2024-11-22'),
+        )
+
+    def test_render_domain_summary(self):
+        profile = self._make_profile()
+        summary = profile.render_domain_summary()
+        assert 'aviation_safety' in summary
+        assert 'Aircraft' in summary
+        assert '47' in summary
+        assert 'OPERATED_BY' in summary
+        assert '2019-03-10' in summary
+
+    def test_render_entity_catalog(self):
+        profile = self._make_profile()
+        catalog = profile.render_entity_catalog()
+        assert '## Aircraft' in catalog
+        assert 'PH-KZB' in catalog
+        assert 'Aircraft with type and registration' in catalog
+
+    def test_render_relationship_types(self):
+        profile = self._make_profile()
+        rels = profile.render_relationship_types()
+        assert 'OPERATED_BY' in rels
+        assert 'Aircraft -> Airline' in rels
+
+    def test_render_domain_summary_empty_graph(self):
+        profile = DomainProfile(group_id='empty', entity_types={}, edge_types={}, time_range=None)
+        summary = profile.render_domain_summary()
+        assert 'empty' in summary
+        assert 'no entities' in summary.lower() or '0' in summary
+
+    def test_entity_type_names_list(self):
+        profile = self._make_profile()
+        names = profile.entity_type_names()
+        assert 'Aircraft' in names
+        assert 'Occurrence' in names
+
+    def test_edge_type_names_list(self):
+        profile = self._make_profile()
+        names = profile.edge_type_names()
+        assert 'OPERATED_BY' in names
+        assert 'LOCATED_IN' in names
