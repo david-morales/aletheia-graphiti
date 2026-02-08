@@ -10,7 +10,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from dotenv import load_dotenv
 from graphiti_core import Graphiti
@@ -59,6 +59,7 @@ from tool_descriptions import (
     build_explore_node_description,
     build_search_ontology_description,
     build_explore_ontology_description,
+    build_get_schema_description,
 )
 from models.response_types import (
     CommunityBuildResponse,
@@ -221,6 +222,8 @@ class GraphitiService:
         self.client: Graphiti | None = None
         self.ontology_client: Graphiti | None = None
         self.entity_types = None
+        self._schema_cache: dict | None = None
+        self._schema_dirty: bool = True
 
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
@@ -521,6 +524,9 @@ async def add_memory(
                 entity_types=graphiti_service.entity_types,
             )
 
+            # Invalidate schema cache after ingestion
+            graphiti_service._schema_dirty = True
+
             return SuccessResponse(
                 message=f"Bulk ingested {len(raw_episodes)} episodes into '{effective_group_id}': "
                         f"{len(results.nodes)} nodes, {len(results.edges)} edges created"
@@ -547,6 +553,9 @@ async def add_memory(
             entity_types=graphiti_service.entity_types,
             uuid=uuid or None,
         )
+
+        # Invalidate schema cache after ingestion
+        graphiti_service._schema_dirty = True
 
         return SuccessResponse(
             message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
@@ -1382,10 +1391,100 @@ async def health_check(request) -> JSONResponse:
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
+async def get_schema() -> dict[str, Any]:
+    """Retrieve the structural schema of the knowledge graph.
+
+    Returns node labels with property keys, relationship types with
+    source->target patterns, and counts. Results are cached until
+    new data is ingested via add_memory.
+    """
+    if graphiti_service is None:
+        return {'error': 'Service not initialized. Please wait for startup to complete.'}
+
+    try:
+        # Return cache if clean
+        if graphiti_service._schema_cache is not None and not graphiti_service._schema_dirty:
+            return graphiti_service._schema_cache
+
+        client = await graphiti_service.get_client()
+        driver = client.driver
+        group_id = graphiti_service.config.graphiti.group_id
+        internal_labels = {'Entity', 'Episodic', 'Community'}
+
+        # 1. Label counts (single-pass)
+        label_records, _, _ = await driver.execute_query(
+            'MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt'
+        )
+        label_counts: dict[str, int] = {}
+        for rec in label_records:
+            for label in rec.get('lbls', []):
+                if label not in internal_labels:
+                    label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
+
+        # 2. Properties per label (sample 50)
+        node_labels: dict[str, dict] = {}
+        for label in label_counts:
+            prop_records, _, _ = await driver.execute_query(
+                f'MATCH (n:{label}) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key'
+            )
+            props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
+            node_labels[label] = {
+                'count': label_counts[label],
+                'properties': sorted(props),
+                'sampled': True,
+            }
+
+        # 3. Relationship counts (single-pass)
+        rel_records, _, _ = await driver.execute_query(
+            'MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS cnt'
+        )
+        rel_counts: dict[str, int] = {}
+        for rec in rel_records:
+            rel_type = rec.get('rel_type', '')
+            if rel_type:
+                rel_counts[rel_type] = rec.get('cnt', 0)
+
+        # 4. Relationship patterns (source->target)
+        relationship_types: dict[str, dict] = {}
+        for rel_type in rel_counts:
+            pattern_records, _, _ = await driver.execute_query(
+                f'MATCH (s)-[r:{rel_type}]->(t) RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20'
+            )
+            patterns = []
+            for rec in pattern_records:
+                src = [l for l in rec.get('source_labels', []) if l not in internal_labels]
+                tgt = [l for l in rec.get('target_labels', []) if l not in internal_labels]
+                if src and tgt:
+                    patterns.append([src[0], tgt[0]])
+
+            relationship_types[rel_type] = {
+                'count': rel_counts[rel_type],
+                'patterns': patterns,
+            }
+
+        schema = {
+            'type': 'schema',
+            'graph_name': group_id,
+            'domain': group_id.replace('_', ' ').title(),
+            'node_labels': node_labels,
+            'relationship_types': relationship_types,
+        }
+
+        # Cache the result
+        graphiti_service._schema_cache = schema
+        graphiti_service._schema_dirty = False
+
+        return schema
+
+    except Exception as e:
+        logger.error(f'Error in get_schema: {e}')
+        return {'error': f'Failed to retrieve schema: {e}'}
+
+
 def register_dynamic_tools(profile: DomainProfile) -> None:
-    """Register the 4 main tools with dynamic descriptions from the DomainProfile."""
+    """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
-    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology'):
+    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'run_cypher'):
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
 
@@ -1393,6 +1492,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(explore_node, description=build_explore_node_description(profile))
     mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
     mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
+    mcp.add_tool(get_schema, description=build_get_schema_description(profile))
 
     # Update MCP instructions
     mcp._mcp_server.instructions = build_instructions(profile)

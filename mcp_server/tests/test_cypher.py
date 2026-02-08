@@ -3,6 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
@@ -592,3 +595,84 @@ class TestServerInstructions:
 
         instructions = build_instructions(_make_test_profile())
         assert 'count' in instructions.lower() or 'aggregat' in instructions.lower()
+
+
+# ---------------------------------------------------------------------------
+# get_schema tool tests
+# ---------------------------------------------------------------------------
+
+
+def make_mock_driver():
+    """Create a mock FalkorDB driver for schema queries."""
+    driver = AsyncMock()
+
+    async def execute_query(query, **kwargs):
+        if 'labels(n) AS lbls' in query:
+            return [
+                {'lbls': ['Entity', 'Occurrence'], 'cnt': 10},
+                {'lbls': ['Entity', 'Aircraft'], 'cnt': 15},
+                {'lbls': ['Episodic'], 'cnt': 100},  # Should be filtered
+            ], ['lbls', 'cnt'], None
+        elif 'type(r) AS rel_type' in query:
+            return [
+                {'rel_type': 'INVOLVED_AIRCRAFT', 'cnt': 12},
+                {'rel_type': 'RELATES_TO', 'cnt': 50},
+            ], ['rel_type', 'cnt'], None
+        elif 'keys(n)' in query:
+            return [{'key': 'name'}, {'key': 'date_value'}, {'key': 'id_value'}], ['key'], None
+        elif 'source_labels' in query:
+            return [
+                {'source_labels': ['Entity', 'Occurrence'], 'target_labels': ['Entity', 'Aircraft']},
+            ], ['source_labels', 'target_labels'], None
+        return [], [], None
+
+    driver.execute_query = execute_query
+    return driver
+
+
+class TestGetSchema:
+    """get_schema tool: structural schema discovery with caching."""
+
+    @pytest.mark.asyncio
+    async def test_schema_filters_entity_label(self):
+        """Schema response should NOT include the generic :Entity label."""
+        from graphiti_mcp_server import get_schema
+
+        mock_client = MagicMock()
+        mock_client.driver = make_mock_driver()
+
+        mock_svc = AsyncMock()
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
+        mock_svc._schema_cache = None
+        mock_svc._schema_dirty = True
+        mock_svc.config = MagicMock()
+        mock_svc.config.graphiti.group_id = 'test_graph'
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await get_schema()
+
+        assert 'Entity' not in result.get('node_labels', {})
+        assert 'Occurrence' in result.get('node_labels', {})
+        assert 'Aircraft' in result.get('node_labels', {})
+
+    @pytest.mark.asyncio
+    async def test_schema_filters_entity_from_patterns(self):
+        """Relationship patterns should NOT include :Entity in source/target labels."""
+        from graphiti_mcp_server import get_schema
+
+        mock_client = MagicMock()
+        mock_client.driver = make_mock_driver()
+
+        mock_svc = AsyncMock()
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
+        mock_svc._schema_cache = None
+        mock_svc._schema_dirty = True
+        mock_svc.config = MagicMock()
+        mock_svc.config.graphiti.group_id = 'test_graph'
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await get_schema()
+
+        for rel_info in result.get('relationship_types', {}).values():
+            for pattern in rel_info.get('patterns', []):
+                assert 'Entity' not in pattern
