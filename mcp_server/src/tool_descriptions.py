@@ -70,6 +70,20 @@ def build_instructions(profile: DomainProfile) -> str:
             parts.append(f'- Filter by edge_types with values like: {names}')
         parts.append('- Use valid_at for temporal queries (ISO date format, e.g. "2024-03-15")')
 
+    # Dual access pattern guidance
+    parts.append('')
+    parts.append('## Analytical Queries')
+    parts.append('')
+    parts.append('Two complementary tool families for this graph:')
+    parts.append('- **Semantic discovery** (search, explore_node): find entities, explore connections, community context')
+    parts.append('- **Analytical queries** (get_schema, run_cypher): counts, aggregations, path queries, comparisons, gap detection')
+    parts.append('')
+    parts.append('**When to use which:**')
+    parts.append('- Use search/explore_node when you need semantic similarity or entity discovery')
+    parts.append('- Use get_schema + run_cypher when you need counts, aggregations, comparisons, or gap detection')
+    parts.append('- Use search -> then run_cypher for chained workflows: discover entities semantically,')
+    parts.append('  then compute metrics with Cypher using WHERE ... IN [...] to bridge results')
+
     return '\n'.join(parts)
 
 
@@ -186,5 +200,140 @@ def build_explore_ontology_description(profile: DomainProfile) -> str:
         first = profile.entity_type_names()[0]
         parts.append(f'\nExample:')
         parts.append(f'  Call: explore_ontology(node_name="{first}")')
+
+    return '\n'.join(parts)
+
+
+def build_get_schema_description(profile: DomainProfile) -> str:
+    """Build the get_schema tool description from a DomainProfile."""
+    parts = [
+        f'Retrieve the structural schema of the {profile.group_id} graph.',
+        'Returns node labels with property keys, relationship types with',
+        'source->target patterns, and counts.',
+    ]
+
+    # Current graph contents summary
+    if profile.entity_types or profile.edge_types:
+        entity_parts = []
+        for info in sorted(profile.entity_types.values(), key=lambda x: -x.count):
+            entity_parts.append(f'{info.label} ({info.count})')
+        edge_parts = []
+        for info in sorted(profile.edge_types.values(), key=lambda x: -x.count):
+            edge_parts.append(f'{info.name} ({info.count})')
+
+        contents = []
+        if entity_parts:
+            contents.append(', '.join(entity_parts) + ' nodes')
+        if edge_parts:
+            contents.append(', '.join(edge_parts) + ' relationships')
+
+        if contents:
+            parts.append('')
+            parts.append(f'This graph contains: {" and ".join(contents)}.')
+
+    parts.append('')
+    parts.append(
+        'Call this tool before writing Cypher queries to learn property'
+    )
+    parts.append(
+        'names and relationship patterns. Results are cached -- only re-queries'
+    )
+    parts.append('after new data ingestion.')
+
+    return '\n'.join(parts)
+
+
+def _build_example_queries(profile: DomainProfile) -> list[str]:
+    """Build deterministic domain-specific example Cypher queries from templates."""
+    examples: list[str] = []
+    entity_names = profile.entity_type_names()
+    edge_names = profile.edge_type_names()
+
+    # Template 1: Count by relationship (needs 2+ entity types, 1+ edge type)
+    if len(entity_names) >= 2 and len(edge_names) >= 1:
+        edge = edge_names[0]
+        # Find the edge info to get source->target pattern
+        edge_info = profile.edge_types[edge]
+        pattern = edge_info.source_target_pattern
+        if pattern and '->' in pattern:
+            src_label, tgt_label = [s.strip() for s in pattern.split('->')]
+        else:
+            src_label, tgt_label = entity_names[0], entity_names[1]
+        examples.append(
+            f'MATCH (s:{src_label})-[:{edge}]->(t:{tgt_label}) '
+            f'RETURN t.name, count(s) AS cnt ORDER BY cnt DESC LIMIT 10'
+        )
+
+    # Template 2: Multi-occurrence aggregation (needs 1+ entity type, 1+ edge type)
+    if len(entity_names) >= 1 and len(edge_names) >= 1:
+        edge = edge_names[0]
+        edge_info = profile.edge_types[edge]
+        pattern = edge_info.source_target_pattern
+        if pattern and '->' in pattern:
+            src_label, tgt_label = [s.strip() for s in pattern.split('->')]
+        else:
+            src_label = entity_names[0]
+            tgt_label = entity_names[0]
+        examples.append(
+            f'MATCH (s:{src_label})-[:{edge}]->(t:{tgt_label}) '
+            f'WITH t, count(s) AS total WHERE total > 1 '
+            f'RETURN t.name, total ORDER BY total DESC'
+        )
+
+    # Template 3: WHERE...IN bridge for semantic-to-analytical
+    # (needs 1+ entity type with sample_names)
+    for name in entity_names:
+        info = profile.entity_types[name]
+        if info.sample_names:
+            sample = info.sample_names[0]
+            examples.append(
+                f'// Bridge: use entity names found via search\n'
+                f'MATCH (n:{name}) WHERE n.name IN ["{sample}"] '
+                f'RETURN n.name, labels(n)'
+            )
+            break
+
+    return examples
+
+
+def build_run_cypher_description(profile: DomainProfile) -> str:
+    """Build the run_cypher tool description from a DomainProfile."""
+    parts = [
+        f'Execute a read-only Cypher query against the {profile.group_id} graph.',
+        '',
+        'Use when:',
+        '- You need counts, aggregations, comparisons, or gap detection',
+        '- You need path queries or pattern matching beyond what search provides',
+        '- You want to compute metrics over the graph structure',
+        '',
+        'Do NOT use when:',
+        '- You need semantic similarity search -- use search instead',
+        '- You need to discover entities by natural language -- use search instead',
+        '',
+        'Guardrails: read-only (no CREATE/DELETE/SET), auto-limited to 200 rows,',
+        'LLM syntax auto-corrected (smart quotes, code blocks, missing RETURN).',
+    ]
+
+    # FalkorDB dialect cheatsheet
+    parts.append('')
+    parts.append('FalkorDB dialect notes:')
+    parts.append('- No APOC procedures -- use variable-length paths [*1..3] instead')
+    parts.append('- No pattern comprehensions -- use OPTIONAL MATCH + collect()')
+    parts.append('- No date() function -- compare date strings directly (e.g. > "2024-01-01")')
+    parts.append('- Use toLower()/toUpper() not lower()/upper()')
+
+    # Domain-specific examples
+    examples = _build_example_queries(profile)
+    if examples:
+        parts.append('')
+        parts.append('Example queries for this graph:')
+        for i, ex in enumerate(examples, 1):
+            parts.append(f'  {i}. {ex}')
+
+    # Chained workflow guidance
+    parts.append('')
+    parts.append('Chained workflow: use search to discover entities semantically,')
+    parts.append('then run_cypher with WHERE n.name IN [...] to compute analytical')
+    parts.append('metrics over the found entities.')
 
     return '\n'.join(parts)

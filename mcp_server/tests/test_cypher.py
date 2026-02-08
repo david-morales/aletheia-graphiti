@@ -2,6 +2,7 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
@@ -478,3 +479,116 @@ class TestResultFormatter:
         assert result['query'] == 'CREATE (n:Test)'
         assert result['error']['stage'] == 'security'
         assert result['execution_ms'] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tool description & server instruction tests
+# ---------------------------------------------------------------------------
+
+
+def _make_test_profile():
+    entity_types = {
+        'Occurrence': SimpleNamespace(
+            label='Occurrence', count=10, description='Aviation incident',
+            sample_names=['2024-0975-EU'],
+        ),
+        'Aircraft': SimpleNamespace(
+            label='Aircraft', count=15, description='Aircraft entity',
+            sample_names=['Boeing 737'],
+        ),
+        'Operator': SimpleNamespace(
+            label='Operator', count=8, description='Airline operator',
+            sample_names=['KLM'],
+        ),
+    }
+    edge_types = {
+        'INVOLVED_AIRCRAFT': SimpleNamespace(
+            name='INVOLVED_AIRCRAFT', count=12, description='',
+            source_target_pattern='Occurrence -> Aircraft',
+        ),
+        'OPERATED_BY': SimpleNamespace(
+            name='OPERATED_BY', count=10, description='',
+            source_target_pattern='Occurrence -> Operator',
+        ),
+    }
+
+    class FakeProfile:
+        def __init__(self):
+            self.group_id = 'aviation_safety_quality'
+            self.entity_types = entity_types
+            self.edge_types = edge_types
+            self.time_range = ('2024-01-01', '2024-12-31')
+
+        def entity_type_names(self):
+            return sorted(self.entity_types.keys())
+
+        def edge_type_names(self):
+            return sorted(self.edge_types.keys())
+
+    return FakeProfile()
+
+
+class TestToolDescriptions:
+    def test_get_schema_description_includes_graph_name(self):
+        from tool_descriptions import build_get_schema_description
+
+        desc = build_get_schema_description(_make_test_profile())
+        assert 'aviation_safety_quality' in desc
+
+    def test_get_schema_description_lists_entity_types(self):
+        from tool_descriptions import build_get_schema_description
+
+        desc = build_get_schema_description(_make_test_profile())
+        assert 'Occurrence' in desc
+        assert 'Aircraft' in desc
+
+    def test_run_cypher_description_includes_dialect_cheatsheet(self):
+        from tool_descriptions import build_run_cypher_description
+
+        desc = build_run_cypher_description(_make_test_profile())
+        assert 'FalkorDB' in desc
+        assert 'APOC' in desc
+
+    def test_run_cypher_description_includes_examples(self):
+        from tool_descriptions import build_run_cypher_description
+
+        desc = build_run_cypher_description(_make_test_profile())
+        assert 'Example' in desc or 'example' in desc
+        assert 'MATCH' in desc
+
+    def test_run_cypher_description_includes_chained_workflow(self):
+        from tool_descriptions import build_run_cypher_description
+
+        desc = build_run_cypher_description(_make_test_profile())
+        assert 'search' in desc.lower()
+
+    def test_run_cypher_description_includes_where_in_example(self):
+        from tool_descriptions import build_run_cypher_description
+
+        desc = build_run_cypher_description(_make_test_profile())
+        assert 'IN [' in desc or 'found via search' in desc.lower()
+
+
+class TestServerInstructions:
+    def test_instructions_mention_get_schema(self):
+        from tool_descriptions import build_instructions
+
+        assert 'get_schema' in build_instructions(_make_test_profile())
+
+    def test_instructions_mention_run_cypher(self):
+        from tool_descriptions import build_instructions
+
+        assert 'run_cypher' in build_instructions(_make_test_profile())
+
+    def test_instructions_mention_chained_workflow(self):
+        from tool_descriptions import build_instructions
+
+        instructions = build_instructions(_make_test_profile())
+        assert 'search' in instructions.lower()
+        assert 'cypher' in instructions.lower() or 'run_cypher' in instructions.lower()
+
+    def test_instructions_mention_semantic_vs_analytical(self):
+        from tool_descriptions import build_instructions
+
+        instructions = build_instructions(_make_test_profile())
+        assert 'count' in instructions.lower() or 'aggregat' in instructions.lower()
