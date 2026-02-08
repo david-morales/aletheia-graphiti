@@ -35,6 +35,7 @@ database:
 
 graphiti:
   group_id: "terrorist_orgs"
+  ontology_graph: "followthemoney"
   user_id: "claude_desktop"
   entity_types:
     - name: "Organization"

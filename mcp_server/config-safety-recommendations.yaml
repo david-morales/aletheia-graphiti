@@ -36,6 +36,7 @@ database:
 
 graphiti:
   group_id: "safety_recommendations"
+  ontology_graph: "safety_recommendations_ontology"
   user_id: "claude_desktop"
   entity_types:
     - name: "Occurrence"

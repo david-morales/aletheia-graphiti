@@ -36,6 +36,7 @@ database:
 
 graphiti:
   group_id: "airworthiness_directives"
+  ontology_graph: "airworthiness_directives_ontology"
   user_id: "claude_desktop"
   entity_types:
     - name: "AirworthinessDirective"
