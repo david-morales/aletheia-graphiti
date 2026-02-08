@@ -16,6 +16,7 @@ from graphiti_mcp_server import (
     add_memory,
     build_communities,
     explore_node,
+    explore_ontology,
     get_episode_context,
     resolve_search_config,
     search,
@@ -861,5 +862,77 @@ class TestSearchOntology:
     async def test_service_not_initialized(self):
         with patch('graphiti_mcp_server.graphiti_service', None):
             result = await search_ontology(query='test')
+        assert 'error' in result
+        assert 'not initialized' in result['error']
+
+
+# ---------------------------------------------------------------------------
+# TestExploreOntology
+# ---------------------------------------------------------------------------
+
+class TestExploreOntology:
+    """Tests for the explore_ontology tool function."""
+
+    @pytest.mark.asyncio
+    async def test_no_ontology_configured(self):
+        svc, queue, cfg, client = make_mock_services()
+        svc.ontology_client = None
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_ontology(node_name='Aircraft')
+
+        assert 'error' in result
+        assert 'No ontology graph configured' in result['error']
+
+    @pytest.mark.asyncio
+    async def test_neither_name_nor_uuid(self):
+        svc, queue, cfg, client = make_mock_services()
+        svc.ontology_client = AsyncMock()
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_ontology()
+
+        assert 'error' in result
+        assert 'node_name or node_uuid' in result['error']
+
+    @pytest.mark.asyncio
+    async def test_name_resolution_and_explore(self):
+        svc, queue, cfg, client = make_mock_services()
+        ontology_client = AsyncMock()
+        svc.ontology_client = ontology_client
+        cfg.graphiti.ontology_graph = 'test_ontology'
+
+        # First call: name resolution
+        resolved_node = make_mock_node(uuid='onto-uuid', name='Aircraft', labels=['OntologyClass'])
+        resolve_results = make_mock_search_results(nodes=[resolved_node])
+
+        # Second call: explore neighborhood
+        prop_node = make_mock_node(uuid='prop-uuid', name='registration', labels=['Attribute'])
+        rel_edge = make_mock_edge(uuid='rel-uuid', name='HAS_PROPERTY')
+        explore_results = make_mock_search_results(nodes=[prop_node], edges=[rel_edge])
+
+        ontology_client.search_ = AsyncMock(side_effect=[resolve_results, explore_results])
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_ontology(node_name='Aircraft')
+
+        assert 'error' not in result
+        assert result['center_node']['uuid'] == 'onto-uuid'
+        assert len(result['nodes']) == 1
+        assert len(result['edges']) == 1
+
+    @pytest.mark.asyncio
+    async def test_service_not_initialized(self):
+        with patch('graphiti_mcp_server.graphiti_service', None):
+            result = await explore_ontology(node_name='test')
         assert 'error' in result
         assert 'not initialized' in result['error']

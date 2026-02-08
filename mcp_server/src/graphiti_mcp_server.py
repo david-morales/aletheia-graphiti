@@ -1181,6 +1181,156 @@ async def search_ontology(
         return ErrorResponse(error=f'Ontology search error: {e}')
 
 
+@mcp.tool()
+async def explore_ontology(
+    node_name: str | None = None,
+    node_uuid: str | None = None,
+    depth: int = 2,
+    limit: int = 20,
+) -> ExploreResponse | ErrorResponse:
+    """Explore a specific class in the companion ontology graph.
+
+    Shows properties, relationships, and parent classes for a given ontology type.
+    Use this to understand the structure of a specific entity or relationship type.
+
+    Args:
+        node_name: Find the ontology class by name (e.g., "AirworthinessDirective"). Provide this or node_uuid.
+        node_uuid: Expand directly from this node UUID. Provide this or node_name.
+        depth: How many hops to traverse (1-4, default 2).
+        limit: Maximum results to return (default 20).
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    if graphiti_service.ontology_client is None:
+        return ErrorResponse(error='No ontology graph configured for this server')
+
+    if not node_name and not node_uuid:
+        return ErrorResponse(error='Provide either node_name or node_uuid')
+
+    try:
+        ontology_client = graphiti_service.ontology_client
+        ontology_group_id = config.graphiti.ontology_graph
+
+        # Resolve node UUID from name if needed
+        resolved_uuid = node_uuid
+        center_node_result = None
+
+        if node_name and not node_uuid:
+            resolve_results = await ontology_client.search_(
+                query=node_name,
+                config=NODE_HYBRID_SEARCH_RRF,
+                group_ids=[ontology_group_id],
+            )
+            if not resolve_results.nodes:
+                return ExploreResponse(
+                    message=f'No ontology class found matching "{node_name}"',
+                    center_node=None,
+                    nodes=[],
+                    edges=[],
+                    communities=[],
+                )
+            best_match = resolve_results.nodes[0]
+            resolved_uuid = best_match.uuid
+            center_node_result = {
+                'uuid': best_match.uuid,
+                'name': best_match.name,
+                'labels': best_match.labels or [],
+                'created_at': best_match.created_at.isoformat() if best_match.created_at else None,
+                'summary': best_match.summary,
+                'group_id': best_match.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (best_match.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+
+        # Build explore config
+        explore_config = SearchConfig(
+            edge_config=EdgeSearchConfig(
+                search_methods=[
+                    EdgeSearchMethod.bm25,
+                    EdgeSearchMethod.cosine_similarity,
+                    EdgeSearchMethod.bfs,
+                ],
+                reranker=EdgeReranker.node_distance,
+                bfs_max_depth=min(depth, 4),
+            ),
+            node_config=NodeSearchConfig(
+                search_methods=[
+                    NodeSearchMethod.bm25,
+                    NodeSearchMethod.cosine_similarity,
+                    NodeSearchMethod.bfs,
+                ],
+                reranker=NodeReranker.node_distance,
+                bfs_max_depth=min(depth, 4),
+            ),
+            limit=limit,
+        )
+
+        results = await ontology_client.search_(
+            query=node_name or '',
+            config=explore_config,
+            group_ids=[ontology_group_id],
+            center_node_uuid=resolved_uuid,
+            bfs_origin_node_uuids=[resolved_uuid] if resolved_uuid else None,
+        )
+
+        node_results = [
+            {
+                'uuid': n.uuid,
+                'name': n.name,
+                'labels': n.labels or [],
+                'created_at': n.created_at.isoformat() if n.created_at else None,
+                'summary': n.summary,
+                'group_id': n.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (n.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+            for n in (results.nodes or [])
+        ]
+
+        edge_results = [format_edge_result(e) for e in (results.edges or [])]
+        community_results = [format_community_result(c) for c in (results.communities or [])]
+
+        # If we only have a UUID, try to find center node in results
+        if node_uuid and not center_node_result:
+            for n in results.nodes or []:
+                if n.uuid == node_uuid:
+                    center_node_result = {
+                        'uuid': n.uuid,
+                        'name': n.name,
+                        'labels': n.labels or [],
+                        'created_at': n.created_at.isoformat() if n.created_at else None,
+                        'summary': n.summary,
+                        'group_id': n.group_id,
+                        'attributes': {
+                            k: v
+                            for k, v in (n.attributes or {}).items()
+                            if 'embedding' not in k.lower()
+                        },
+                    }
+                    break
+
+        return ExploreResponse(
+            message=f'Ontology: explored "{node_name or node_uuid}": {len(node_results)} nodes, {len(edge_results)} edges',
+            center_node=center_node_result,
+            nodes=node_results,
+            edges=edge_results,
+            communities=community_results,
+        )
+
+    except Exception as e:
+        logger.error(f'Error in explore_ontology: {e}')
+        return ErrorResponse(error=f'Ontology explore error: {e}')
+
+
 @mcp.custom_route('/health', methods=['GET'])
 async def health_check(request) -> JSONResponse:
     """Health check endpoint for Docker and load balancers."""
