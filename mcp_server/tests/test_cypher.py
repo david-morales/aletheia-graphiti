@@ -7,12 +7,15 @@ src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
 from utils.cypher import (
+    DEFAULT_LIMIT,
     CypherError,
     SanitizedQuery,
     _check_falkordb_dialect,
     _check_whitelist,
     _fix_falkordb_dialect,
     _fix_llm_syntax,
+    _inject_safety,
+    validate_and_sanitize,
 )
 
 
@@ -295,3 +298,90 @@ class TestStage3SecurityWhitelist:
     def test_keyword_in_property_not_matched(self):
         # n.description should not trigger on any keyword
         assert _check_whitelist('MATCH (n) RETURN n.description') is None
+
+
+class TestStage4SafetyInjection:
+    def test_inject_limit_when_missing(self):
+        query = 'MATCH (n) RETURN n'
+        fixed, fixes = _inject_safety(query)
+        assert f'LIMIT {DEFAULT_LIMIT + 1}' in fixed
+        assert any('LIMIT' in f for f in fixes)
+
+    def test_no_inject_when_limit_present(self):
+        query = 'MATCH (n) RETURN n LIMIT 50'
+        fixed, fixes = _inject_safety(query)
+        assert fixed == query
+        assert fixes == []
+
+    def test_no_inject_when_limit_present_lowercase(self):
+        query = 'MATCH (n) RETURN n limit 50'
+        fixed, fixes = _inject_safety(query)
+        assert fixed == query
+
+    def test_limit_appended_after_order_by(self):
+        query = 'MATCH (n) RETURN n ORDER BY n.name'
+        fixed, fixes = _inject_safety(query)
+        assert fixed.endswith(f'LIMIT {DEFAULT_LIMIT + 1}')
+        assert 'ORDER BY' in fixed
+
+    def test_limit_with_skip(self):
+        query = 'MATCH (n) RETURN n SKIP 10'
+        fixed, fixes = _inject_safety(query)
+        assert f'LIMIT {DEFAULT_LIMIT + 1}' in fixed
+
+    def test_call_query_no_limit(self):
+        query = 'CALL db.labels()'
+        fixed, fixes = _inject_safety(query)
+        assert 'LIMIT' not in fixed
+
+
+class TestPipelineOrchestration:
+    def test_clean_query_passes(self):
+        result = validate_and_sanitize('MATCH (n:Occurrence) RETURN n.name LIMIT 10')
+        assert isinstance(result, SanitizedQuery)
+        assert result.auto_fixes == []
+
+    def test_fixable_query_returns_fixes(self):
+        result = validate_and_sanitize(
+            "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o"
+        )
+        assert isinstance(result, SanitizedQuery)
+        assert any('date' in f.lower() for f in result.auto_fixes)
+
+    def test_write_query_rejected(self):
+        result = validate_and_sanitize('CREATE (n:Test {name: "test"})')
+        assert isinstance(result, CypherError)
+        assert result.stage == 'security'
+
+    def test_apoc_rejected_before_date_fix(self):
+        result = validate_and_sanitize(
+            "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"
+        )
+        assert isinstance(result, CypherError)
+        assert result.reason == 'apoc_unsupported'
+
+    def test_smart_quotes_fixed_then_dialect_fixed(self):
+        result = validate_and_sanitize(
+            'MATCH (o) WHERE o.name = \u201cBoeing\u201d AND o.date > date(\u20182024-01-01\u2019) RETURN o'
+        )
+        assert isinstance(result, SanitizedQuery)
+        assert len(result.auto_fixes) >= 2
+
+    def test_limit_injected_on_clean_query(self):
+        result = validate_and_sanitize('MATCH (n) RETURN n')
+        assert isinstance(result, SanitizedQuery)
+        assert 'LIMIT' in result.query
+        assert any('LIMIT' in f for f in result.auto_fixes)
+
+    def test_existing_limit_preserved(self):
+        result = validate_and_sanitize('MATCH (n) RETURN n LIMIT 50')
+        assert isinstance(result, SanitizedQuery)
+        assert 'LIMIT 50' in result.query
+        assert not any('LIMIT' in f for f in result.auto_fixes)
+
+    def test_code_block_plus_missing_return_plus_limit(self):
+        result = validate_and_sanitize('```cypher\nMATCH (n:Occurrence)\n```')
+        assert isinstance(result, SanitizedQuery)
+        assert 'RETURN' in result.query
+        assert 'LIMIT' in result.query
+        assert len(result.auto_fixes) >= 2

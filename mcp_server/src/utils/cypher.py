@@ -388,3 +388,68 @@ def _check_whitelist(query: str) -> CypherError | None:
             )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: Safety injection
+# ---------------------------------------------------------------------------
+
+DEFAULT_LIMIT = 200
+
+
+def _inject_safety(query: str, limit: int = DEFAULT_LIMIT) -> tuple[str, list[str]]:
+    """Stage 4: Inject safety measures.
+
+    - Appends LIMIT (N+1) if no LIMIT clause present (for truncation detection)
+    - CALL queries are exempt from LIMIT injection
+    """
+    fixes: list[str] = []
+    query_upper = query.upper().strip()
+
+    if query_upper.startswith('CALL '):
+        return query, fixes
+
+    if not re.search(r'\bLIMIT\b', query, re.IGNORECASE):
+        query = f'{query.rstrip().rstrip(";")} LIMIT {limit + 1}'
+        fixes.append(f'Injected LIMIT {limit}')
+
+    return query, fixes
+
+
+# ---------------------------------------------------------------------------
+# Pipeline orchestration
+# ---------------------------------------------------------------------------
+
+
+def validate_and_sanitize(query: str, limit: int = DEFAULT_LIMIT) -> SanitizedQuery | CypherError:
+    """Validate and sanitize a Cypher query through the four-stage pipeline.
+
+    Stages:
+        1. LLM syntax fixups (smart quotes, code blocks, RETURN injection)
+        2. FalkorDB dialect (reject unsupported features, then auto-fix)
+        3. Security whitelist (block write operations)
+        4. Safety injection (LIMIT)
+
+    Returns SanitizedQuery on success, CypherError on rejection.
+    """
+    # Stage 1: LLM fixups — always runs
+    query, fixes_1 = _fix_llm_syntax(query)
+
+    # Stage 2a: FalkorDB reject — fail fast
+    if err := _check_falkordb_dialect(query):
+        return err
+
+    # Stage 2b: FalkorDB auto-fix
+    query, fixes_2 = _fix_falkordb_dialect(query)
+
+    # Stage 3: Security whitelist
+    if err := _check_whitelist(query):
+        return err
+
+    # Stage 4: Safety injection
+    query, fixes_4 = _inject_safety(query, limit=limit)
+
+    return SanitizedQuery(
+        query=query,
+        auto_fixes=fixes_1 + fixes_2 + fixes_4,
+    )
