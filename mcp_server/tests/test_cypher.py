@@ -630,6 +630,20 @@ def make_mock_driver():
     return driver
 
 
+def _make_mock_schema_service():
+    """Create a mock GraphitiService wired to the mock driver for schema tests."""
+    mock_client = MagicMock()
+    mock_client.driver = make_mock_driver()
+
+    mock_svc = AsyncMock()
+    mock_svc.get_client = AsyncMock(return_value=mock_client)
+    mock_svc._schema_cache = None
+    mock_svc._schema_dirty = True
+    mock_svc.config = MagicMock()
+    mock_svc.config.graphiti.group_id = 'test_graph'
+    return mock_svc
+
+
 class TestGetSchema:
     """get_schema tool: structural schema discovery with caching."""
 
@@ -638,15 +652,7 @@ class TestGetSchema:
         """Schema response should NOT include the generic :Entity label."""
         from graphiti_mcp_server import get_schema
 
-        mock_client = MagicMock()
-        mock_client.driver = make_mock_driver()
-
-        mock_svc = AsyncMock()
-        mock_svc.get_client = AsyncMock(return_value=mock_client)
-        mock_svc._schema_cache = None
-        mock_svc._schema_dirty = True
-        mock_svc.config = MagicMock()
-        mock_svc.config.graphiti.group_id = 'test_graph'
+        mock_svc = _make_mock_schema_service()
 
         with patch('graphiti_mcp_server.graphiti_service', mock_svc):
             result = await get_schema()
@@ -660,15 +666,7 @@ class TestGetSchema:
         """Relationship patterns should NOT include :Entity in source/target labels."""
         from graphiti_mcp_server import get_schema
 
-        mock_client = MagicMock()
-        mock_client.driver = make_mock_driver()
-
-        mock_svc = AsyncMock()
-        mock_svc.get_client = AsyncMock(return_value=mock_client)
-        mock_svc._schema_cache = None
-        mock_svc._schema_dirty = True
-        mock_svc.config = MagicMock()
-        mock_svc.config.graphiti.group_id = 'test_graph'
+        mock_svc = _make_mock_schema_service()
 
         with patch('graphiti_mcp_server.graphiti_service', mock_svc):
             result = await get_schema()
@@ -676,3 +674,27 @@ class TestGetSchema:
         for rel_info in result.get('relationship_types', {}).values():
             for pattern in rel_info.get('patterns', []):
                 assert 'Entity' not in pattern
+
+    @pytest.mark.asyncio
+    async def test_schema_cache_returns_without_querying(self):
+        """Second call should return cached result without hitting the driver."""
+        from graphiti_mcp_server import get_schema
+
+        mock_svc = _make_mock_schema_service()
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            first = await get_schema()
+
+            # After the first call the service should have cached and cleared dirty
+            assert mock_svc._schema_dirty is False
+            assert mock_svc._schema_cache is not None
+
+            # Reset the mock so we can verify no new calls are made
+            mock_client = await mock_svc.get_client()
+            mock_client.driver.execute_query = AsyncMock(side_effect=AssertionError(
+                'Driver should not be called when cache is clean'
+            ))
+
+            second = await get_schema()
+
+        assert first == second

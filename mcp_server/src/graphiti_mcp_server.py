@@ -979,6 +979,7 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
         entity_edge = await EntityEdge.get_by_uuid(client.driver, uuid)
         # Delete the edge using its delete method
         await entity_edge.delete(client.driver)
+        graphiti_service._schema_dirty = True
         return SuccessResponse(message=f'Entity edge with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
@@ -1008,6 +1009,7 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
         episodic_node = await EpisodicNode.get_by_uuid(client.driver, uuid)
         # Delete the node using its delete method
         await episodic_node.delete(client.driver)
+        graphiti_service._schema_dirty = True
         return SuccessResponse(message=f'Episode with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
@@ -1118,6 +1120,8 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
 
         # Clear data for the specified group IDs
         await clear_data(client.driver, group_ids=effective_group_ids)
+
+        graphiti_service._schema_dirty = True
 
         return SuccessResponse(
             message=f'Graph data cleared successfully for group IDs: {", ".join(effective_group_ids)}'
@@ -1425,7 +1429,7 @@ async def get_schema() -> dict[str, Any]:
         node_labels: dict[str, dict] = {}
         for label in label_counts:
             prop_records, _, _ = await driver.execute_query(
-                f'MATCH (n:{label}) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key'
+                f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key'
             )
             props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
             node_labels[label] = {
@@ -1448,7 +1452,7 @@ async def get_schema() -> dict[str, Any]:
         relationship_types: dict[str, dict] = {}
         for rel_type in rel_counts:
             pattern_records, _, _ = await driver.execute_query(
-                f'MATCH (s)-[r:{rel_type}]->(t) RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20'
+                f'MATCH (s)-[r:`{rel_type}`]->(t) RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20'
             )
             patterns = []
             for rec in pattern_records:
