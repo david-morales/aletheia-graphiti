@@ -1110,6 +1110,77 @@ async def get_status() -> StatusResponse:
         )
 
 
+@mcp.tool()
+async def search_ontology(
+    query: str,
+    search_mode: str = 'combined',
+    reranker: str = 'rrf',
+    limit: int = 10,
+) -> SearchResponse | ErrorResponse:
+    """Search the companion ontology graph for schema definitions, entity types, and relationships.
+
+    Use this to understand what types of entities and relationships exist in the knowledge graph,
+    what properties they have, and how they relate to each other.
+
+    Args:
+        query: Natural language search query (e.g., "AirworthinessDirective", "what properties does Aircraft have").
+        search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
+        reranker: Reranking strategy — "rrf" (default), "mmr", or "cross_encoder".
+        limit: Maximum results to return (default 10).
+    """
+    global graphiti_service
+
+    if graphiti_service is None:
+        return ErrorResponse(error='Graphiti service not initialized')
+
+    if graphiti_service.ontology_client is None:
+        return ErrorResponse(error='No ontology graph configured for this server')
+
+    try:
+        search_config = resolve_search_config(search_mode, reranker, limit)
+
+        ontology_group_id = config.graphiti.ontology_graph
+
+        results = await graphiti_service.ontology_client.search_(
+            query=query,
+            config=search_config,
+            group_ids=[ontology_group_id],
+        )
+
+        node_results = [
+            {
+                'uuid': n.uuid,
+                'name': n.name,
+                'labels': n.labels or [],
+                'created_at': n.created_at.isoformat() if n.created_at else None,
+                'summary': n.summary,
+                'group_id': n.group_id,
+                'attributes': {
+                    k: v
+                    for k, v in (n.attributes or {}).items()
+                    if 'embedding' not in k.lower()
+                },
+            }
+            for n in (results.nodes or [])
+        ]
+
+        edge_results = [format_edge_result(e) for e in (results.edges or [])]
+        community_results = [format_community_result(c) for c in (results.communities or [])]
+
+        return SearchResponse(
+            message=f'Ontology: {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
+            nodes=node_results,
+            edges=edge_results,
+            communities=community_results,
+        )
+
+    except ValueError as e:
+        return ErrorResponse(error=str(e))
+    except Exception as e:
+        logger.error(f'Error in search_ontology: {e}')
+        return ErrorResponse(error=f'Ontology search error: {e}')
+
+
 @mcp.custom_route('/health', methods=['GET'])
 async def health_check(request) -> JSONResponse:
     """Health check endpoint for Docker and load balancers."""

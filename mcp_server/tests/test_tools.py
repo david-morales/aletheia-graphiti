@@ -19,6 +19,7 @@ from graphiti_mcp_server import (
     get_episode_context,
     resolve_search_config,
     search,
+    search_ontology,
 )
 
 
@@ -806,3 +807,59 @@ class TestOntologyClientInit:
         svc, queue, cfg, client = make_mock_services()
         # graphiti_service should have ontology_client attribute
         assert hasattr(svc, 'ontology_client')
+
+
+# ---------------------------------------------------------------------------
+# TestSearchOntology
+# ---------------------------------------------------------------------------
+
+class TestSearchOntology:
+    """Tests for the search_ontology tool function."""
+
+    @pytest.mark.asyncio
+    async def test_no_ontology_configured(self):
+        svc, queue, cfg, client = make_mock_services()
+        svc.ontology_client = None
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await search_ontology(query='AirworthinessDirective')
+
+        assert 'error' in result
+        assert 'No ontology graph configured' in result['error']
+
+    @pytest.mark.asyncio
+    async def test_basic_ontology_search(self):
+        svc, queue, cfg, client = make_mock_services()
+        ontology_client = AsyncMock()
+        svc.ontology_client = ontology_client
+
+        node = make_mock_node(uuid='onto-1', name='AirworthinessDirective', labels=['OntologyClass'])
+        ontology_client.search_ = AsyncMock(
+            return_value=make_mock_search_results(nodes=[node]),
+        )
+
+        cfg.graphiti.ontology_graph = 'ad_ontology'
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await search_ontology(query='AirworthinessDirective')
+
+        assert 'error' not in result
+        assert len(result['nodes']) == 1
+        assert result['nodes'][0]['name'] == 'AirworthinessDirective'
+
+        # Verify group_ids uses ontology_graph name
+        call_kwargs = ontology_client.search_.call_args.kwargs
+        assert call_kwargs['group_ids'] == ['ad_ontology']
+
+    @pytest.mark.asyncio
+    async def test_service_not_initialized(self):
+        with patch('graphiti_mcp_server.graphiti_service', None):
+            result = await search_ontology(query='test')
+        assert 'error' in result
+        assert 'not initialized' in result['error']
