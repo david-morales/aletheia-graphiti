@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -60,6 +61,7 @@ from tool_descriptions import (
     build_search_ontology_description,
     build_explore_ontology_description,
     build_get_schema_description,
+    build_run_cypher_description,
 )
 from models.response_types import (
     CommunityBuildResponse,
@@ -73,6 +75,13 @@ from models.response_types import (
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from services.queue_service import QueueService
+from utils.cypher import (
+    CypherError,
+    DEFAULT_LIMIT,
+    format_error,
+    format_result,
+    validate_and_sanitize,
+)
 from utils.formatting import format_community_result, format_edge_result
 
 # Load .env file from mcp_server directory
@@ -1485,6 +1494,69 @@ async def get_schema() -> dict[str, Any]:
         return {'error': f'Failed to retrieve schema: {e}'}
 
 
+async def run_cypher(query: str) -> dict[str, Any]:
+    """Execute a read-only Cypher query against the knowledge graph.
+
+    The query is validated and sanitized before execution.
+    Write operations are blocked. LIMIT 200 is auto-injected if missing.
+    Returns typed JSON (scalar, tabular, graph, path) with metadata.
+    """
+    if graphiti_service is None:
+        return format_error(query, CypherError(
+            stage='initialization',
+            reason='service_not_ready',
+            found='',
+            explanation='Service not initialized. Please wait for startup to complete.',
+            suggestion='Try again in a few seconds.',
+        ))
+
+    # Validate and sanitize
+    result = validate_and_sanitize(query)
+    if isinstance(result, CypherError):
+        return format_error(query, result)
+
+    sanitized = result
+    limit = DEFAULT_LIMIT
+
+    try:
+        client = await graphiti_service.get_client()
+        driver = client.driver
+
+        # Execute via GRAPH.RO_QUERY for read-only enforcement
+        graph = driver._get_graph(driver._database)
+
+        start_time = time.time()
+        query_result = await graph.ro_query(sanitized.query)
+        execution_ms = round((time.time() - start_time) * 1000, 1)
+
+        # Convert QueryResult to records + header
+        header = [h[1] for h in query_result.header] if query_result.header else []
+        records = []
+        for row in (query_result.result_set or []):
+            record = {}
+            for i, field_name in enumerate(header):
+                record[field_name] = row[i] if i < len(row) else None
+            records.append(record)
+
+        return format_result(records, header, sanitized.query, sanitized.auto_fixes, execution_ms, limit)
+
+    except Exception as e:
+        logger.error(f'Cypher execution error: {e}')
+        return {
+            'query': sanitized.query,
+            'type': 'error',
+            'error': {
+                'stage': 'execution',
+                'reason': 'query_failed',
+                'found': str(e),
+                'explanation': f'FalkorDB returned an error: {e}',
+                'suggestion': 'Check your Cypher syntax. Use get_schema to verify label and property names.',
+            },
+            'auto_fixes': sanitized.auto_fixes,
+            'execution_ms': 0,
+        }
+
+
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
@@ -1497,6 +1569,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
     mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
     mcp.add_tool(get_schema, description=build_get_schema_description(profile))
+    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile))
 
     # Update MCP instructions
     mcp._mcp_server.instructions = build_instructions(profile)

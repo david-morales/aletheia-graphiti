@@ -598,6 +598,88 @@ class TestServerInstructions:
 
 
 # ---------------------------------------------------------------------------
+# run_cypher tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunCypher:
+    """run_cypher tool: end-to-end Cypher execution."""
+
+    @pytest.mark.asyncio
+    async def test_simple_count_query(self):
+        from graphiti_mcp_server import run_cypher
+
+        # Mock the FalkorDB graph's ro_query
+        mock_graph = AsyncMock()
+        mock_query_result = MagicMock()
+        mock_query_result.header = [('string', 'cnt')]
+        mock_query_result.result_set = [[47]]
+        mock_graph.ro_query = AsyncMock(return_value=mock_query_result)
+
+        mock_driver = MagicMock()
+        mock_driver._get_graph = MagicMock(return_value=mock_graph)
+        mock_driver._database = 'test_db'
+
+        mock_client = MagicMock()
+        mock_client.driver = mock_driver
+
+        mock_svc = AsyncMock()
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
+        mock_svc.config = MagicMock()
+        mock_svc.config.graphiti.group_id = 'test_graph'
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await run_cypher(query='MATCH (n) RETURN count(n) AS cnt')
+
+        assert result['type'] == 'scalar'
+        assert result['result'] == 47
+
+    @pytest.mark.asyncio
+    async def test_write_query_rejected(self):
+        from graphiti_mcp_server import run_cypher
+
+        mock_svc = AsyncMock()
+        mock_svc.config = MagicMock()
+        mock_svc.config.graphiti.group_id = 'test_graph'
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await run_cypher(query='CREATE (n:Test {name: "test"})')
+
+        assert result['type'] == 'error'
+        assert result['error']['stage'] == 'security'
+
+    @pytest.mark.asyncio
+    async def test_auto_fixes_in_response(self):
+        from graphiti_mcp_server import run_cypher
+
+        mock_graph = AsyncMock()
+        mock_query_result = MagicMock()
+        mock_query_result.header = [('string', 'cnt')]
+        mock_query_result.result_set = [[10]]
+        mock_graph.ro_query = AsyncMock(return_value=mock_query_result)
+
+        mock_driver = MagicMock()
+        mock_driver._get_graph = MagicMock(return_value=mock_graph)
+        mock_driver._database = 'test_db'
+
+        mock_client = MagicMock()
+        mock_client.driver = mock_driver
+
+        mock_svc = AsyncMock()
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
+        mock_svc.config = MagicMock()
+        mock_svc.config.graphiti.group_id = 'test_graph'
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await run_cypher(
+                query="MATCH (o) WHERE o.date > date('2024-01-01') RETURN count(o) AS cnt"
+            )
+
+        assert 'auto_fixes' in result
+        assert len(result['auto_fixes']) >= 1  # At least date fix
+
+
+# ---------------------------------------------------------------------------
 # get_schema tool tests
 # ---------------------------------------------------------------------------
 
