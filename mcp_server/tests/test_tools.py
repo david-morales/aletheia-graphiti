@@ -936,3 +936,71 @@ class TestExploreOntology:
             result = await explore_ontology(node_name='test')
         assert 'error' in result
         assert 'not initialized' in result['error']
+
+
+# ---------------------------------------------------------------------------
+# TestSchemaConstraints
+# ---------------------------------------------------------------------------
+
+class TestSchemaConstraints:
+    """Verify that tightened schemas use Literal types."""
+
+    def test_search_mode_is_literal(self):
+        from graphiti_mcp_server import search
+        import inspect
+        sig = inspect.signature(search)
+        search_mode_annotation = sig.parameters['search_mode'].annotation
+        assert hasattr(search_mode_annotation, '__args__'), 'search_mode should be Literal type'
+        assert 'nodes' in search_mode_annotation.__args__
+        assert 'edges' in search_mode_annotation.__args__
+        assert 'communities' in search_mode_annotation.__args__
+        assert 'combined' in search_mode_annotation.__args__
+
+    def test_search_reranker_is_literal(self):
+        from graphiti_mcp_server import search
+        import inspect
+        sig = inspect.signature(search)
+        reranker_annotation = sig.parameters['reranker'].annotation
+        assert hasattr(reranker_annotation, '__args__'), 'reranker should be Literal type'
+        assert 'rrf' in reranker_annotation.__args__
+        assert 'mmr' in reranker_annotation.__args__
+        assert 'cross_encoder' in reranker_annotation.__args__
+        assert 'node_distance' in reranker_annotation.__args__
+        assert 'episode_mentions' in reranker_annotation.__args__
+
+    def test_add_memory_source_is_literal(self):
+        from graphiti_mcp_server import add_memory
+        import inspect
+        sig = inspect.signature(add_memory)
+        source_annotation = sig.parameters['source'].annotation
+        assert hasattr(source_annotation, '__args__'), 'source should be Literal type'
+        assert 'text' in source_annotation.__args__
+        assert 'json' in source_annotation.__args__
+        assert 'message' in source_annotation.__args__
+
+    def test_explore_node_depth_is_literal(self):
+        from graphiti_mcp_server import explore_node
+        import inspect
+        sig = inspect.signature(explore_node)
+        depth_annotation = sig.parameters['depth'].annotation
+        assert hasattr(depth_annotation, '__args__'), 'depth should be Literal type'
+        assert 1 in depth_annotation.__args__
+        assert 4 in depth_annotation.__args__
+
+    def test_search_ontology_search_mode_is_literal(self):
+        from graphiti_mcp_server import search_ontology
+        import inspect
+        sig = inspect.signature(search_ontology)
+        search_mode_annotation = sig.parameters['search_mode'].annotation
+        assert hasattr(search_mode_annotation, '__args__'), 'search_mode should be Literal type'
+
+    def test_search_ontology_reranker_is_literal(self):
+        from graphiti_mcp_server import search_ontology
+        import inspect
+        sig = inspect.signature(search_ontology)
+        reranker_annotation = sig.parameters['reranker'].annotation
+        assert hasattr(reranker_annotation, '__args__'), 'reranker should be Literal type'
+        # search_ontology only supports rrf, mmr, cross_encoder (no node_distance/episode_mentions)
+        assert 'rrf' in reranker_annotation.__args__
+        assert 'mmr' in reranker_annotation.__args__
+        assert 'cross_encoder' in reranker_annotation.__args__

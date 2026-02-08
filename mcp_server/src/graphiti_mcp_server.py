@@ -10,7 +10,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from graphiti_core import Graphiti
@@ -436,7 +436,7 @@ async def add_memory(
     name: str | None = None,
     episode_body: str | None = None,
     group_id: str | None = None,
-    source: str = 'text',
+    source: Literal['text', 'json', 'message'] = 'text',
     source_description: str = '',
     uuid: str | None = None,
     episodes: list[dict] | None = None,
@@ -549,8 +549,8 @@ async def add_memory(
 async def search(
     query: str,
     group_ids: list[str] | None = None,
-    search_mode: str = 'combined',
-    reranker: str = 'rrf',
+    search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
+    reranker: Literal['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'] = 'rrf',
     center_node_uuid: str | None = None,
     bfs_origin_node_uuids: list[str] | None = None,
     entity_types: list[str] | None = None,
@@ -674,7 +674,7 @@ async def explore_node(
     node_name: str | None = None,
     node_uuid: str | None = None,
     group_ids: list[str] | None = None,
-    depth: int = 2,
+    depth: Literal[1, 2, 3, 4] = 2,
     edge_types: list[str] | None = None,
     limit: int = 20,
 ) -> ExploreResponse | ErrorResponse:
@@ -1122,8 +1122,8 @@ async def get_status() -> StatusResponse:
 @mcp.tool()
 async def search_ontology(
     query: str,
-    search_mode: str = 'combined',
-    reranker: str = 'rrf',
+    search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
+    reranker: Literal['rrf', 'mmr', 'cross_encoder'] = 'rrf',
     limit: int = 10,
 ) -> SearchResponse | ErrorResponse:
     """Search the companion ontology graph for schema definitions, entity types, and relationships.
@@ -1194,7 +1194,7 @@ async def search_ontology(
 async def explore_ontology(
     node_name: str | None = None,
     node_uuid: str | None = None,
-    depth: int = 2,
+    depth: Literal[1, 2, 3, 4] = 2,
     limit: int = 20,
 ) -> ExploreResponse | ErrorResponse:
     """Explore a specific class in the companion ontology graph.
