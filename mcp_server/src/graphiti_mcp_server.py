@@ -443,6 +443,10 @@ async def add_memory(
 ) -> SuccessResponse | ErrorResponse:
     """Add information to the knowledge graph.
 
+    Use when:
+    - Ingesting new data (text documents, JSON records, or conversation messages)
+    - Bulk loading multiple documents at once
+
     For single episodes, provide name + episode_body (queued for async processing).
     For bulk ingestion, provide episodes list (processed synchronously, returns when done).
 
@@ -450,7 +454,7 @@ async def add_memory(
         name: Name of the episode (single mode).
         episode_body: Content to persist (single mode). When source='json', must be a JSON string.
         group_id: Graph partition ID. Uses default if omitted.
-        source: Source type — 'text' (default), 'json', or 'message'.
+        source: Source type -- 'text' (default), 'json', or 'message'.
         source_description: Description of the source.
         uuid: Optional UUID for the episode (single mode).
         episodes: List of episodes for bulk ingestion (bulk mode).
@@ -458,13 +462,12 @@ async def add_memory(
 
     Examples:
         # Single episode
-        add_memory(name="News", episode_body="Acme Corp announced a new product.", source="text")
+        add_memory(name="Report", episode_body="Aircraft PH-KZB experienced...", source="text")
 
         # Bulk ingestion
         add_memory(episodes=[
             {"name": "Doc 1", "content": "...", "source": "text", "source_description": "report"},
-            {"name": "Doc 2", "content": "...", "source": "json", "source_description": "data"},
-        ], group_id="my_graph")
+        ])
     """
     global graphiti_service, queue_service
 
@@ -838,7 +841,10 @@ async def get_episode_context(
 ) -> EpisodeContextResponse | ErrorResponse:
     """Get all entities and relationships extracted from specific episodes.
 
-    Returns the nodes and edges that were created when these episodes were ingested.
+    Use when:
+    - You want to see what nodes and edges were created from a specific document
+    - Inspecting extraction quality for a particular episode
+
     Pair with get_episodes to first list episodes, then inspect what was extracted.
 
     Args:
@@ -893,9 +899,12 @@ async def build_communities(
 ) -> CommunityBuildResponse | ErrorResponse:
     """Build communities by clustering entities in the knowledge graph.
 
-    Uses label propagation to detect communities of related entities, then
-    generates summaries for each community. Communities must be built before
-    they can be searched with search(search_mode="communities").
+    Use when:
+    - You want to search with search_mode="communities" (must be built first)
+    - You want high-level summaries of entity clusters
+
+    Do NOT use when:
+    - Communities have already been built for these group_ids
 
     Args:
         group_ids: Which graph partitions to cluster.
@@ -933,10 +942,14 @@ async def build_communities(
 
 @mcp.tool()
 async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
-    """Delete an entity edge from the graph memory.
+    """Delete a relationship (edge) from the knowledge graph.
+
+    Use when:
+    - A specific fact or relationship needs to be removed
+    - Correcting incorrect information in the graph
 
     Args:
-        uuid: UUID of the entity edge to delete
+        uuid: UUID of the edge to delete.
     """
     global graphiti_service
 
@@ -959,10 +972,13 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
 
 @mcp.tool()
 async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
-    """Delete an episode from the graph memory.
+    """Delete an episode and its extracted data from the knowledge graph.
+
+    Use when:
+    - An ingested document should be removed along with its extracted entities and relationships
 
     Args:
-        uuid: UUID of the episode to delete
+        uuid: UUID of the episode to delete.
     """
     global graphiti_service
 
@@ -988,11 +1004,15 @@ async def get_episodes(
     group_ids: list[str] | None = None,
     max_episodes: int = 10,
 ) -> EpisodeSearchResponse | ErrorResponse:
-    """Get episodes from the graph memory.
+    """List recent episodes (ingested documents) from the knowledge graph.
+
+    Use when:
+    - You want to see what data has been ingested
+    - You need episode UUIDs for get_episode_context
 
     Args:
-        group_ids: Optional list of group IDs to filter results
-        max_episodes: Maximum number of episodes to return (default: 10)
+        group_ids: Optional list of group IDs to filter results.
+        max_episodes: Maximum number of episodes to return (default: 10).
     """
     global graphiti_service
 
@@ -1053,10 +1073,16 @@ async def get_episodes(
 
 @mcp.tool()
 async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | ErrorResponse:
-    """Clear all data from the graph for specified group IDs.
+    """Delete all data from the knowledge graph for specified group IDs.
+
+    Use when:
+    - You need to completely reset a knowledge graph partition
+    - Starting fresh with new data
+
+    WARNING: This is destructive and cannot be undone.
 
     Args:
-        group_ids: Optional list of group IDs to clear. If not provided, clears the default group.
+        group_ids: Group IDs to clear. If not provided, clears the default group.
     """
     global graphiti_service
 
@@ -1088,7 +1114,12 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
 
 @mcp.tool()
 async def get_status() -> StatusResponse:
-    """Get the status of the Graphiti MCP server and database connection."""
+    """Check if the MCP server and database connection are healthy.
+
+    Use when:
+    - Verifying the server is running and database is reachable
+    - Troubleshooting connection issues
+    """
     global graphiti_service
 
     if graphiti_service is None:
