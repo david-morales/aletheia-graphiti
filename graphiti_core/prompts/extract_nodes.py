@@ -98,8 +98,7 @@ reference entities. Only extract distinct entities from the CURRENT MESSAGE. Don
    - Do NOT extract dates, times, or other temporal information—these will be handled separately.
 
 5. **Formatting**:
-   - Entity names should identify the specific entity referenced, not describe its surrounding context.
-   - Use the entity type definition and its properties to determine the proper name — strip contextual descriptions or qualifiers that are not part of the entity itself.
+   - Be **explicit and unambiguous** in naming entities (e.g., use full names when available).
 
 {context['custom_extraction_instructions']}
 """
@@ -165,9 +164,7 @@ Guidelines:
 1. Extract significant entities, concepts, or actors mentioned in the conversation.
 2. Avoid creating nodes for relationships or actions.
 3. Avoid creating nodes for temporal information like dates, times or years (these will be added to edges later).
-4. Entity names should identify the specific entity referenced, not describe its surrounding context.
-   Use the entity type definition and its properties to determine the proper name — strip contextual
-   descriptions or qualifiers that are not part of the entity itself.
+4. Be as explicit as possible in your node names, using full names and avoiding abbreviations.
 """
     return [
         Message(role='system', content=sys_prompt),
