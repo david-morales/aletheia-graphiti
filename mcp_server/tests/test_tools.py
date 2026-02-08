@@ -769,3 +769,25 @@ class TestAddMemory:
         assert 'error' not in result
         call_kwargs = queue.add_episode.call_args.kwargs
         assert call_kwargs['group_id'] == 'config-default'
+
+
+# ---------------------------------------------------------------------------
+# TestOntologyConfig
+# ---------------------------------------------------------------------------
+
+class TestOntologyConfig:
+    """Tests for ontology_graph configuration field."""
+
+    def test_ontology_graph_defaults_to_none(self):
+        from config.schema import GraphitiAppConfig
+        app_config = GraphitiAppConfig(group_id='test', user_id='test')
+        assert app_config.ontology_graph is None
+
+    def test_ontology_graph_can_be_set(self):
+        from config.schema import GraphitiAppConfig
+        app_config = GraphitiAppConfig(
+            group_id='test',
+            user_id='test',
+            ontology_graph='my_ontology',
+        )
+        assert app_config.ontology_graph == 'my_ontology'

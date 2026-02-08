@@ -220,6 +220,10 @@ class GraphitiAppConfig(BaseModel):
     episode_id_prefix: str | None = Field(default='', description='Episode ID prefix')
     user_id: str = Field(default='mcp_user', description='User ID')
     entity_types: list[EntityTypeConfig] = Field(default_factory=list)
+    ontology_graph: str | None = Field(
+        default=None,
+        description='Companion ontology graph for schema context',
+    )
 
     def model_post_init(self, __context) -> None:
         """Convert None to empty string for episode_id_prefix."""
