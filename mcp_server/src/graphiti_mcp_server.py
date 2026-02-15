@@ -75,6 +75,7 @@ from models.response_types import (
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from services.queue_service import QueueService
+from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
     CypherError,
     DEFAULT_LIMIT,
@@ -1555,10 +1556,33 @@ async def run_cypher(query: str) -> dict[str, Any]:
         return result
 
 
+async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
+    """Profile entity properties and relationship patterns in this knowledge graph.
+
+    Returns property coverage, sample values, detected languages, relationship
+    cardinality, and sample traversal paths. Use this to understand data quality,
+    multilingual content, and graph structure before querying.
+
+    Results are cached until new data is ingested via add_memory.
+
+    Args:
+        sample_size: Number of sample values per property (default 5).
+    """
+    if graphiti_service is None:
+        return {'error': 'Service not initialized. Please wait for startup to complete.'}
+
+    try:
+        client = await graphiti_service.get_client()
+        return await _run_profile_graph(client.driver, sample_size=sample_size)
+    except Exception as e:
+        logger.error(f'Error in profile_graph: {e}')
+        return {'error': f'Failed to profile graph: {e}'}
+
+
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
-    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'run_cypher'):
+    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'run_cypher', 'profile_graph'):
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
 
@@ -1568,6 +1592,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
     mcp.add_tool(get_schema, description=build_get_schema_description(profile))
     mcp.add_tool(run_cypher, description=build_run_cypher_description(profile))
+    mcp.add_tool(profile_graph)
 
     # Update MCP instructions
     mcp._mcp_server.instructions = build_instructions(profile)
