@@ -9,6 +9,7 @@ import pytest
 from graph_profiler import (
     _build_language_summary,
     _detect_languages_heuristic,
+    _enrich_value_stats,
     _extract_property_profiles,
     _node_to_dict,
     _profile_entities,
@@ -157,6 +158,100 @@ class TestProfileEntities:
 
         profiles = await _profile_entities(driver, sample_size=5)
         assert profiles == {}
+
+    @pytest.mark.asyncio
+    async def test_enriches_with_distinct_counts(self):
+        """Verify _enrich_value_stats adds distinct_count and replaces coverage with exact value."""
+        property_profiles = {
+            'ataChapter': {
+                'coverage': 0.8,  # sample-based (will be replaced)
+                'sample_values': ['28', '32', '72'],
+            },
+            'name': {
+                'coverage': 1.0,
+                'sample_values': ['Incident A', 'Incident B'],
+            },
+        }
+        driver = _make_driver({
+            'COUNT(DISTINCT n.`ataChapter`)': [
+                {'distinct_count': 5, 'non_null_count': 8},
+            ],
+            'COUNT(DISTINCT n.`name`)': [
+                {'distinct_count': 10, 'non_null_count': 10},
+            ],
+            # top-N queries (ataChapter is categorical: 5 < 20)
+            'n.`ataChapter` AS val, COUNT(*)': [
+                {'val': '28', 'freq': 3},
+                {'val': '32', 'freq': 3},
+                {'val': '72', 'freq': 2},
+            ],
+            # name: 10 distinct / 10 total = 1.0 >= 0.1 AND 10 < 20 → categorical
+            'n.`name` AS val, COUNT(*)': [
+                {'val': 'Incident A', 'freq': 1},
+                {'val': 'Incident B', 'freq': 1},
+            ],
+        })
+
+        await _enrich_value_stats(driver, 'Occurrence', 10, property_profiles)
+
+        # distinct_count should be set
+        assert property_profiles['ataChapter']['distinct_count'] == 5
+        assert property_profiles['name']['distinct_count'] == 10
+
+        # coverage should be exact (non_null_count / total_count)
+        assert property_profiles['ataChapter']['coverage'] == 0.8  # 8/10
+        assert property_profiles['name']['coverage'] == 1.0  # 10/10
+
+    @pytest.mark.asyncio
+    async def test_enriches_categorical_with_top_values(self):
+        """For a property with distinct_count < 20, top_values should be populated."""
+        property_profiles = {
+            'severity': {
+                'coverage': 0.9,
+                'sample_values': ['High', 'Medium'],
+            },
+        }
+        driver = _make_driver({
+            'COUNT(DISTINCT n.`severity`)': [
+                {'distinct_count': 3, 'non_null_count': 9},
+            ],
+            'n.`severity` AS val, COUNT(*)': [
+                {'val': 'High', 'freq': 5},
+                {'val': 'Medium', 'freq': 3},
+                {'val': 'Low', 'freq': 1},
+            ],
+        })
+
+        await _enrich_value_stats(driver, 'Occurrence', 10, property_profiles)
+
+        assert property_profiles['severity']['distinct_count'] == 3
+        assert 'top_values' in property_profiles['severity']
+        top = property_profiles['severity']['top_values']
+        assert len(top) == 3
+        assert top[0] == {'value': 'High', 'count': 5}
+        assert top[1] == {'value': 'Medium', 'count': 3}
+        assert top[2] == {'value': 'Low', 'count': 1}
+
+    @pytest.mark.asyncio
+    async def test_no_top_values_for_high_cardinality(self):
+        """For a property with distinct_count >= 20 AND ratio >= 0.1, no top_values."""
+        property_profiles = {
+            'description': {
+                'coverage': 1.0,
+                'sample_values': ['Some long text'],
+            },
+        }
+        driver = _make_driver({
+            'COUNT(DISTINCT n.`description`)': [
+                {'distinct_count': 50, 'non_null_count': 50},
+            ],
+        })
+
+        await _enrich_value_stats(driver, 'Occurrence', 50, property_profiles)
+
+        assert property_profiles['description']['distinct_count'] == 50
+        # 50 >= 20 AND 50/50 = 1.0 >= 0.1 → NOT categorical
+        assert 'top_values' not in property_profiles['description']
 
 
 # ---------------------------------------------------------------------------

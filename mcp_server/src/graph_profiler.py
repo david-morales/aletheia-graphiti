@@ -78,6 +78,9 @@ async def _profile_entities(
         # Extract property profiles from samples
         property_profiles = _extract_property_profiles(sample_records, sample_size)
 
+        # Enrich with full-scan value statistics
+        await _enrich_value_stats(driver, label, count, property_profiles)
+
         profiles[label] = {
             'count': count,
             'properties': property_profiles,
@@ -149,6 +152,73 @@ def _extract_property_profiles(
         profiles[prop] = profile
 
     return profiles
+
+
+async def _enrich_value_stats(
+    driver: Any,
+    label: str,
+    total_count: int,
+    property_profiles: dict[str, Any],
+    top_n: int = 10,
+) -> None:
+    """Enrich property profiles with full-scan value statistics.
+
+    For each property, runs exact distinct count and non-null count queries,
+    replaces sample-based coverage with exact coverage, and populates top-N
+    frequent values for categorical properties.
+
+    Categorical heuristic: distinct_count < 20 OR distinct_count / total_count < 0.1.
+
+    Args:
+        driver: Graphiti database driver.
+        label: Entity label to scan.
+        total_count: Total number of nodes with this label.
+        property_profiles: Mutable dict of property profiles to enrich in-place.
+        top_n: Number of top frequent values to retrieve (default 10).
+    """
+    if total_count == 0:
+        return
+
+    for prop_name, profile in property_profiles.items():
+        # 1. Get distinct count and exact non-null count
+        try:
+            records, _, _ = await driver.execute_query(
+                f'MATCH (n:`{label}`) WHERE n.`{prop_name}` IS NOT NULL '
+                f'RETURN COUNT(DISTINCT n.`{prop_name}`) AS distinct_count, '
+                f'COUNT(n) AS non_null_count'
+            )
+            if not records:
+                continue
+
+            distinct_count = records[0].get('distinct_count', 0)
+            non_null_count = records[0].get('non_null_count', 0)
+        except Exception:
+            logger.debug('Failed to get distinct counts for %s.%s', label, prop_name)
+            continue
+
+        # 2. Store distinct_count
+        profile['distinct_count'] = distinct_count
+
+        # 3. Replace sample-based coverage with exact coverage
+        profile['coverage'] = round(non_null_count / total_count, 2)
+
+        # 4. Categorical heuristic: distinct_count < 20 OR ratio < 0.1
+        ratio = distinct_count / total_count if total_count > 0 else 0.0
+        is_categorical = distinct_count < 20 or ratio < 0.1
+
+        if is_categorical:
+            try:
+                top_records, _, _ = await driver.execute_query(
+                    f'MATCH (n:`{label}`) WHERE n.`{prop_name}` IS NOT NULL '
+                    f'RETURN n.`{prop_name}` AS val, COUNT(*) AS freq '
+                    f'ORDER BY freq DESC LIMIT {top_n}'
+                )
+                profile['top_values'] = [
+                    {'value': str(rec.get('val', ''))[:200], 'count': rec.get('freq', 0)}
+                    for rec in top_records
+                ]
+            except Exception:
+                logger.debug('Failed to get top values for %s.%s', label, prop_name)
 
 
 async def _profile_relationships(
