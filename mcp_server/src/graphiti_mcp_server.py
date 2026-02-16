@@ -1495,6 +1495,67 @@ async def get_schema() -> dict[str, Any]:
         return {'error': f'Failed to retrieve schema: {e}'}
 
 
+async def get_ontology_structure() -> dict[str, Any]:
+    """Return the full ontology class hierarchy in one call.
+
+    Returns entity classes (with inheritance, alt_labels, descriptions)
+    and relationship classes (with source/target constraints).
+    """
+    if graphiti_service is None:
+        return {'error': 'Service not initialized. Please wait for startup to complete.'}
+
+    if graphiti_service.ontology_client is None:
+        return {'error': 'No ontology graph configured for this connector.'}
+
+    try:
+        ontology_client = graphiti_service.ontology_client
+        driver = ontology_client.driver
+        ontology_graph_name = graphiti_service.config.graphiti.ontology_graph or ''
+
+        # Query 1: all ontology classes
+        class_records, _, _ = await driver.execute_query(
+            'MATCH (n:OntologyClass) '
+            'RETURN n.name AS name, '
+            'n.ontology_type AS ontology_type, '
+            'n.inherits_from AS inherits_from, '
+            'n.summary AS summary, '
+            'n.alt_labels AS alt_labels, '
+            'n.source_entity AS source_entity, '
+            'n.target_entity AS target_entity, '
+            'n.examples AS examples'
+        )
+
+        entity_classes = []
+        relationship_classes = []
+        for rec in class_records:
+            ontology_type = rec.get('ontology_type', '')
+            entry = {
+                'name': rec.get('name', ''),
+                'ontology_type': ontology_type,
+                'summary': rec.get('summary', ''),
+                'alt_labels': rec.get('alt_labels', ''),
+                'inherits_from': rec.get('inherits_from', ''),
+                'examples': rec.get('examples', ''),
+            }
+            if ontology_type == 'relationship_class':
+                entry['source_entity'] = rec.get('source_entity', '')
+                entry['target_entity'] = rec.get('target_entity', '')
+                relationship_classes.append(entry)
+            else:
+                # class, abstract_class, or any other entity-level type
+                entity_classes.append(entry)
+
+        return {
+            'ontology_graph': ontology_graph_name,
+            'entity_classes': entity_classes,
+            'relationship_classes': relationship_classes,
+        }
+
+    except Exception as e:
+        logger.error(f'Error in get_ontology_structure: {e}')
+        return {'error': f'Failed to retrieve ontology structure: {e}'}
+
+
 async def run_cypher(query: str) -> dict[str, Any]:
     """Execute a read-only Cypher query against the knowledge graph.
 
@@ -1582,7 +1643,7 @@ async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
-    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'run_cypher', 'profile_graph'):
+    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'get_ontology_structure', 'run_cypher', 'profile_graph'):
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
 
@@ -1591,6 +1652,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
     mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
     mcp.add_tool(get_schema, description=build_get_schema_description(profile))
+    mcp.add_tool(get_ontology_structure)
     mcp.add_tool(run_cypher, description=build_run_cypher_description(profile))
     mcp.add_tool(profile_graph)
 
