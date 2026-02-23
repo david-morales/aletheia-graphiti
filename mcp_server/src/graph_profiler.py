@@ -36,7 +36,8 @@ async def profile_graph(
     """
     entity_profiles = await _profile_entities(driver, sample_size)
     relationship_profiles = await _profile_relationships(driver, sample_size)
-    language_summary = _build_language_summary(entity_profiles)
+    episodic_languages = await _sample_episodic_languages(driver)
+    language_summary = _build_language_summary(entity_profiles, episodic_languages)
 
     return {
         'entity_profiles': entity_profiles,
@@ -285,10 +286,51 @@ async def _profile_relationships(
     return profiles
 
 
+async def _sample_episodic_languages(
+    driver: Any,
+    sample_limit: int = 20,
+) -> list[str]:
+    """Sample Episodic node content for language detection.
+
+    Entity nodes contain Graphiti-extracted text (typically English).
+    Episodic nodes preserve the original source text which may be in
+    other languages. Sampling both gives accurate language coverage.
+
+    Args:
+        driver: Graphiti database driver.
+        sample_limit: Max number of Episodic nodes to sample.
+
+    Returns:
+        Sorted list of detected language codes (e.g. ['es', 'fr']).
+    """
+    try:
+        records, _, _ = await driver.execute_query(
+            f'MATCH (e:Episodic) RETURN LEFT(e.content, 500) AS content '
+            f'LIMIT {sample_limit}'
+        )
+    except Exception:
+        logger.debug('Failed to sample Episodic nodes for language detection')
+        return []
+
+    if not records:
+        return []
+
+    texts = [
+        rec.get('content', '')
+        for rec in records
+        if rec.get('content') and len(rec.get('content', '')) > 20
+    ]
+    if not texts:
+        return []
+
+    return _detect_languages(texts)
+
+
 def _build_language_summary(
     entity_profiles: dict[str, Any],
+    episodic_languages: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a language summary across all entity profiles."""
+    """Build a language summary across entity profiles and episodic content."""
     all_languages: dict[str, int] = {}  # lang -> count of properties with that lang
     multilingual_fields: list[str] = []
 
@@ -299,6 +341,11 @@ def _build_language_summary(
                 multilingual_fields.append(f'{label}.{prop_name}')
             for lang in langs:
                 all_languages[lang] = all_languages.get(lang, 0) + 1
+
+    # Merge episodic languages
+    if episodic_languages:
+        for lang in episodic_languages:
+            all_languages[lang] = all_languages.get(lang, 0) + 1
 
     # Sort by frequency
     primary_languages = sorted(all_languages.keys(), key=lambda l: -all_languages[l])

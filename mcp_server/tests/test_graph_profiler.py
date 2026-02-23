@@ -401,6 +401,72 @@ class TestNodeToDict:
 # ---------------------------------------------------------------------------
 
 
+class TestSampleEpisodicLanguages:
+    """Tests for episodic content language detection."""
+
+    @pytest.mark.asyncio
+    async def test_detects_french_in_episodic_content(self):
+        """Episodic nodes with French content should contribute to language detection."""
+        from graph_profiler import _sample_episodic_languages
+
+        driver = _make_driver({
+            'MATCH (e:Episodic)': [
+                {'content': "L'avion a atterri pour une urgence dans l'aéroport de Toulouse"},
+                {'content': "Le pilote a signalé une défaillance du moteur avec des dommages"},
+            ],
+        })
+        langs = await _sample_episodic_languages(driver)
+        assert 'fr' in langs
+
+    @pytest.mark.asyncio
+    async def test_detects_spanish_in_episodic_content(self):
+        """Episodic nodes with Spanish content should contribute to language detection."""
+        from graph_profiler import _sample_episodic_languages
+
+        driver = _make_driver({
+            'MATCH (e:Episodic)': [
+                {'content': 'El avión aterrizó de emergencia en el aeropuerto de Barcelona después del incidente'},
+            ],
+        })
+        langs = await _sample_episodic_languages(driver)
+        assert 'es' in langs
+
+    @pytest.mark.asyncio
+    async def test_empty_episodic_returns_empty(self):
+        """No Episodic nodes should return empty language set."""
+        from graph_profiler import _sample_episodic_languages
+
+        driver = _make_driver({
+            'MATCH (e:Episodic)': [],
+        })
+        langs = await _sample_episodic_languages(driver)
+        assert langs == []
+
+    @pytest.mark.asyncio
+    async def test_english_entity_with_french_episodic(self):
+        """Language summary should include both entity and episodic languages."""
+        driver = _make_driver({
+            # Entity profiling returns English-only entities
+            'labels(n)': [
+                {'lbls': ['Aircraft', 'Entity'], 'cnt': 5},
+            ],
+            'MATCH (n:`Aircraft`)': [
+                {'n': {'name': 'Airbus A321neo', 'summary': 'The aircraft was involved in a landing incident'}},
+            ],
+            # Episodic nodes have French content
+            'MATCH (e:Episodic)': [
+                {'content': "L'avion a atterri pour une urgence dans l'aéroport de Toulouse après une défaillance"},
+                {'content': "Le commandant de bord a signalé une perte de puissance sur le moteur gauche"},
+            ],
+            # Relationship profiling (empty)
+            'type(r) AS rel_type': [],
+        })
+
+        result = await profile_graph(driver, sample_size=5)
+        langs = result['language_summary']['primary_languages']
+        assert 'fr' in langs
+
+
 class TestProfileGraph:
     @pytest.mark.asyncio
     async def test_full_profile(self):
