@@ -817,6 +817,38 @@ class TestGetSchema:
 
         assert first == second
 
+    @pytest.mark.asyncio
+    async def test_schema_includes_tool_capabilities(self):
+        """get_schema response includes a tool_capabilities section."""
+        from graphiti_mcp_server import get_schema
+
+        mock_svc = _make_mock_schema_service()
+
+        with patch('graphiti_mcp_server.graphiti_service', mock_svc):
+            result = await get_schema()
+
+        caps = result.get('tool_capabilities')
+        assert caps is not None, "get_schema must include tool_capabilities"
+        assert 'search' in caps
+        assert 'run_cypher' in caps
+        assert 'explore_node' in caps
+
+        # search: must declare what it covers and doesn't cover
+        search = caps['search']
+        assert 'covers' in search
+        assert 'does_not_cover' in search
+        assert 'search_methods' in search
+        assert 'name' in search['covers'].get('entity_fields', [])
+        assert 'summary' in search['covers'].get('entity_fields', [])
+
+        # run_cypher: must declare full property access
+        cypher = caps['run_cypher']
+        assert 'all_properties' in cypher['covers'].get('entity_fields', [])
+
+        # explore_node: must declare graph traversal
+        explore = caps['explore_node']
+        assert explore['covers'].get('neighborhood') is True
+
 
 # ---------------------------------------------------------------------------
 # Integration smoke tests (require running FalkorDB)

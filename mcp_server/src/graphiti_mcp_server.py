@@ -1484,6 +1484,45 @@ async def get_schema() -> dict[str, Any]:
             'relationship_types': relationship_types,
         }
 
+        # Tool capability metadata for reasoning engine discovery
+        schema['tool_capabilities'] = {
+            'search': {
+                'search_methods': [
+                    {'index': 'name_embedding', 'type': 'cosine_similarity'},
+                    {'index': 'summary', 'type': 'bm25_fulltext'},
+                ],
+                'rerankers': ['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'],
+                'covers': {
+                    'entity_fields': ['name', 'summary'],
+                    'edge_fields': ['fact'],
+                    'communities': True,
+                },
+                'does_not_cover': {
+                    'entity_fields': ['domain_attribute_properties'],
+                },
+                'best_for': 'semantic discovery, entity lookup by name or concept',
+            },
+            'run_cypher': {
+                'search_methods': [{'type': 'property_match'}],
+                'covers': {
+                    'entity_fields': ['all_properties'],
+                    'relationships': True,
+                    'aggregations': True,
+                },
+                'requires': ['schema_knowledge'],
+                'best_for': 'property filtering, counts, aggregations, path queries',
+            },
+            'explore_node': {
+                'search_methods': [{'type': 'graph_traversal'}],
+                'covers': {
+                    'neighborhood': True,
+                    'connected_edges': True,
+                    'communities': True,
+                },
+                'best_for': 'deep dive on a known entity',
+            },
+        }
+
         # Cache the result
         graphiti_service._schema_cache = schema
         graphiti_service._schema_dirty = False
