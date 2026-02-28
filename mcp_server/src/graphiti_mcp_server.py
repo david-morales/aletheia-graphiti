@@ -1485,6 +1485,22 @@ async def get_schema() -> dict[str, Any]:
             'relationship_types': relationship_types,
         }
 
+        # Enrich from domain profile if available
+        if graphiti_service is not None and graphiti_service.domain_profile is not None:
+            dp = graphiti_service.domain_profile
+            for label, info in node_labels.items():
+                if label in dp.entity_types:
+                    et = dp.entity_types[label]
+                    if et.description:
+                        info['description'] = et.description
+                    if et.sample_names:
+                        info['sample_names'] = et.sample_names
+            for rel_type, info in relationship_types.items():
+                if rel_type in dp.edge_types:
+                    et = dp.edge_types[rel_type]
+                    if et.description:
+                        info['description'] = et.description
+
         # Tool capability metadata for reasoning engine discovery
         schema['tool_capabilities'] = {
             'search': {
