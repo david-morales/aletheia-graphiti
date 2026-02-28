@@ -234,6 +234,7 @@ class GraphitiService:
         self.entity_types = None
         self._schema_cache: dict | None = None
         self._schema_dirty: bool = True
+        self.domain_profile: 'DomainProfile | None' = None
 
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
@@ -1872,6 +1873,7 @@ async def initialize_server() -> ServerConfig:
             group_id=config.graphiti.group_id,
             ontology_client=ontology_client,
         )
+        graphiti_service.domain_profile = domain_profile
         register_dynamic_tools(domain_profile)
         register_resources(domain_profile)
     except Exception as e:
