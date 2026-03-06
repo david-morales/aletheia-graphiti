@@ -65,6 +65,7 @@ from tool_descriptions import (
 )
 from models.response_types import (
     CommunityBuildResponse,
+    EpisodeAddedResponse,
     EpisodeContextResponse,
     EpisodeSearchResponse,
     ErrorResponse,
@@ -78,7 +79,6 @@ from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
     CypherError,
-    DEFAULT_LIMIT,
     format_error,
     format_result,
     validate_and_sanitize,
@@ -462,8 +462,9 @@ async def add_memory(
     source: Literal['text', 'json', 'message'] = 'text',
     source_description: str = '',
     uuid: str | None = None,
+    sync: bool = False,
     episodes: list[dict] | None = None,
-) -> SuccessResponse | ErrorResponse:
+) -> SuccessResponse | EpisodeAddedResponse | ErrorResponse:
     """Add information to the knowledge graph.
 
     Use when:
@@ -480,6 +481,8 @@ async def add_memory(
         source: Source type -- 'text' (default), 'json', or 'message'.
         source_description: Description of the source.
         uuid: Optional UUID for the episode (single mode).
+        sync: If True, bypass the async queue and call Graphiti directly (single mode only).
+              Returns EpisodeAddedResponse with extracted node/edge UUIDs.
         episodes: List of episodes for bulk ingestion (bulk mode).
                   Each dict: {"name": str, "content": str, "source": str, "source_description": str}
 
@@ -554,6 +557,29 @@ async def add_memory(
             except (KeyError, AttributeError):
                 logger.warning(f"Unknown source type '{source}', using 'text'")
                 episode_type = EpisodeType.text
+
+        if sync:
+            # Synchronous: bypass queue, call Graphiti directly, return UUIDs
+            client = await graphiti_service.get_client()
+            results = await client.add_episode(
+                name=name,
+                episode_body=episode_body,
+                source_description=source_description,
+                source=episode_type,
+                group_id=effective_group_id,
+                reference_time=datetime.now(),
+                entity_types=graphiti_service.entity_types,
+                uuid=uuid or None,
+            )
+
+            graphiti_service._schema_dirty = True
+
+            return EpisodeAddedResponse(
+                message=f"Episode '{name}' processed synchronously in '{effective_group_id}': "
+                        f"{len(results.nodes)} nodes, {len(results.edges)} edges",
+                node_uuids=[n.uuid for n in results.nodes],
+                edge_uuids=[e.uuid for e in results.edges],
+            )
 
         await queue_service.add_episode(
             group_id=effective_group_id,
@@ -1616,7 +1642,7 @@ async def run_cypher(query: str) -> dict[str, Any]:
     """Execute a read-only Cypher query against the knowledge graph.
 
     The query is validated and sanitized before execution.
-    Write operations are blocked. LIMIT 200 is auto-injected if missing.
+    Write operations are blocked. LIMIT 200 is auto-injected if missing; explicit LIMIT values are respected.
     Returns typed JSON (scalar, tabular, graph, path) with metadata.
     """
     if graphiti_service is None:
@@ -1634,7 +1660,7 @@ async def run_cypher(query: str) -> dict[str, Any]:
         return format_error(query, result)
 
     sanitized = result
-    limit = DEFAULT_LIMIT
+    limit = sanitized.effective_limit
 
     try:
         client = await graphiti_service.get_client()
