@@ -13,6 +13,12 @@ class SuccessResponse(TypedDict):
     message: str
 
 
+class EpisodeAddedResponse(TypedDict):
+    message: str
+    node_uuids: list[str]
+    edge_uuids: list[str]
+
+
 class NodeResult(TypedDict):
     uuid: str
     name: str

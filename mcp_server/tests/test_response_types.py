@@ -9,6 +9,7 @@ from models.response_types import (
     CommunityResult,
     CommunityBuildResponse,
     EdgeResult,
+    EpisodeAddedResponse,
     EpisodeContextResponse,
     ExploreResponse,
     SearchResponse,
@@ -82,3 +83,24 @@ def test_community_result_structure():
         group_id='test_group',
     )
     assert community['member_count'] == 5
+
+
+def test_episode_added_response_structure():
+    response = EpisodeAddedResponse(
+        message='Episode processed',
+        node_uuids=['n-1', 'n-2'],
+        edge_uuids=['e-1'],
+    )
+    assert response['message'] == 'Episode processed'
+    assert response['node_uuids'] == ['n-1', 'n-2']
+    assert response['edge_uuids'] == ['e-1']
+
+
+def test_episode_added_response_empty_lists():
+    response = EpisodeAddedResponse(
+        message='No entities extracted',
+        node_uuids=[],
+        edge_uuids=[],
+    )
+    assert response['node_uuids'] == []
+    assert response['edge_uuids'] == []
