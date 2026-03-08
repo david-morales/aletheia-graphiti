@@ -287,6 +287,44 @@ def _resolve_with_similarity(
         state.unresolved_indices.append(idx)
 
 
+def _resolve_exact_only(
+    extracted_nodes: list[EntityNode],
+    indexes: DedupCandidateIndexes,
+    state: DedupResolutionState,
+    offset: int = 0,
+) -> None:
+    """Resolve identifier-name nodes using exact normalized name match only.
+
+    Nodes that match exactly one existing node are merged.
+    Nodes with no match or multiple matches are treated as new entities
+    and will NOT be sent to the LLM dedup pass.
+
+    Args:
+        offset: Starting index into ``state.resolved_nodes`` so callers can
+            process nodes one-at-a-time while writing to the correct slot.
+    """
+    for local_idx, node in enumerate(extracted_nodes):
+        state_idx = offset + local_idx
+        name = node.name
+        if not name:
+            # Treat empty-name nodes as new.
+            state.resolved_nodes[state_idx] = node
+            state.uuid_map[node.uuid] = node.uuid
+            continue
+        normalized = _normalize_string_exact(name)
+        candidates = indexes.normalized_existing.get(normalized, [])
+        if len(candidates) == 1:
+            match = candidates[0]
+            state.resolved_nodes[state_idx] = match
+            state.uuid_map[node.uuid] = match.uuid
+            if match.uuid != node.uuid:
+                state.duplicate_pairs.append((node, match))
+        else:
+            # No match or ambiguous — treat as new node (skip LLM).
+            state.resolved_nodes[state_idx] = node
+            state.uuid_map[node.uuid] = node.uuid
+
+
 __all__ = [
     'DedupCandidateIndexes',
     'DedupResolutionState',
@@ -302,4 +340,5 @@ __all__ = [
     '_MAX_EDIT_DISTANCE_FOR_AUTO_MERGE',
     '_build_candidate_indexes',
     '_resolve_with_similarity',
+    '_resolve_exact_only',
 ]

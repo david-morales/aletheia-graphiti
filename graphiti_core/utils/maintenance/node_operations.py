@@ -54,6 +54,7 @@ from graphiti_core.utils.maintenance.dedup_helpers import (
     DedupCandidateIndexes,
     DedupResolutionState,
     _build_candidate_indexes,
+    _resolve_exact_only,
     _resolve_with_similarity,
 )
 from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
@@ -501,6 +502,22 @@ async def _resolve_with_llm(
             existing_nodes_by_name[resolved_lower] = resolved_node
 
 
+def _is_identifier_name_type(
+    node: EntityNode,
+    entity_types: dict[str, type[BaseModel]] | None,
+) -> bool:
+    """Check if a node's entity type has __identifier_name__ = True."""
+    if not entity_types:
+        return False
+    for label in (node.labels or []):
+        if label == 'Entity':
+            continue
+        model_cls = entity_types.get(label)
+        if model_cls is not None:
+            return getattr(model_cls, '__identifier_name__', False)
+    return False
+
+
 async def resolve_extracted_nodes(
     clients: GraphitiClients,
     extracted_nodes: list[EntityNode],
@@ -525,17 +542,47 @@ async def resolve_extracted_nodes(
         unresolved_indices=[],
     )
 
-    _resolve_with_similarity(extracted_nodes, indexes, state)
+    # Partition: identifier-name nodes use exact-only matching (no fuzzy, no LLM),
+    # fuzzy nodes go through the standard similarity + LLM pipeline.
+    fuzzy_nodes: list[EntityNode] = []
+    fuzzy_orig_indices: list[int] = []
 
-    await _resolve_with_llm(
-        llm_client,
-        extracted_nodes,
-        indexes,
-        state,
-        episode,
-        previous_episodes,
-        entity_types,
-    )
+    for idx, node in enumerate(extracted_nodes):
+        if _is_identifier_name_type(node, entity_types):
+            # Exact normalized name match only — no fuzzy, no LLM.
+            _resolve_exact_only([node], indexes, state, offset=idx)
+        else:
+            fuzzy_nodes.append(node)
+            fuzzy_orig_indices.append(idx)
+
+    # Resolve fuzzy nodes via similarity heuristics then LLM.
+    if fuzzy_nodes:
+        # Build a sub-state for fuzzy resolution that uses fuzzy-local indices.
+        fuzzy_state = DedupResolutionState(
+            resolved_nodes=[None] * len(fuzzy_nodes),
+            uuid_map={},
+            unresolved_indices=[],
+        )
+
+        _resolve_with_similarity(fuzzy_nodes, indexes, fuzzy_state)
+
+        await _resolve_with_llm(
+            llm_client,
+            fuzzy_nodes,
+            indexes,
+            fuzzy_state,
+            episode,
+            previous_episodes,
+            entity_types,
+        )
+
+        # Map fuzzy results back to original indices.
+        for fuzzy_idx, orig_idx in enumerate(fuzzy_orig_indices):
+            resolved = fuzzy_state.resolved_nodes[fuzzy_idx]
+            if resolved is not None:
+                state.resolved_nodes[orig_idx] = resolved
+        state.uuid_map.update(fuzzy_state.uuid_map)
+        state.duplicate_pairs.extend(fuzzy_state.duplicate_pairs)
 
     for idx, node in enumerate(extracted_nodes):
         if state.resolved_nodes[idx] is None:
