@@ -279,7 +279,7 @@ async def add_nodes_and_edges_bulk_tx(
                     UNWIND $entity_edges AS edge
                     MATCH (source:Entity {{uuid: edge.source_node_uuid}})
                     MATCH (target:Entity {{uuid: edge.target_node_uuid}})
-                    MERGE (source)-[r:{safe_edge_type} {{uuid: edge.uuid}}]->(target)
+                    MERGE (source)-[r:{safe_edge_type}]->(target)
                     SET r = edge
                     SET r.fact_embedding = vecf32(edge.fact_embedding)
                     RETURN edge.uuid AS uuid
