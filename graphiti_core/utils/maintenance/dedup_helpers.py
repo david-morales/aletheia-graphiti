@@ -295,9 +295,10 @@ def _resolve_exact_only(
 ) -> None:
     """Resolve identifier-name nodes using exact normalized name match only.
 
-    Nodes that match exactly one existing node are merged.
-    Nodes with no match or multiple matches are treated as new entities
-    and will NOT be sent to the LLM dedup pass.
+    Nodes that match one or more existing nodes are merged with the first
+    candidate (for identifier-name types, all candidates with the same
+    normalized name are equivalent).  Nodes with no match are treated as
+    new entities and will NOT be sent to the LLM dedup pass.
 
     Args:
         offset: Starting index into ``state.resolved_nodes`` so callers can
