@@ -30,6 +30,16 @@ class TestEntityEdgeMergeKey:
         assert '{uuid: edge.uuid}' not in query
         assert 'name: edge.name' in query
 
+    def test_neptune_single_merges_on_name(self):
+        query = get_entity_edge_save_query(GraphProvider.NEPTUNE)
+        assert '{uuid: $edge_data.uuid}' not in query
+        assert 'name: $edge_data.name' in query
+
+    def test_neptune_bulk_merges_on_name(self):
+        query = get_entity_edge_save_bulk_query(GraphProvider.NEPTUNE)
+        assert '{uuid: edge.uuid}' not in query
+        assert 'name: edge.name' in query
+
 
 class TestEpisodicEdgeMergeKey:
     def test_single_merges_without_uuid(self):
