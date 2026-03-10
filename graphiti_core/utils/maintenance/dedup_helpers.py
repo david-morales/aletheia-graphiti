@@ -313,14 +313,14 @@ def _resolve_exact_only(
             continue
         normalized = _normalize_string_exact(name)
         candidates = indexes.normalized_existing.get(normalized, [])
-        if len(candidates) == 1:
+        if len(candidates) >= 1:
             match = candidates[0]
             state.resolved_nodes[state_idx] = match
             state.uuid_map[node.uuid] = match.uuid
             if match.uuid != node.uuid:
                 state.duplicate_pairs.append((node, match))
         else:
-            # No match or ambiguous — treat as new node (skip LLM).
+            # No match — treat as new node (skip LLM).
             state.resolved_nodes[state_idx] = node
             state.uuid_map[node.uuid] = node.uuid
 

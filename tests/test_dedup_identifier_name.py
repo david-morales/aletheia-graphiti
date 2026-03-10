@@ -158,8 +158,8 @@ class TestResolveExactOnly:
         assert state.resolved_nodes[0] is extracted
         assert state.uuid_map['new-uuid'] == 'new-uuid'
 
-    def test_ambiguous_exact_match_treats_as_new(self):
-        """Multiple candidates with same normalized name → treat as new (unlike fuzzy which defers to LLM)."""
+    def test_ambiguous_exact_match_merges_with_first(self):
+        """Multiple candidates with same normalized name → merge with first (they're all equivalent for identifier types)."""
         existing_1 = _make_node('Report-001', uuid='uuid-1')
         existing_2 = _make_node('Report-001', uuid='uuid-2')
         extracted = _make_node('Report-001', uuid='new-uuid')
@@ -173,9 +173,10 @@ class TestResolveExactOnly:
 
         _resolve_exact_only([extracted], indexes, state)
 
-        # Ambiguous → new node
-        assert state.resolved_nodes[0] is extracted
-        assert state.uuid_map['new-uuid'] == 'new-uuid'
+        # Multiple exact matches → merge with first (all are equivalent for identifier-name types)
+        assert state.resolved_nodes[0] is existing_1
+        assert state.uuid_map['new-uuid'] == 'uuid-1'
+        assert len(state.duplicate_pairs) == 1
 
     def test_offset_parameter(self):
         """The offset parameter writes to the correct slot in state.resolved_nodes."""
