@@ -76,9 +76,11 @@ from graphiti_core.utils.bulk_utils import (
     dedupe_nodes_bulk,
     extract_nodes_and_edges_bulk,
     resolve_edge_pointers,
+    resolve_nodes_with_locks,
     retrieve_previous_episodes_bulk,
 )
 from graphiti_core.utils.datetime_utils import utc_now
+from graphiti_core.utils.entity_lock_manager import EntityLockManager
 from graphiti_core.utils.maintenance.community_operations import (
     build_communities,
     remove_communities,
@@ -234,6 +236,8 @@ class Graphiti:
             cross_encoder=self.cross_encoder,
             tracer=self.tracer,
         )
+
+        self._entity_lock_manager = EntityLockManager()
 
         # Capture telemetry event
         self._capture_initialization_telemetry()
@@ -588,7 +592,8 @@ class Graphiti:
 
         # Dedupe extracted nodes in memory
         nodes_by_episode, uuid_map = await dedupe_nodes_bulk(
-            self.clients, extracted_nodes_bulk, episode_context, entity_types
+            self.clients, extracted_nodes_bulk, episode_context, entity_types,
+            lock_manager=self._entity_lock_manager,
         )
 
         return nodes_by_episode, uuid_map, extracted_edges_bulk
@@ -619,25 +624,14 @@ class Graphiti:
                     nodes_by_episode_unique[episode.uuid].append(node)
                     nodes_uuid_set.add(node.uuid)
 
-        # Resolve nodes
-        node_results = await semaphore_gather(
-            *[
-                resolve_extracted_nodes(
-                    self.clients,
-                    nodes_by_episode_unique[episode.uuid],
-                    episode,
-                    previous_episodes,
-                    entity_types,
-                )
-                for episode, previous_episodes in episode_context
-            ]
+        # Resolve nodes using entity-lane locking
+        resolved_nodes, uuid_map = await resolve_nodes_with_locks(
+            clients=self.clients,
+            nodes_by_episode=nodes_by_episode_unique,
+            episode_context=episode_context,
+            entity_types=entity_types,
+            lock_manager=self._entity_lock_manager,
         )
-
-        resolved_nodes: list[EntityNode] = []
-        uuid_map: dict[str, str] = {}
-        for result in node_results:
-            resolved_nodes.extend(result[0])
-            uuid_map.update(result[1])
 
         # Update nodes_by_uuid with resolved nodes
         for resolved_node in resolved_nodes:
@@ -648,7 +642,7 @@ class Graphiti:
             updated_nodes: list[EntityNode] = []
             for node in nodes:
                 updated_node_uuid = uuid_map.get(node.uuid, node.uuid)
-                updated_node = nodes_by_uuid[updated_node_uuid]
+                updated_node = nodes_by_uuid.get(updated_node_uuid, node)
                 updated_nodes.append(updated_node)
             nodes_by_episode_unique[episode_uuid] = updated_nodes
 

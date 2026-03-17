@@ -340,6 +340,7 @@ async def dedupe_nodes_bulk(
     extracted_nodes: list[list[EntityNode]],
     episode_tuples: list[tuple[EpisodicNode, list[EpisodicNode]]],
     entity_types: dict[str, type[BaseModel]] | None = None,
+    lock_manager: EntityLockManager | None = None,
 ) -> tuple[dict[str, list[EntityNode]], dict[str, str]]:
     """Resolve entity duplicates across an in-memory batch using a two-pass strategy.
 
@@ -350,29 +351,44 @@ async def dedupe_nodes_bulk(
        can apply to edges and persistence.
     """
 
-    first_pass_results = await semaphore_gather(
-        *[
-            resolve_extracted_nodes(
-                clients,
-                nodes,
-                episode_tuples[i][0],
-                episode_tuples[i][1],
-                entity_types,
-            )
-            for i, nodes in enumerate(extracted_nodes)
-        ]
+    # First pass: resolve per-episode against the graph, using entity locks if available
+    first_pass_nodes_by_episode: dict[str, list[EntityNode]] = {
+        episode_tuples[i][0].uuid: nodes
+        for i, nodes in enumerate(extracted_nodes)
+    }
+
+    first_pass_resolved, first_pass_uuid_map = await resolve_nodes_with_locks(
+        clients=clients,
+        nodes_by_episode=first_pass_nodes_by_episode,
+        episode_context=episode_tuples,
+        entity_types=entity_types,
+        lock_manager=lock_manager,
     )
+
+    # Build episode resolutions from the lane-based results
+    # Map each resolved node back to its originating episode(s)
+    resolved_by_uuid: dict[str, EntityNode] = {n.uuid: n for n in first_pass_resolved}
 
     episode_resolutions: list[tuple[str, list[EntityNode]]] = []
     per_episode_uuid_maps: list[dict[str, str]] = []
     duplicate_pairs: list[tuple[str, str]] = []
 
-    for (resolved_nodes, uuid_map, duplicates), (episode, _) in zip(
-        first_pass_results, episode_tuples, strict=True
-    ):
-        episode_resolutions.append((episode.uuid, resolved_nodes))
-        per_episode_uuid_maps.append(uuid_map)
-        duplicate_pairs.extend((source.uuid, target.uuid) for source, target in duplicates)
+    for i, (episode, _) in enumerate(episode_tuples):
+        episode_nodes: list[EntityNode] = []
+        ep_uuid_map: dict[str, str] = {}
+        for node in extracted_nodes[i]:
+            canonical_uuid = first_pass_uuid_map.get(node.uuid, node.uuid)
+            ep_uuid_map[node.uuid] = canonical_uuid
+            canonical = resolved_by_uuid.get(canonical_uuid)
+            if canonical is not None:
+                episode_nodes.append(canonical)
+            else:
+                episode_nodes.append(node)
+                ep_uuid_map[node.uuid] = node.uuid
+            if canonical_uuid != node.uuid:
+                duplicate_pairs.append((node.uuid, canonical_uuid))
+        episode_resolutions.append((episode.uuid, episode_nodes))
+        per_episode_uuid_maps.append(ep_uuid_map)
 
     canonical_nodes: dict[str, EntityNode] = {}
     for _, resolved_nodes in episode_resolutions:
