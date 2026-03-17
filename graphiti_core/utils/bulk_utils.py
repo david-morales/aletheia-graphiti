@@ -56,6 +56,7 @@ from graphiti_core.utils.maintenance.graph_data_operations import (
     EPISODE_WINDOW_LEN,
     retrieve_episodes,
 )
+from graphiti_core.utils.entity_lock_manager import EntityLockManager
 from graphiti_core.utils.maintenance.node_operations import (
     extract_nodes,
     resolve_extracted_nodes,
@@ -447,6 +448,129 @@ async def dedupe_nodes_bulk(
         nodes_by_episode[episode_uuid] = deduped_nodes
 
     return nodes_by_episode, compressed_map
+
+
+async def resolve_nodes_with_locks(
+    clients: GraphitiClients,
+    nodes_by_episode: dict[str, list[EntityNode]],
+    episode_context: list[tuple[EpisodicNode, list[EpisodicNode]]],
+    entity_types: dict[str, type[BaseModel]] | None,
+    lock_manager: EntityLockManager | None = None,
+) -> tuple[list[EntityNode], dict[str, str]]:
+    """Resolve extracted nodes against the graph with per-entity locking.
+
+    When *lock_manager* is provided, nodes are grouped by (primary_label, normalized_name)
+    into "entity lanes". Each lane acquires its lock before searching the graph, and
+    registers the resolved node in the pending registry so that concurrent calls for the
+    same entity skip the graph search entirely.
+
+    When *lock_manager* is None, falls back to the original per-episode parallel resolution
+    (backward compatible).
+
+    Returns
+    -------
+    tuple[list[EntityNode], dict[str, str]]
+        (all_resolved_nodes, uuid_map) — same contract as the caller expects.
+    """
+    if lock_manager is None:
+        # Fallback: original per-episode parallel resolution
+        results = await semaphore_gather(
+            *[
+                resolve_extracted_nodes(
+                    clients,
+                    [node for node in nodes_by_episode.get(episode.uuid, [])],
+                    episode,
+                    previous_episodes,
+                    entity_types,
+                )
+                for episode, previous_episodes in episode_context
+            ]
+        )
+        all_nodes: list[EntityNode] = []
+        uuid_map: dict[str, str] = {}
+        for resolved_nodes, ep_uuid_map, _ in results:
+            all_nodes.extend(resolved_nodes)
+            uuid_map.update(ep_uuid_map)
+        return all_nodes, uuid_map
+
+    # --- Entity-lane resolution ---
+
+    # Build episode lookup for finding the right episode context per node
+    episode_lookup: dict[str, tuple[EpisodicNode, list[EpisodicNode]]] = {
+        episode.uuid: (episode, previous) for episode, previous in episode_context
+    }
+
+    # 1. Collect all unique nodes, group by entity key, track episode origin
+    entity_lanes: dict[str, list[EntityNode]] = {}  # key → [nodes with same identity]
+    node_episode_origin: dict[str, str] = {}  # node_uuid → episode_uuid (first seen)
+    seen_uuids: set[str] = set()
+
+    for episode_uuid, nodes in nodes_by_episode.items():
+        for node in nodes:
+            if node.uuid in seen_uuids:
+                continue
+            seen_uuids.add(node.uuid)
+            primary_label = node.labels[0] if node.labels else 'Entity'
+            key = lock_manager.normalize_key(primary_label, node.name)
+            entity_lanes.setdefault(key, []).append(node)
+            node_episode_origin.setdefault(node.uuid, episode_uuid)
+
+    # 2. Resolve each lane with its lock — each returns its own results
+    async def _resolve_lane(
+        entity_key: str, nodes: list[EntityNode]
+    ) -> tuple[str, EntityNode, dict[str, str]]:
+        primary_label, _, entity_name = entity_key.partition(':')
+
+        async with lock_manager.get_lock(primary_label, entity_name):
+            # Check pending registry first
+            cached = lock_manager.get_resolved(primary_label, entity_name)
+            if cached is not None:
+                lane_uuid_map = {node.uuid: cached.uuid for node in nodes}
+                return entity_key, cached, lane_uuid_map
+
+            # Not cached — resolve the representative node against the graph
+            representative = nodes[0]
+
+            # Use the episode that first mentioned this entity for context
+            origin_ep_uuid = node_episode_origin[representative.uuid]
+            ep_context = episode_lookup.get(origin_ep_uuid)
+            if ep_context:
+                episode, previous = ep_context
+            else:
+                episode, previous = episode_context[0]
+
+            resolved, rep_uuid_map, _ = await resolve_extracted_nodes(
+                clients,
+                [representative],
+                episode,
+                previous,
+                entity_types,
+            )
+
+            canonical = resolved[0] if resolved else representative
+
+            # Build lane uuid map: all nodes in lane → canonical
+            lane_uuid_map = {node.uuid: canonical.uuid for node in nodes}
+            # Also include the representative's own mapping from resolve_extracted_nodes
+            lane_uuid_map.update(rep_uuid_map)
+
+            # Register in pending registry for concurrent callers
+            lock_manager.register_resolved(primary_label, entity_name, canonical)
+
+            return entity_key, canonical, lane_uuid_map
+
+    lane_results: list[tuple[str, EntityNode, dict[str, str]]] = await semaphore_gather(
+        *[_resolve_lane(key, nodes) for key, nodes in entity_lanes.items()]
+    )
+
+    # 3. Merge results sequentially (no shared mutable state during concurrent execution)
+    all_resolved: list[EntityNode] = []
+    uuid_map: dict[str, str] = {}
+    for entity_key, canonical, lane_uuid_map in lane_results:
+        all_resolved.append(canonical)
+        uuid_map.update(lane_uuid_map)
+
+    return all_resolved, uuid_map
 
 
 async def dedupe_edges_bulk(
