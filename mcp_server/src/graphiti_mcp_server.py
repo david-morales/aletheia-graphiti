@@ -1527,6 +1527,24 @@ async def get_schema() -> dict[str, Any]:
                     if et.description:
                         info['description'] = et.description
 
+        # Extract IMPORTANT: notes from entity/relationship descriptions
+        # into a top-level field so they're prominent, not buried in type details.
+        analysis_notes: list[str] = []
+        for label, info in node_labels.items():
+            desc = info.get('description', '')
+            for line in desc.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('IMPORTANT:'):
+                    analysis_notes.append(f"[{label}] {stripped}")
+        for rel_type, info in relationship_types.items():
+            desc = info.get('description', '')
+            for line in desc.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('IMPORTANT:'):
+                    analysis_notes.append(f"[{rel_type}] {stripped}")
+        if analysis_notes:
+            schema['analysis_notes'] = analysis_notes
+
         # Tool capability metadata for reasoning engine discovery
         schema['tool_capabilities'] = {
             'search': {
@@ -1565,6 +1583,39 @@ async def get_schema() -> dict[str, Any]:
                 'best_for': 'deep dive on a known entity',
             },
         }
+
+        # FalkorDB Cypher quick reference — helps LLMs generate correct queries.
+        # Curated from https://github.com/FalkorDB/skills
+        schema['cypher_reference'] = (
+            "## Cypher Quick Reference (FalkorDB)\n\n"
+            "### Property & Label Escaping\n"
+            "- Multi-word labels: MATCH (n:`My Label`) RETURN n\n"
+            "- Multi-word properties: WHERE n.`my property` = 'value'\n"
+            "- Always use backticks for identifiers with spaces or special chars\n\n"
+            "### Variable-Length Paths (no APOC)\n"
+            "- MATCH (a)-[*1..3]->(b) RETURN a, b\n"
+            "- MATCH path = (a)-[*..5]->(b) RETURN nodes(path), relationships(path)\n\n"
+            "### Aggregation Patterns\n"
+            "- GROUP BY is implicit: MATCH (n) RETURN n.type, count(n)\n"
+            "- Mid-query: MATCH (n)-[:REL]->(m) WITH m, count(n) AS cnt "
+            "WHERE cnt > 1 RETURN m.name, cnt\n\n"
+            "### Date Handling\n"
+            "- No date() function — compare strings: WHERE n.date > '2024-01-01'\n\n"
+            "### String Functions\n"
+            "- toLower() / toUpper() (NOT lower() / upper())\n"
+            "- starts with / ends with / contains\n\n"
+            "### Index-Aware Filtering\n"
+            "- Accelerated: =, <, >, <=, >=, IN, starts with\n"
+            "- NOT accelerated: <> (not-equal), contains, ends with\n"
+            "- Full-text: CALL db.idx.fulltext.queryNodes('idx', 'term')\n\n"
+            "### Known Limitations\n"
+            "- No APOC — use variable-length paths\n"
+            "- No pattern comprehensions — use OPTIONAL MATCH + collect()\n"
+            "- No EXISTS {} subqueries — use EXISTS(pattern) syntax\n"
+            "- No CALL {} subqueries — use WITH + OPTIONAL MATCH\n"
+            "- No map projections — return properties individually\n"
+            "- LIMIT auto-injected (200) if not specified"
+        )
 
         # Cache the result
         graphiti_service._schema_cache = schema
