@@ -13,6 +13,7 @@ class SanitizedQuery:
 
     query: str
     auto_fixes: list[str] = field(default_factory=list)
+    effective_limit: int = 200
 
 
 @dataclass
@@ -53,6 +54,23 @@ _LABEL_RE = re.compile(r'(?<=:)(?!`)([A-Za-z]\w* \w[\w ]*?)(?=[\s)}\]{,|])')
 _PROP_KEY_RE = re.compile(r'(?<=[{,])\s*(?!`)([A-Za-z]\w* \w[\w ]*?)(?=\s*:)')
 # Relationship types:  [:WORKS WITH]  ->  [:`WORKS WITH`]
 _REL_TYPE_RE = re.compile(r'(?<=\[)(:)(?!`)([A-Za-z]\w* \w[\w ]*?)(?=[\]|])')
+
+# Cypher keywords that must NOT be swallowed into multi-word identifiers.
+# When the backtick fixer sees `:Ubicacion OR loc:Municipio`, it should NOT
+# treat "Ubicacion OR" as a multi-word label — OR is a keyword.
+_CYPHER_KEYWORDS = frozenset({
+    'AND', 'OR', 'NOT', 'XOR', 'IN', 'IS', 'NULL',
+    'WHERE', 'WITH', 'RETURN', 'MATCH', 'OPTIONAL', 'CREATE', 'DELETE',
+    'SET', 'REMOVE', 'MERGE', 'DETACH', 'ORDER', 'BY', 'SKIP', 'LIMIT',
+    'UNION', 'ALL', 'AS', 'DISTINCT', 'ON', 'CASE', 'WHEN', 'THEN',
+    'ELSE', 'END', 'EXISTS', 'CONTAINS', 'STARTS', 'ENDS', 'TRUE',
+    'FALSE', 'UNWIND', 'FOREACH', 'CALL', 'YIELD', 'DESC', 'ASC',
+})
+
+
+def _contains_keyword(identifier: str) -> bool:
+    """Check if a multi-word identifier contains a Cypher keyword."""
+    return any(word.upper() in _CYPHER_KEYWORDS for word in identifier.split())
 
 
 def _extract_alias(expr: str) -> str | None:
@@ -167,13 +185,22 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
         query = decoded
         fixes.append('Decoded HTML entities')
 
-    # 4. Multi-word identifier quoting
+    # 4. Multi-word identifier quoting (skip if match contains a Cypher keyword)
     # Node labels
-    new_query = _LABEL_RE.sub(r'`\1`', query)
+    new_query = _LABEL_RE.sub(
+        lambda m: f'`{m.group(1)}`' if not _contains_keyword(m.group(1)) else m.group(1),
+        query,
+    )
     # Property keys
-    new_query = _PROP_KEY_RE.sub(lambda m: f'`{m.group(1)}`', new_query)
+    new_query = _PROP_KEY_RE.sub(
+        lambda m: f'`{m.group(1)}`' if not _contains_keyword(m.group(1)) else m.group(1),
+        new_query,
+    )
     # Relationship types
-    new_query = _REL_TYPE_RE.sub(lambda m: f'{m.group(1)}`{m.group(2)}`', new_query)
+    new_query = _REL_TYPE_RE.sub(
+        lambda m: f'{m.group(1)}`{m.group(2)}`' if not _contains_keyword(m.group(2)) else m.group(0),
+        new_query,
+    )
     if new_query != query:
         query = new_query
         fixes.append('Backtick-quoted multi-word identifiers')
@@ -398,23 +425,28 @@ def _check_whitelist(query: str) -> CypherError | None:
 DEFAULT_LIMIT = 200
 
 
-def _inject_safety(query: str, limit: int = DEFAULT_LIMIT) -> tuple[str, list[str]]:
+def _inject_safety(query: str, limit: int = DEFAULT_LIMIT) -> tuple[str, list[str], int]:
     """Stage 4: Inject safety measures.
 
     - Appends LIMIT (N+1) if no LIMIT clause present (for truncation detection)
     - CALL queries are exempt from LIMIT injection
+
+    Returns (query, fixes, effective_limit).
     """
     fixes: list[str] = []
     query_upper = query.upper().strip()
 
     if query_upper.startswith('CALL '):
-        return query, fixes
+        return query, fixes, limit
 
-    if not re.search(r'\bLIMIT\b', query, re.IGNORECASE):
-        query = f'{query.rstrip().rstrip(";")} LIMIT {limit + 1}'
-        fixes.append(f'Injected LIMIT {limit}')
+    all_limits = re.findall(r'\bLIMIT\s+(\d+)', query, re.IGNORECASE)
+    if all_limits:
+        return query, fixes, int(all_limits[-1])
 
-    return query, fixes
+    query = f'{query.rstrip().rstrip(";")} LIMIT {limit + 1}'
+    fixes.append(f'Injected LIMIT {limit}')
+
+    return query, fixes, limit
 
 
 # ---------------------------------------------------------------------------
@@ -448,11 +480,12 @@ def validate_and_sanitize(query: str, limit: int = DEFAULT_LIMIT) -> SanitizedQu
         return err
 
     # Stage 4: Safety injection
-    query, fixes_4 = _inject_safety(query, limit=limit)
+    query, fixes_4, effective_limit = _inject_safety(query, limit=limit)
 
     return SanitizedQuery(
         query=query,
         auto_fixes=fixes_1 + fixes_2 + fixes_4,
+        effective_limit=effective_limit,
     )
 
 
