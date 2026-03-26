@@ -17,6 +17,7 @@ limitations under the License.
 from typing import Any
 
 from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.helpers import validate_node_labels
 
 
 def get_episode_node_save_query(provider: GraphProvider) -> str:
@@ -126,7 +127,16 @@ EPISODIC_NODE_RETURN_NEPTUNE = """
 """
 
 
+def _validate_entity_labels(labels: str | list[str]) -> list[str]:
+    resolved_labels = labels.split(':') if isinstance(labels, str) else labels
+    filtered_labels = [label for label in resolved_labels if label]
+    validate_node_labels(filtered_labels)
+    return filtered_labels
+
+
 def get_entity_node_save_query(provider: GraphProvider, labels: str, has_aoss: bool = False) -> str:
+    validated_labels = _validate_entity_labels(labels)
+    labels = ':'.join(validated_labels)
     match provider:
         case GraphProvider.FALKORDB:
             return f"""
@@ -183,6 +193,8 @@ def get_entity_node_save_query(provider: GraphProvider, labels: str, has_aoss: b
 def get_entity_node_save_bulk_query(
     provider: GraphProvider, nodes: list[dict], has_aoss: bool = False
 ) -> str | Any:
+    for node in nodes:
+        _validate_entity_labels(node.get('labels', []))
     match provider:
         case GraphProvider.FALKORDB:
             queries = []

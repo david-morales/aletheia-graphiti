@@ -35,6 +35,7 @@ else:
 
 from graphiti_core.driver.driver import GraphDriver, GraphDriverSession, GraphProvider
 from graphiti_core.graph_queries import get_fulltext_indices, get_range_indices
+from graphiti_core.helpers import validate_group_ids
 from graphiti_core.utils.datetime_utils import convert_datetimes_to_strings
 
 logger = logging.getLogger(__name__)
@@ -367,6 +368,7 @@ class FalkorDriver(GraphDriver):
         - AND is implicit with space: (@group_id:value) (text)
         - OR uses pipe within parentheses: (@group_id:value1|value2)
         """
+        validate_group_ids(group_ids)
         if group_ids is None or len(group_ids) == 0:
             group_filter = ''
         else:
