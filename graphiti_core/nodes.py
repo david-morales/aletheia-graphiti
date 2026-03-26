@@ -504,7 +504,7 @@ class EntityNode(Node):
         text = self.name.replace('\n', ' ')
         self.name_embedding = await embedder.create(input_data=[text])
         end = time()
-        logger.debug(f'embedded {text} in {end - start} ms')
+        logger.debug(f'embedded node {self.uuid} name ({len(text)} chars) in {(end - start) * 1000:.1f} ms')
 
         return self.name_embedding
 
@@ -719,7 +719,7 @@ class CommunityNode(Node):
         text = self.name.replace('\n', ' ')
         self.name_embedding = await embedder.create(input_data=[text])
         end = time()
-        logger.debug(f'embedded {text} in {end - start} ms')
+        logger.debug(f'embedded node {self.uuid} name ({len(text)} chars) in {(end - start) * 1000:.1f} ms')
 
         return self.name_embedding
 

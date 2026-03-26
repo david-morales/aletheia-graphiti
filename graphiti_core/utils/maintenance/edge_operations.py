@@ -697,7 +697,7 @@ async def resolve_extracted_edge(
 
     end = time()
     logger.debug(
-        f'Resolved Edge: {extracted_edge.name} is {resolved_edge.name}, in {(end - start) * 1000} ms'
+        f'Resolved edge {extracted_edge.uuid} → {resolved_edge.uuid} in {(end - start) * 1000:.1f} ms'
     )
 
     now = utc_now()

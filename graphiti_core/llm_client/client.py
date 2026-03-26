@@ -235,10 +235,10 @@ class LLMClient(ABC):
         Log the full input messages, the raw output (if any), and the exception for debugging failed generations.
         """
         log = ''
-        log += f'Input messages: {json.dumps([m.model_dump() for m in messages], indent=2)}\n'
+        log += f'Input messages: {len(messages)} message(s), roles: {[m.role for m in messages]}\n'
         if output is not None:
-            if len(output) > 4000:
-                log += f'Raw output: {output[:2000]}... (truncated) ...{output[-2000:]}\n'
+            if len(output) > 500:
+                log += f'Raw output: {output[:500]}... (truncated)\n'
             else:
                 log += f'Raw output: {output}\n'
         else:

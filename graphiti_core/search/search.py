@@ -252,7 +252,7 @@ async def search(
 
     latency = (time() - start) * 1000
 
-    logger.debug(f'search returned context for query {query} in {latency} ms')
+    logger.debug(f'search returned context for query ({len(query)} chars) in {latency:.1f} ms')
 
     return results
 
