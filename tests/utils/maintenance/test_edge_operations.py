@@ -222,7 +222,7 @@ async def test_resolve_extracted_edges_resets_unmapped_names(monkeypatch):
     edge_types = {'OCCURRED_AT': OccurredAtEdge}
     edge_type_map = {('Event', 'Entity'): ['OCCURRED_AT']}
 
-    resolved_edges, invalidated_edges = await resolve_extracted_edges(
+    resolved_edges, invalidated_edges, new_edges = await resolve_extracted_edges(
         clients,
         [extracted_edge],
         episode,
@@ -233,6 +233,7 @@ async def test_resolve_extracted_edges_resets_unmapped_names(monkeypatch):
 
     assert resolved_edges[0].name == 'RELATES_TO'
     assert invalidated_edges == []
+    assert new_edges == resolved_edges  # No duplicates, so all edges are new
 
 
 @pytest.mark.asyncio
@@ -305,7 +306,7 @@ async def test_resolve_extracted_edges_converts_unknown_names_to_default(monkeyp
     edge_types = {'OCCURRED_AT': OccurredAtEdge}
     edge_type_map = {('Event', 'Entity'): ['OCCURRED_AT']}
 
-    resolved_edges, invalidated_edges = await resolve_extracted_edges(
+    resolved_edges, invalidated_edges, new_edges = await resolve_extracted_edges(
         clients,
         [extracted_edge],
         episode,
@@ -317,6 +318,7 @@ async def test_resolve_extracted_edges_converts_unknown_names_to_default(monkeyp
     # Unknown edge types are converted to RELATES_TO when custom edge_types are defined
     assert resolved_edges[0].name == 'RELATES_TO'
     assert invalidated_edges == []
+    assert new_edges == resolved_edges  # No duplicates, so all edges are new
 
 
 @pytest.mark.asyncio
@@ -516,7 +518,7 @@ async def test_resolve_extracted_edges_fast_path_deduplication(monkeypatch):
         valid_at=datetime.now(timezone.utc),
     )
 
-    resolved_edges, invalidated_edges = await resolve_extracted_edges(
+    resolved_edges, invalidated_edges, new_edges = await resolve_extracted_edges(
         clients,
         [edge1, edge2, edge3],
         episode,
@@ -530,6 +532,7 @@ async def test_resolve_extracted_edges_fast_path_deduplication(monkeypatch):
     assert resolve_call_count == 1
     assert len(resolved_edges) == 1
     assert invalidated_edges == []
+    assert new_edges == resolved_edges  # No duplicates, so all edges are new
 
 
 class InterpersonalRelationship(BaseModel):

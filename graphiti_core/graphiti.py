@@ -444,7 +444,7 @@ class Graphiti:
         nodes: list[EntityNode],
         uuid_map: dict[str, str],
         custom_extraction_instructions: str | None = None,
-    ) -> tuple[list[EntityEdge], list[EntityEdge]]:
+    ) -> tuple[list[EntityEdge], list[EntityEdge], list[EntityEdge]]:
         """Extract edges from episode and resolve against existing graph."""
         extracted_edges = await extract_edges(
             self.clients,
@@ -459,7 +459,7 @@ class Graphiti:
 
         edges = resolve_edge_pointers(extracted_edges, uuid_map)
 
-        resolved_edges, invalidated_edges = await resolve_extracted_edges(
+        resolved_edges, invalidated_edges, new_edges = await resolve_extracted_edges(
             self.clients,
             edges,
             episode,
@@ -468,7 +468,7 @@ class Graphiti:
             edge_type_map,
         )
 
-        return resolved_edges, invalidated_edges
+        return resolved_edges, invalidated_edges, new_edges
 
     async def _process_episode_data(
         self,
@@ -694,6 +694,8 @@ class Graphiti:
         for result in edge_results:
             resolved_edges.extend(result[0])
             invalidated_edges.extend(result[1])
+            # result[2] is new_edges - not used in bulk flow since attributes
+            # are extracted before edge resolution
 
         return final_hydrated_nodes, resolved_edges, invalidated_edges, uuid_map
 
@@ -916,7 +918,7 @@ class Graphiti:
                 )
 
                 # Extract and resolve edges in parallel with attribute extraction
-                resolved_edges, invalidated_edges = await self._extract_and_resolve_edges(
+                resolved_edges, invalidated_edges, new_edges = await self._extract_and_resolve_edges(
                     episode,
                     extracted_nodes,
                     previous_episodes,
@@ -937,7 +939,7 @@ class Graphiti:
                     episode,
                     previous_episodes,
                     entity_types,
-                    edges=entity_edges,
+                    edges=new_edges,
                 )
 
                 # Process and save episode data (including saga association if provided)

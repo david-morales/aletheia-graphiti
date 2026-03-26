@@ -309,36 +309,42 @@ class TestStage3SecurityWhitelist:
 class TestStage4SafetyInjection:
     def test_inject_limit_when_missing(self):
         query = 'MATCH (n) RETURN n'
-        fixed, fixes = _inject_safety(query)
+        fixed, fixes, effective_limit = _inject_safety(query)
         assert f'LIMIT {DEFAULT_LIMIT + 1}' in fixed
         assert any('LIMIT' in f for f in fixes)
+        assert effective_limit == DEFAULT_LIMIT
 
     def test_no_inject_when_limit_present(self):
         query = 'MATCH (n) RETURN n LIMIT 50'
-        fixed, fixes = _inject_safety(query)
+        fixed, fixes, effective_limit = _inject_safety(query)
         assert fixed == query
         assert fixes == []
+        assert effective_limit == 50
 
     def test_no_inject_when_limit_present_lowercase(self):
         query = 'MATCH (n) RETURN n limit 50'
-        fixed, fixes = _inject_safety(query)
+        fixed, fixes, effective_limit = _inject_safety(query)
         assert fixed == query
+        assert effective_limit == 50
 
     def test_limit_appended_after_order_by(self):
         query = 'MATCH (n) RETURN n ORDER BY n.name'
-        fixed, fixes = _inject_safety(query)
+        fixed, fixes, effective_limit = _inject_safety(query)
         assert fixed.endswith(f'LIMIT {DEFAULT_LIMIT + 1}')
         assert 'ORDER BY' in fixed
+        assert effective_limit == DEFAULT_LIMIT
 
     def test_limit_with_skip(self):
         query = 'MATCH (n) RETURN n SKIP 10'
-        fixed, fixes = _inject_safety(query)
+        fixed, fixes, effective_limit = _inject_safety(query)
         assert f'LIMIT {DEFAULT_LIMIT + 1}' in fixed
+        assert effective_limit == DEFAULT_LIMIT
 
     def test_call_query_no_limit(self):
         query = 'CALL db.labels()'
-        fixed, fixes = _inject_safety(query)
+        fixed, fixes, effective_limit = _inject_safety(query)
         assert 'LIMIT' not in fixed
+        assert effective_limit == DEFAULT_LIMIT
 
 
 class TestPipelineOrchestration:
@@ -346,6 +352,7 @@ class TestPipelineOrchestration:
         result = validate_and_sanitize('MATCH (n:Occurrence) RETURN n.name LIMIT 10')
         assert isinstance(result, SanitizedQuery)
         assert result.auto_fixes == []
+        assert result.effective_limit == 10
 
     def test_fixable_query_returns_fixes(self):
         result = validate_and_sanitize(
@@ -353,6 +360,7 @@ class TestPipelineOrchestration:
         )
         assert isinstance(result, SanitizedQuery)
         assert any('date' in f.lower() for f in result.auto_fixes)
+        assert result.effective_limit == DEFAULT_LIMIT
 
     def test_write_query_rejected(self):
         result = validate_and_sanitize('CREATE (n:Test {name: "test"})')

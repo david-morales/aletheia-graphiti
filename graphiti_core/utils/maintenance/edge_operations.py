@@ -320,7 +320,7 @@ async def resolve_extracted_edges(
     entities: list[EntityNode],
     edge_types: dict[str, type[BaseModel]],
     edge_type_map: dict[tuple[str, str], list[str]],
-) -> tuple[list[EntityEdge], list[EntityEdge]]:
+) -> tuple[list[EntityEdge], list[EntityEdge], list[EntityEdge]]:
     # Fast path: deduplicate exact matches within the extracted edges before parallel processing
     seen: dict[tuple[str, str, str], EntityEdge] = {}
     deduplicated_edges: list[EntityEdge] = []
@@ -484,12 +484,16 @@ async def resolve_extracted_edges(
 
     resolved_edges: list[EntityEdge] = []
     invalidated_edges: list[EntityEdge] = []
-    for result in results:
+    new_edges: list[EntityEdge] = []
+    for extracted_edge, result in zip(extracted_edges, results, strict=True):
         resolved_edge = result[0]
         invalidated_edge_chunk = result[1]
 
         resolved_edges.append(resolved_edge)
         invalidated_edges.extend(invalidated_edge_chunk)
+        # Track edges that are new (not duplicates of existing edges)
+        if resolved_edge.uuid == extracted_edge.uuid:
+            new_edges.append(resolved_edge)
 
     logger.debug(f'Resolved edges: {[(e.name, e.uuid) for e in resolved_edges]}')
 
@@ -498,7 +502,7 @@ async def resolve_extracted_edges(
         create_entity_edge_embeddings(embedder, invalidated_edges),
     )
 
-    return resolved_edges, invalidated_edges
+    return resolved_edges, invalidated_edges, new_edges
 
 
 def resolve_edge_contradictions(
