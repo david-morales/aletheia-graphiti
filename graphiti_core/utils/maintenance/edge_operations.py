@@ -570,6 +570,24 @@ async def resolve_extracted_edge(
         The resolved edge, any duplicates, and edges to invalidate.
     """
     if len(related_edges) == 0 and len(existing_edges) == 0:
+        # Still extract custom attributes even when no dedup/invalidation is needed
+        edge_model = (
+            edge_type_candidates.get(extracted_edge.name) if edge_type_candidates else None
+        )
+        if edge_model is not None and len(edge_model.model_fields) != 0:
+            edge_attributes_context = {
+                'episode_content': episode.content if episode is not None else '',
+                'reference_time': episode.valid_at if episode is not None else None,
+                'fact': extracted_edge.fact,
+            }
+            edge_attributes_response = await llm_client.generate_response(
+                prompt_library.extract_edges.extract_attributes(edge_attributes_context),
+                response_model=edge_model,
+                model_size=ModelSize.small,
+                prompt_name='extract_edges.extract_attributes',
+            )
+            extracted_edge.attributes = edge_attributes_response
+
         return extracted_edge, [], []
 
     # Fast path: if the fact text and endpoints already exist verbatim, reuse the matching edge.
