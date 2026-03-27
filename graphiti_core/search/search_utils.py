@@ -399,7 +399,8 @@ async def edge_similarity_search(
             filter_queries.append('m.uuid = $target_uuid')
 
     filter_queries.append('e.fact_embedding IS NOT NULL')
-    filter_queries.append('size(e.fact_embedding) = size($search_vector)')
+    if driver.provider != GraphProvider.FALKORDB:
+        filter_queries.append('size(e.fact_embedding) = size($search_vector)')
 
     filter_query = ''
     if filter_queries:
@@ -760,7 +761,10 @@ async def node_similarity_search(
         filter_params['group_ids'] = group_ids
 
     filter_queries.append('n.name_embedding IS NOT NULL')
-    filter_queries.append('size(n.name_embedding) = size($search_vector)')
+    # FalkorDB stores embeddings as vecf32 which doesn't support size().
+    # Skip the dimension check for FalkorDB — all embeddings use the same model.
+    if driver.provider != GraphProvider.FALKORDB:
+        filter_queries.append('size(n.name_embedding) = size($search_vector)')
 
     filter_query = ''
     if filter_queries:
@@ -1217,8 +1221,9 @@ async def community_similarity_search(
 
     filter_clauses: list[str] = [
         'c.name_embedding IS NOT NULL',
-        'size(c.name_embedding) = size($search_vector)',
     ]
+    if driver.provider != GraphProvider.FALKORDB:
+        filter_clauses.append('size(c.name_embedding) = size($search_vector)')
     if group_ids is not None and len(group_ids) > 0:
         filter_clauses.append('c.group_id IN $group_ids')
         query_params['group_ids'] = group_ids
