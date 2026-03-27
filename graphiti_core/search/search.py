@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 from collections import defaultdict
 from time import time
@@ -24,7 +25,7 @@ from graphiti_core.edges import EntityEdge
 from graphiti_core.embedder.client import EMBEDDING_DIM
 from graphiti_core.errors import SearchRerankerError
 from graphiti_core.graphiti_types import GraphitiClients
-from graphiti_core.helpers import semaphore_gather, validate_group_ids
+from graphiti_core.helpers import validate_group_ids
 from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 from graphiti_core.search.search_config import (
     DEFAULT_SEARCH_LIMIT,
@@ -130,7 +131,7 @@ async def search(
             (nodes, node_reranker_scores),
             (episodes, episode_reranker_scores),
             (communities, community_reranker_scores),
-        ) = await semaphore_gather(
+        ) = await asyncio.gather(
             node_search(
                 driver,
                 cross_encoder,
@@ -189,7 +190,7 @@ async def search(
             (nodes, node_reranker_scores),
             (episodes, episode_reranker_scores),
             (communities, community_reranker_scores),
-        ) = await semaphore_gather(
+        ) = await asyncio.gather(
             edge_search(
                 driver,
                 cross_encoder,
@@ -309,7 +310,7 @@ async def edge_search(
     # Execute only the configured search methods
     search_results: list[list[EntityEdge]] = []
     if search_tasks:
-        search_results = list(await semaphore_gather(*search_tasks))
+        search_results = list(await asyncio.gather(*search_tasks))
 
     if EdgeSearchMethod.bfs in config.search_methods and bfs_origin_node_uuids is None:
         source_node_uuids = [edge.source_node_uuid for result in search_results for edge in result]
@@ -441,7 +442,7 @@ async def node_search(
     # Execute only the configured search methods
     search_results: list[list[EntityNode]] = []
     if search_tasks:
-        search_results = list(await semaphore_gather(*search_tasks))
+        search_results = list(await asyncio.gather(*search_tasks))
 
     if NodeSearchMethod.bfs in config.search_methods and bfs_origin_node_uuids is None:
         origin_node_uuids = [node.uuid for result in search_results for node in result]
@@ -517,7 +518,7 @@ async def episode_search(
     if config is None:
         return [], []
     search_results: list[list[EpisodicNode]] = list(
-        await semaphore_gather(
+        await asyncio.gather(
             *[
                 episode_fulltext_search(driver, query, search_filter, group_ids, 2 * limit),
             ]
@@ -566,7 +567,7 @@ async def community_search(
         return [], []
 
     search_results: list[list[CommunityNode]] = list(
-        await semaphore_gather(
+        await asyncio.gather(
             *[
                 community_fulltext_search(driver, query, group_ids, 2 * limit),
                 community_similarity_search(
