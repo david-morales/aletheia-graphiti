@@ -1114,16 +1114,6 @@ class Graphiti:
                     for episode in bulk_episodes
                 ]
 
-                # Save all episodes
-                await add_nodes_and_edges_bulk(
-                    driver=self.driver,
-                    episodic_nodes=episodes,
-                    episodic_edges=[],
-                    entity_nodes=[],
-                    entity_edges=[],
-                    embedder=self.embedder,
-                )
-
                 # Get previous episode context for each episode
                 episode_context = await retrieve_previous_episodes_bulk(self.driver, episodes)
 
