@@ -16,6 +16,13 @@ import graphiti_core.helpers as helpers_mod
 from graphiti_core.helpers import reset_global_semaphore, semaphore_gather
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_semaphore_after_test():
+    """Reset global semaphore to None after each test to prevent state leakage."""
+    yield
+    helpers_mod._global_semaphore = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
