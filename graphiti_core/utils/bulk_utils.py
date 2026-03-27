@@ -301,10 +301,28 @@ async def extract_nodes_and_edges_bulk(
     excluded_entity_types: list[str] | None = None,
     edge_types: dict[str, type[BaseModel]] | None = None,
     custom_extraction_instructions: str | None = None,
-) -> tuple[list[list[EntityNode]], list[list[EntityEdge]]]:
-    extracted_nodes_bulk: list[list[EntityNode]] = await semaphore_gather(
-        *[
-            extract_nodes(
+) -> tuple[list[list[EntityNode]], list[list[EntityEdge]], list[int]]:
+    """Extract nodes and edges from episodes with per-episode isolation.
+
+    If any single episode's extraction fails, the error is caught and the episode
+    is recorded in ``failed_indices`` instead of aborting the entire batch.
+
+    Returns
+    -------
+    tuple[list[list[EntityNode]], list[list[EntityEdge]], list[int]]
+        (nodes_per_episode, edges_per_episode, failed_indices) where the node/edge
+        lists contain only successful episodes and failed_indices lists the original
+        indices of episodes that failed during extraction.
+    """
+    failed_indices: list[int] = []
+
+    # --- Phase 1: Node extraction with per-episode isolation ---
+
+    async def _safe_extract_nodes(
+        idx: int, episode: EpisodicNode, previous_episodes: list[EpisodicNode]
+    ) -> tuple[int, list[EntityNode] | None, Exception | None]:
+        try:
+            nodes = await extract_nodes(
                 clients,
                 episode,
                 previous_episodes,
@@ -312,27 +330,102 @@ async def extract_nodes_and_edges_bulk(
                 excluded_entity_types=excluded_entity_types,
                 custom_extraction_instructions=custom_extraction_instructions,
             )
-            for episode, previous_episodes in episode_tuples
-        ]
+            return (idx, nodes, None)
+        except Exception as e:
+            logger.warning(
+                'Node extraction failed for episode %d (%s): %s',
+                idx, episode.name, e,
+            )
+            return (idx, None, e)
+
+    node_results: list[tuple[int, list[EntityNode] | None, Exception | None]] = (
+        await semaphore_gather(
+            *[
+                _safe_extract_nodes(i, episode, previous_episodes)
+                for i, (episode, previous_episodes) in enumerate(episode_tuples)
+            ]
+        )
     )
 
-    extracted_edges_bulk: list[list[EntityEdge]] = await semaphore_gather(
-        *[
-            extract_edges(
+    # Separate successes from failures
+    node_failed_set: set[int] = set()
+    successful_node_results: list[tuple[int, list[EntityNode]]] = []
+    for idx, nodes, error in node_results:
+        if error is not None or nodes is None:
+            node_failed_set.add(idx)
+        else:
+            successful_node_results.append((idx, nodes))
+
+    failed_indices.extend(sorted(node_failed_set))
+
+    # If all episodes failed node extraction, skip edge extraction entirely
+    if not successful_node_results:
+        return [], [], failed_indices
+
+    # --- Phase 2: Edge extraction only for successful episodes ---
+
+    async def _safe_extract_edges(
+        original_idx: int, episode: EpisodicNode, nodes: list[EntityNode],
+        previous_episodes: list[EpisodicNode],
+    ) -> tuple[int, list[EntityEdge] | None, Exception | None]:
+        try:
+            edges = await extract_edges(
                 clients,
                 episode,
-                extracted_nodes_bulk[i],
+                nodes,
                 previous_episodes,
                 edge_type_map=edge_type_map,
                 group_id=episode.group_id,
                 edge_types=edge_types,
                 custom_extraction_instructions=custom_extraction_instructions,
             )
-            for i, (episode, previous_episodes) in enumerate(episode_tuples)
-        ]
+            return (original_idx, edges, None)
+        except Exception as e:
+            logger.warning(
+                'Edge extraction failed for episode %d (%s): %s',
+                original_idx, episode.name, e,
+            )
+            return (original_idx, None, e)
+
+    edge_results: list[tuple[int, list[EntityEdge] | None, Exception | None]] = (
+        await semaphore_gather(
+            *[
+                _safe_extract_edges(
+                    idx, episode_tuples[idx][0], nodes, episode_tuples[idx][1],
+                )
+                for idx, nodes in successful_node_results
+            ]
+        )
     )
 
-    return extracted_nodes_bulk, extracted_edges_bulk
+    # Collect edge failures (episodes that passed node extraction but failed edge extraction)
+    edge_failed_set: set[int] = set()
+    for idx, edges, error in edge_results:
+        if error is not None or edges is None:
+            edge_failed_set.add(idx)
+
+    if edge_failed_set:
+        failed_indices.extend(sorted(edge_failed_set))
+        failed_indices.sort()
+
+    # Build final results: only fully successful episodes
+    all_failed = node_failed_set | edge_failed_set
+    extracted_nodes_bulk: list[list[EntityNode]] = []
+    extracted_edges_bulk: list[list[EntityEdge]] = []
+
+    # Build a lookup for edge results by original index
+    edge_by_idx: dict[int, list[EntityEdge]] = {}
+    for idx, edges, error in edge_results:
+        if error is None and edges is not None:
+            edge_by_idx[idx] = edges
+
+    for idx, nodes in successful_node_results:
+        if idx in all_failed:
+            continue
+        extracted_nodes_bulk.append(nodes)
+        extracted_edges_bulk.append(edge_by_idx[idx])
+
+    return extracted_nodes_bulk, extracted_edges_bulk, failed_indices
 
 
 async def dedupe_nodes_bulk(

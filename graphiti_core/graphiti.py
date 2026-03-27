@@ -125,6 +125,7 @@ class AddBulkEpisodeResults(BaseModel):
     edges: list[EntityEdge]
     communities: list[CommunityNode]
     community_edges: list[CommunityEdge]
+    failed_episode_indices: list[int] = []
 
 
 class AddTripletResults(BaseModel):
@@ -578,26 +579,52 @@ class Graphiti:
         dict[str, list[EntityNode]],
         dict[str, str],
         list[list[EntityEdge]],
+        list[int],
     ]:
-        """Extract nodes and edges from all episodes and deduplicate."""
-        # Extract all nodes and edges for each episode
-        extracted_nodes_bulk, extracted_edges_bulk = await extract_nodes_and_edges_bulk(
-            self.clients,
-            episode_context,
-            edge_type_map=edge_type_map,
-            edge_types=edge_types,
-            entity_types=entity_types,
-            excluded_entity_types=excluded_entity_types,
-            custom_extraction_instructions=custom_extraction_instructions,
+        """Extract nodes and edges from all episodes and deduplicate.
+
+        Returns
+        -------
+        tuple[dict[str, list[EntityNode]], dict[str, str], list[list[EntityEdge]], list[int]]
+            (nodes_by_episode, uuid_map, extracted_edges_bulk, failed_indices)
+        """
+        # Extract all nodes and edges for each episode (with per-episode isolation)
+        extracted_nodes_bulk, extracted_edges_bulk, failed_indices = (
+            await extract_nodes_and_edges_bulk(
+                self.clients,
+                episode_context,
+                edge_type_map=edge_type_map,
+                edge_types=edge_types,
+                entity_types=entity_types,
+                excluded_entity_types=excluded_entity_types,
+                custom_extraction_instructions=custom_extraction_instructions,
+            )
         )
+
+        if failed_indices:
+            logger.warning(
+                'Extraction failed for %d/%d episodes (indices: %s)',
+                len(failed_indices), len(episode_context), failed_indices,
+            )
+
+        # If all episodes failed, return early with empty results
+        if not extracted_nodes_bulk:
+            return {}, {}, [], failed_indices
+
+        # Filter episode_context to only successful episodes for dedup
+        failed_set = set(failed_indices)
+        successful_context = [
+            ctx for i, ctx in enumerate(episode_context)
+            if i not in failed_set
+        ]
 
         # Dedupe extracted nodes in memory
         nodes_by_episode, uuid_map = await dedupe_nodes_bulk(
-            self.clients, extracted_nodes_bulk, episode_context, entity_types,
+            self.clients, extracted_nodes_bulk, successful_context, entity_types,
             lock_manager=self._entity_lock_manager,
         )
 
-        return nodes_by_episode, uuid_map, extracted_edges_bulk
+        return nodes_by_episode, uuid_map, extracted_edges_bulk, failed_indices
 
     async def _resolve_nodes_and_edges_bulk(
         self,
@@ -1122,6 +1149,7 @@ class Graphiti:
                     nodes_by_episode,
                     uuid_map,
                     extracted_edges_bulk,
+                    failed_indices,
                 ) = await self._extract_and_dedupe_nodes_bulk(
                     episode_context,
                     edge_type_map or edge_type_map_default,
@@ -1130,6 +1158,32 @@ class Graphiti:
                     excluded_entity_types,
                     custom_extraction_instructions,
                 )
+
+                # Filter to successful episodes only
+                failed_set = set(failed_indices)
+                successful_episodes = [
+                    ep for i, ep in enumerate(episodes) if i not in failed_set
+                ]
+                successful_context = [
+                    ctx for i, ctx in enumerate(episode_context) if i not in failed_set
+                ]
+
+                # If ALL episodes failed, return early with empty results
+                if not successful_episodes:
+                    logger.warning(
+                        'All %d episodes failed extraction, returning empty results',
+                        len(episodes),
+                    )
+                    end = time()
+                    return AddBulkEpisodeResults(
+                        episodes=[],
+                        episodic_edges=[],
+                        nodes=[],
+                        edges=[],
+                        communities=[],
+                        community_edges=[],
+                        failed_episode_indices=failed_indices,
+                    )
 
                 # Create Episodic Edges
                 episodic_edges: list[EpisodicEdge] = []
@@ -1144,7 +1198,7 @@ class Graphiti:
                 edges_by_episode = await dedupe_edges_bulk(
                     self.clients,
                     extracted_edges_bulk_updated,
-                    episode_context,
+                    successful_context,
                     [],
                     edge_types or {},
                     edge_type_map or edge_type_map_default,
@@ -1159,11 +1213,11 @@ class Graphiti:
                 ) = await self._resolve_nodes_and_edges_bulk(
                     nodes_by_episode,
                     edges_by_episode,
-                    episode_context,
+                    successful_context,
                     entity_types,
                     edge_types,
                     edge_type_map or edge_type_map_default,
-                    episodes,
+                    successful_episodes,
                 )
 
                 # Resolved pointers for episodic edges
@@ -1172,7 +1226,7 @@ class Graphiti:
                 # save data to KG
                 await add_nodes_and_edges_bulk(
                     self.driver,
-                    episodes,
+                    successful_episodes,
                     resolved_episodic_edges,
                     final_hydrated_nodes,
                     resolved_edges + invalidated_edges,
@@ -1188,7 +1242,7 @@ class Graphiti:
                         saga_node = saga
 
                     # Sort episodes by valid_at to create NEXT_EPISODE chain in correct order
-                    sorted_episodes = sorted(episodes, key=lambda e: e.valid_at)
+                    sorted_episodes = sorted(successful_episodes, key=lambda e: e.valid_at)
 
                     # Find the most recent episode already in the saga
                     previous_episode_records, _, _ = await self.driver.execute_query(
@@ -1237,6 +1291,7 @@ class Graphiti:
                         'group_id': group_id,
                         'node.count': len(final_hydrated_nodes),
                         'edge.count': len(resolved_edges + invalidated_edges),
+                        'failed_episode.count': len(failed_indices),
                         'duration_ms': (end - start) * 1000,
                     }
                 )
@@ -1244,12 +1299,13 @@ class Graphiti:
                 logger.info(f'Completed add_episode_bulk in {(end - start) * 1000} ms')
 
                 return AddBulkEpisodeResults(
-                    episodes=episodes,
+                    episodes=successful_episodes,
                     episodic_edges=resolved_episodic_edges,
                     nodes=final_hydrated_nodes,
                     edges=resolved_edges + invalidated_edges,
                     communities=[],
                     community_edges=[],
+                    failed_episode_indices=failed_indices,
                 )
 
             except Exception as e:
