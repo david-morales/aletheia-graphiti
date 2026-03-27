@@ -1549,8 +1549,14 @@ async def get_schema() -> dict[str, Any]:
         schema['tool_capabilities'] = {
             'search': {
                 'search_methods': [
-                    {'index': 'name_embedding', 'type': 'cosine_similarity'},
-                    {'index': 'summary', 'type': 'bm25_fulltext'},
+                    {'index': 'name_embedding', 'type': 'cosine_similarity',
+                     'matches': 'entity names'},
+                    {'index': 'summary_embedding', 'type': 'cosine_similarity',
+                     'matches': 'entity summaries — contextual descriptions including event details and roles'},
+                    {'index': 'summary', 'type': 'bm25_fulltext',
+                     'matches': 'exact keyword matches in entity names and summaries'},
+                    {'index': 'fact_embedding', 'type': 'cosine_similarity',
+                     'matches': 'relationship facts'},
                 ],
                 'rerankers': ['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'],
                 'covers': {
@@ -1561,7 +1567,8 @@ async def get_schema() -> dict[str, Any]:
                 'does_not_cover': {
                     'entity_fields': ['domain_attribute_properties'],
                 },
-                'best_for': 'semantic discovery, entity lookup by name or concept',
+                'best_for': 'semantic discovery — concept searches match entity summaries '
+                            'and relationship facts, not just entity names',
             },
             'run_cypher': {
                 'search_methods': [{'type': 'property_match'}],
