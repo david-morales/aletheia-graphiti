@@ -119,12 +119,48 @@ def normalize_l2(embedding: list[float]) -> NDArray:
     return np.where(norm == 0, embedding_array, embedding_array / norm)
 
 
+# Module-level shared semaphore — lazily created on first use.
+# Shared across ALL semaphore_gather() calls so that concurrent batches
+# coordinate their LLM concurrency rather than each creating an independent
+# semaphore that multiplies total inflight calls.
+_global_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_global_semaphore() -> asyncio.Semaphore:
+    """Return the module-level shared semaphore, creating it lazily if needed."""
+    global _global_semaphore
+    if _global_semaphore is None:
+        _global_semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
+    return _global_semaphore
+
+
+def reset_global_semaphore(limit: int | None = None) -> None:
+    """Replace the global semaphore with a fresh one.
+
+    Args:
+        limit: Maximum concurrent coroutines for the new semaphore.
+               Defaults to SEMAPHORE_LIMIT when not provided.
+
+    Call this before starting concurrent batches when you want a clean
+    concurrency budget, or to change the effective limit at runtime.
+    """
+    global _global_semaphore
+    _global_semaphore = asyncio.Semaphore(limit if limit is not None else SEMAPHORE_LIMIT)
+
+
 # Use this instead of asyncio.gather() to bound coroutines
 async def semaphore_gather(
     *coroutines: Coroutine,
     max_coroutines: int | None = None,
 ) -> list[Any]:
-    semaphore = asyncio.Semaphore(max_coroutines or SEMAPHORE_LIMIT)
+    # When max_coroutines is explicitly supplied, use a LOCAL semaphore so that
+    # callers with specific per-call limits (e.g. build_communities) that want
+    # specific limits are not constrained by — and do not consume — the global budget.
+    # When omitted (the common case), all concurrent calls share one semaphore.
+    if max_coroutines is not None:
+        semaphore: asyncio.Semaphore = asyncio.Semaphore(max_coroutines)
+    else:
+        semaphore = _get_global_semaphore()
 
     async def _wrap_coroutine(coroutine):
         async with semaphore:
