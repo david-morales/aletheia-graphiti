@@ -14,12 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import json
 import logging
 import os
+import random
 import typing
 from json import JSONDecodeError
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -120,6 +122,11 @@ class AnthropicClient(LLMClient):
     """
 
     model: AnthropicModel
+
+    # Rate-limit retry configuration (mirrors BaseOpenAIClient)
+    MAX_RATE_LIMIT_RETRIES: ClassVar[int] = 5
+    RATE_LIMIT_BASE_DELAY: ClassVar[float] = 1.0
+    RATE_LIMIT_MAX_DELAY: ClassVar[float] = 60.0
 
     def __init__(
         self,
@@ -371,6 +378,7 @@ class AnthropicClient(LLMClient):
 
             retry_count = 0
             max_retries = 2
+            rate_limit_retry_count = 0
             last_error: Exception | None = None
 
             while retry_count <= max_retries:
@@ -388,8 +396,26 @@ class AnthropicClient(LLMClient):
                     # If no validation needed, return the response
                     return response
 
-                except (RateLimitError, RefusalError):
-                    # These errors should not trigger retries
+                except RateLimitError:
+                    rate_limit_retry_count += 1
+                    if rate_limit_retry_count > self.MAX_RATE_LIMIT_RETRIES:
+                        logger.error(
+                            f'Max rate limit retries ({self.MAX_RATE_LIMIT_RETRIES}) exceeded'
+                        )
+                        span.set_status('error', 'rate_limit_exceeded')
+                        raise
+                    delay = min(
+                        self.RATE_LIMIT_BASE_DELAY * (2 ** (rate_limit_retry_count - 1))
+                        + random.uniform(0, 1),
+                        self.RATE_LIMIT_MAX_DELAY,
+                    )
+                    logger.warning(
+                        f'Rate limited. Retrying in {delay:.1f}s '
+                        f'(attempt {rate_limit_retry_count}/{self.MAX_RATE_LIMIT_RETRIES})'
+                    )
+                    await asyncio.sleep(delay)
+                except RefusalError:
+                    # Refusal errors should not trigger retries
                     span.set_status('error', str(last_error))
                     raise
                 except Exception as e:

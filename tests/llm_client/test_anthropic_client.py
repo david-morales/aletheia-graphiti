@@ -27,6 +27,19 @@ from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.errors import RateLimitError, RefusalError
 from graphiti_core.prompts.models import Message
 
+# ---------------------------------------------------------------------------
+# Helper: build a mock tool_use response suitable for _generate_response
+# ---------------------------------------------------------------------------
+
+
+def _make_tool_use_response(data: dict) -> MagicMock:
+    content_item = MagicMock()
+    content_item.type = 'tool_use'
+    content_item.input = data
+    mock_response = MagicMock()
+    mock_response.content = [content_item]
+    return mock_response
+
 
 # Rename class to avoid pytest collection as a test class
 class ResponseModel(BaseModel):
@@ -249,6 +262,54 @@ class TestAnthropicClientGenerateResponse:
         # Should have called create twice due to retry
         assert mock_async_anthropic.messages.create.call_count == 2
         assert result['test_field'] == 'correct_value'
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retried_with_backoff(self, anthropic_client, mock_async_anthropic):
+        """Test that RateLimitError triggers retries with exponential backoff."""
+
+        class MockRateLimitError(Exception):
+            pass
+
+        success_response = _make_tool_use_response({'test_field': 'ok'})
+
+        with patch('anthropic.RateLimitError', MockRateLimitError):
+            # First 2 calls raise RateLimitError; third succeeds.
+            mock_async_anthropic.messages.create.side_effect = [
+                MockRateLimitError('rate limit'),
+                MockRateLimitError('rate limit'),
+                success_response,
+            ]
+
+            with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
+                messages = [Message(role='user', content='Test message')]
+                result = await anthropic_client.generate_response(
+                    messages, response_model=ResponseModel
+                )
+
+        # 3 create calls total (2 failed + 1 success)
+        assert mock_async_anthropic.messages.create.call_count == 3
+        # 2 sleeps (one per rate-limit retry before success)
+        assert mock_sleep.call_count == 2
+        assert result['test_field'] == 'ok'
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_exhausted_raises(self, anthropic_client, mock_async_anthropic):
+        """Test that RateLimitError is raised after all retries are exhausted."""
+
+        class MockRateLimitError(Exception):
+            pass
+
+        with patch('anthropic.RateLimitError', MockRateLimitError):
+            # All calls raise RateLimitError.
+            mock_async_anthropic.messages.create.side_effect = MockRateLimitError('rate limit')
+
+            with patch('asyncio.sleep', new_callable=AsyncMock):
+                messages = [Message(role='user', content='Test message')]
+                with pytest.raises(RateLimitError):
+                    await anthropic_client.generate_response(messages)
+
+        # 1 initial + MAX_RATE_LIMIT_RETRIES (5) retries = 6 total calls
+        assert mock_async_anthropic.messages.create.call_count == 6
 
 
 if __name__ == '__main__':
