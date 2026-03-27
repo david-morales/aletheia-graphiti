@@ -668,7 +668,13 @@ async def resolve_nodes_with_locks(
 
             return entity_key, canonical, lane_uuid_map
 
-    lane_results: list[tuple[str, EntityNode, dict[str, str]]] = await semaphore_gather(
+    # Use asyncio.gather (NOT semaphore_gather) to avoid deadlock: each lane
+    # holds an entity lock and internally calls resolve_extracted_nodes which
+    # uses semaphore_gather for graph searches and LLM calls. If we also wrap
+    # the outer lanes with the global semaphore, nested acquisition deadlocks
+    # when all slots are held by lane wrappers waiting for inner searches.
+    # Entity locks already serialize per-entity; LLM throttling happens inside.
+    lane_results: list[tuple[str, EntityNode, dict[str, str]]] = await asyncio.gather(
         *[_resolve_lane(key, nodes) for key, nodes in entity_lanes.items()]
     )
 
