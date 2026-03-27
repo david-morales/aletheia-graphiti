@@ -936,12 +936,12 @@ class Graphiti:
                     custom_extraction_instructions,
                 )
 
-                nodes, uuid_map, _ = await resolve_extracted_nodes(
+                nodes, uuid_map = await resolve_nodes_with_locks(
                     self.clients,
-                    extracted_nodes,
-                    episode,
-                    previous_episodes,
-                    entity_types,
+                    nodes_by_episode={episode.uuid: extracted_nodes},
+                    episode_context=[(episode, previous_episodes)],
+                    entity_types=entity_types,
+                    lock_manager=self._entity_lock_manager,
                 )
 
                 # Extract and resolve edges in parallel with attribute extraction
