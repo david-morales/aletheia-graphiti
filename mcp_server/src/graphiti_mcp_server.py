@@ -1558,6 +1558,15 @@ async def get_schema() -> dict[str, Any]:
                     {'index': 'fact_embedding', 'type': 'cosine_similarity',
                      'matches': 'relationship facts'},
                 ],
+                'strategies': {
+                    'exhaustive':   {'search_mode': 'combined', 'reranker': 'rrf',              'limit': 50},
+                    'precise':      {'search_mode': 'nodes',    'reranker': 'cross_encoder',    'limit': 5},
+                    'neighborhood': {'search_mode': 'edges',    'reranker': 'node_distance'},
+                    'diverse':      {'search_mode': 'combined', 'reranker': 'mmr'},
+                    'temporal':     {'search_mode': 'combined', 'reranker': 'rrf'},
+                    'path':         {'search_mode': 'edges',    'reranker': 'rrf'},
+                    'importance':   {'search_mode': 'nodes',    'reranker': 'episode_mentions'},
+                },
                 'rerankers': ['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'],
                 'covers': {
                     'entity_fields': ['name', 'summary'],
