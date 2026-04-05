@@ -439,6 +439,16 @@ SEARCH_RECIPES: dict[tuple[str, str], SearchConfig] = {
     ('communities', 'cross_encoder'): COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
 }
 
+INTENT_STRATEGIES: dict[str, dict] = {
+    'exhaustive':   {'search_mode': 'combined', 'reranker': 'rrf',              'limit': 50},
+    'precise':      {'search_mode': 'nodes',    'reranker': 'cross_encoder',    'limit': 5},
+    'neighborhood': {'search_mode': 'edges',    'reranker': 'node_distance',    'limit': 20},
+    'diverse':      {'search_mode': 'combined', 'reranker': 'mmr',             'limit': 10},
+    'temporal':     {'search_mode': 'combined', 'reranker': 'rrf',              'limit': 10},
+    'path':         {'search_mode': 'edges',    'reranker': 'rrf',              'limit': 10},
+    'importance':   {'search_mode': 'nodes',    'reranker': 'episode_mentions', 'limit': 10},
+}
+
 
 def resolve_search_config(search_mode: str, reranker: str, limit: int) -> SearchConfig:
     """Map search_mode + reranker to a SearchConfig recipe."""
@@ -605,6 +615,7 @@ async def add_memory(
 
 async def search(
     query: str,
+    intent: Literal['exhaustive', 'precise', 'neighborhood', 'diverse', 'temporal', 'path', 'importance'] | None = None,
     group_ids: list[str] | None = None,
     search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
     reranker: Literal['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'] = 'rrf',
@@ -615,13 +626,16 @@ async def search(
     valid_at: str | None = None,
     limit: int = 10,
 ) -> SearchResponse | ErrorResponse:
-    """Search the knowledge graph with full control over search strategy.
+    """Search the knowledge graph using a semantic intent or explicit parameters.
 
-    Supports multiple search modes (nodes, edges, communities, or combined), reranking
-    strategies, graph traversal from known starting nodes, and temporal/type filtering.
+    Prefer passing `intent` to let the server choose the best strategy.
+    Pass `search_mode`/`reranker` directly only when you need explicit control.
 
     Args:
         query: Natural language search query.
+        intent: Search intent — the server maps this to the best search_mode + reranker.
+                One of: exhaustive, precise, neighborhood, diverse, temporal, path, importance.
+                When provided, overrides search_mode and reranker defaults.
         group_ids: Search across these graph partitions. Omit to use the default.
         search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
         reranker: Reranking strategy — "rrf" (default), "mmr", "cross_encoder",
@@ -649,7 +663,23 @@ async def search(
             else []
         )
 
-        search_config = resolve_search_config(search_mode, reranker, limit)
+        # Resolve intent to search_mode + reranker
+        effective_search_mode = search_mode
+        effective_reranker = reranker
+        effective_limit = limit
+        if intent:
+            strategy = INTENT_STRATEGIES.get(intent)
+            if strategy is None:
+                return ErrorResponse(
+                    error=f"Unknown intent '{intent}'. "
+                    f"Valid intents: {list(INTENT_STRATEGIES.keys())}"
+                )
+            effective_search_mode = strategy['search_mode']
+            effective_reranker = strategy['reranker']
+            if limit == 10:  # default value — use intent's limit
+                effective_limit = strategy['limit']
+
+        search_config = resolve_search_config(effective_search_mode, effective_reranker, effective_limit)
 
         search_filters = SearchFilters()
         if entity_types:
@@ -1558,15 +1588,7 @@ async def get_schema() -> dict[str, Any]:
                     {'index': 'fact_embedding', 'type': 'cosine_similarity',
                      'matches': 'relationship facts'},
                 ],
-                'strategies': {
-                    'exhaustive':   {'search_mode': 'combined', 'reranker': 'rrf',              'limit': 50},
-                    'precise':      {'search_mode': 'nodes',    'reranker': 'cross_encoder',    'limit': 5},
-                    'neighborhood': {'search_mode': 'edges',    'reranker': 'node_distance'},
-                    'diverse':      {'search_mode': 'combined', 'reranker': 'mmr'},
-                    'temporal':     {'search_mode': 'combined', 'reranker': 'rrf'},
-                    'path':         {'search_mode': 'edges',    'reranker': 'rrf'},
-                    'importance':   {'search_mode': 'nodes',    'reranker': 'episode_mentions'},
-                },
+                'strategies': INTENT_STRATEGIES,
                 'rerankers': ['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'],
                 'covers': {
                     'entity_fields': ['name', 'summary'],
@@ -1999,11 +2021,12 @@ async def initialize_server() -> ServerConfig:
     # Initialize queue service with the client
     await queue_service.initialize(graphiti_client)
 
-    # Set MCP server settings
-    if config.server.host:
-        mcp.settings.host = config.server.host
-    if config.server.port:
-        mcp.settings.port = config.server.port
+    # Set MCP server settings (only for HTTP/SSE — stdio doesn't bind a port)
+    if config.server.transport != 'stdio':
+        if config.server.host:
+            mcp.settings.host = config.server.host
+        if config.server.port:
+            mcp.settings.port = config.server.port
 
     # Return MCP configuration for transport
     return config.server
