@@ -62,8 +62,6 @@ from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_senten
 logger = logging.getLogger(__name__)
 
 # Maximum number of existing-node candidates passed to the resolution LLM context.
-# Prevents token overflow when many nodes match (e.g. 15 extracted × 10 candidates = 150 nodes
-# with verbose attributes each, pushing the prompt past max_tokens).
 MAX_RESOLVE_CANDIDATES = 50
 
 NodeSummaryFilter = Callable[[EntityNode], Awaitable[bool]]
@@ -381,11 +379,12 @@ async def _resolve_with_llm(
 
     existing_nodes_context = [
         {
-            'name': candidate.name,
-            'entity_types': candidate.labels,
-            'entity_type_description': _get_entity_type_description(candidate.labels),
-            # candidate.attributes omitted: summaries and descriptions are too verbose and
-            # can push the resolution prompt past max_tokens when many candidates are present.
+            **{
+                'name': candidate.name,
+                'entity_types': candidate.labels,
+                'entity_type_description': _get_entity_type_description(candidate.labels),
+            },
+            **candidate.attributes,
         }
         for candidate in indexes.existing_nodes[:MAX_RESOLVE_CANDIDATES]
     ]
