@@ -191,6 +191,13 @@ async def add_nodes_and_edges_bulk_tx(
                         entity_data[k] = json.dumps(v)
                     else:
                         entity_data[k] = v
+            # FalkorDB param header parser breaks on literal newlines in strings.
+            # The falkordb client's quote_string() escapes backslashes and quotes
+            # but NOT newlines, so they appear raw in the CYPHER params header,
+            # splitting the command across lines and causing parse errors.
+            for k, v in entity_data.items():
+                if isinstance(v, str) and '\n' in v:
+                    entity_data[k] = v.replace('\n', ' ')
         else:
             entity_data.update(node.attributes or {})
 
@@ -226,6 +233,10 @@ async def add_nodes_and_edges_bulk_tx(
                         edge_data[k] = json.dumps(v)
                     else:
                         edge_data[k] = v
+            # Same newline sanitization as nodes (see comment above)
+            for k, v in edge_data.items():
+                if isinstance(v, str) and '\n' in v:
+                    edge_data[k] = v.replace('\n', ' ')
         else:
             edge_data.update(edge.attributes or {})
 
