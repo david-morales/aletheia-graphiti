@@ -41,23 +41,29 @@ from graphiti_core.utils.datetime_utils import convert_datetimes_to_strings
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_params_newlines(params: dict) -> None:
-    """Replace newlines/tabs in string param values to prevent CYPHER header breakage.
+def _sanitize_params_for_cypher_header(params: dict) -> None:
+    """Sanitize string values in params to prevent CYPHER header parse errors.
 
     The falkordb client serializes params into a ``CYPHER key=value ...`` header.
-    ``quote_string()`` escapes backslashes and quotes but NOT newlines, so literal
-    ``\\n`` in a value splits the header across lines, causing a parse error.
-    This is a workaround until falkordb-py fixes ``quote_string`` upstream
+    ``quote_string()`` escapes backslashes and quotes but NOT newlines or null
+    bytes, so these characters break the header.  This is a workaround until
+    falkordb-py fixes ``quote_string`` upstream
     (see https://github.com/FalkorDB/falkordb-py/issues/201).
     """
     for key, value in params.items():
         if isinstance(value, str):
-            if '\n' in value or '\r' in value or '\t' in value:
-                params[key] = value.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+            if '\n' in value or '\r' in value or '\t' in value or '\x00' in value:
+                params[key] = (
+                    value
+                    .replace('\x00', '')     # strip null bytes (encoding artifacts)
+                    .replace('\n', ' ')
+                    .replace('\r', ' ')
+                    .replace('\t', ' ')
+                )
         elif isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    _sanitize_params_newlines(item)
+                    _sanitize_params_for_cypher_header(item)
 
 STOPWORDS = [
     'a',
@@ -122,12 +128,12 @@ class FalkorDriverSession(GraphDriverSession):
         if isinstance(query, list):
             for cypher, params in query:
                 params = convert_datetimes_to_strings(params)
-                _sanitize_params_newlines(params)
+                _sanitize_params_for_cypher_header(params)
                 await self.graph.query(str(cypher), params)  # type: ignore[reportUnknownArgumentType]
         else:
             params = dict(kwargs)
             params = convert_datetimes_to_strings(params)
-            _sanitize_params_newlines(params)
+            _sanitize_params_for_cypher_header(params)
             await self.graph.query(str(query), params)  # type: ignore[reportUnknownArgumentType]
         # Assuming `graph.query` is async (ideal); otherwise, wrap in executor
         return None
