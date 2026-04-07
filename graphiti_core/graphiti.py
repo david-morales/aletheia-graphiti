@@ -936,12 +936,20 @@ class Graphiti:
                     custom_extraction_instructions,
                 )
 
-                nodes, uuid_map = await resolve_nodes_with_locks(
+                # Resolve all extracted nodes at once so the LLM dedup prompt
+                # sees full cross-entity context within the episode. The entity
+                # lock manager is only needed for the bulk path where multiple
+                # episodes are processed concurrently; a single add_episode call
+                # has no concurrency risk and passing nodes through resolve_nodes_with_locks
+                # would split them into per-entity lanes that resolve one at a time,
+                # breaking the LLM's ability to distinguish newly-declared siblings
+                # (e.g. a role entity vs its parent report with similar names).
+                nodes, uuid_map, _ = await resolve_extracted_nodes(
                     self.clients,
-                    nodes_by_episode={episode.uuid: extracted_nodes},
-                    episode_context=[(episode, previous_episodes)],
-                    entity_types=entity_types,
-                    lock_manager=self._entity_lock_manager,
+                    extracted_nodes,
+                    episode,
+                    previous_episodes,
+                    entity_types,
                 )
 
                 # Extract and resolve edges in parallel with attribute extraction
