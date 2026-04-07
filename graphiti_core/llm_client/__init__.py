@@ -14,9 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+from .anthropic_client import AnthropicClient
 from .client import LLMClient
 from .config import LLMConfig
 from .errors import RateLimitError
 from .openai_client import OpenAIClient
 
-__all__ = ['LLMClient', 'OpenAIClient', 'LLMConfig', 'RateLimitError']
+__all__ = ['LLMClient', 'OpenAIClient', 'AnthropicClient', 'LLMConfig', 'RateLimitError']
