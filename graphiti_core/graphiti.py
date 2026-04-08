@@ -70,6 +70,7 @@ from graphiti_core.search.search_utils import (
 )
 from graphiti_core.telemetry import capture_event
 from graphiti_core.tracer import Tracer, create_tracer
+from graphiti_core.validation import EdgeValidator
 from graphiti_core.utils.bulk_utils import (
     RawEpisode,
     add_nodes_and_edges_bulk,
@@ -147,6 +148,7 @@ class Graphiti:
         max_coroutines: int | None = None,
         tracer: Tracer | None = None,
         trace_span_prefix: str = 'graphiti',
+        edge_validators: list[EdgeValidator] | None = None,
     ):
         """
         Initialize a Graphiti instance.
@@ -231,12 +233,20 @@ class Graphiti:
         # Set tracer on clients
         self.llm_client.set_tracer(self.tracer)
 
+        # Edge validators: if None or empty, graphiti behavior is unchanged.
+        # When provided, each validator is called on every extracted edge inside
+        # resolve_extracted_edges before graphiti's own rename-to-RELATES_TO fallback.
+        self._edge_validators: list[EdgeValidator] = (
+            list(edge_validators) if edge_validators else []
+        )
+
         self.clients = GraphitiClients(
             driver=self.driver,
             llm_client=self.llm_client,
             embedder=self.embedder,
             cross_encoder=self.cross_encoder,
             tracer=self.tracer,
+            edge_validators=self._edge_validators,
         )
 
         self._entity_lock_manager = EntityLockManager()

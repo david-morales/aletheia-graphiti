@@ -87,3 +87,93 @@ def test_protocol_runtime_checkable():
 
     assert isinstance(GoodValidator(), EdgeValidator)
     assert not isinstance(BadValidator(), EdgeValidator)
+
+
+def _mock_clients():
+    """Build MagicMocks that pass Pydantic's isinstance validation for GraphitiClients."""
+    from unittest.mock import MagicMock
+
+    from graphiti_core.cross_encoder.client import CrossEncoderClient
+    from graphiti_core.driver.driver import GraphDriver
+    from graphiti_core.embedder import EmbedderClient
+    from graphiti_core.llm_client import LLMClient
+    from graphiti_core.tracer import Tracer
+
+    mock_driver = MagicMock(spec=GraphDriver)
+    mock_driver.provider = "falkordb"
+    return {
+        "graph_driver": mock_driver,
+        "llm_client": MagicMock(spec=LLMClient),
+        "embedder": MagicMock(spec=EmbedderClient),
+        "cross_encoder": MagicMock(spec=CrossEncoderClient),
+        "tracer": MagicMock(spec=Tracer),
+    }
+
+
+def test_graphiti_accepts_edge_validators_parameter():
+    """Graphiti.__init__ accepts edge_validators as a keyword argument.
+
+    Default (None) must keep _edge_validators as an empty list,
+    preserving backward compatibility.
+    """
+    from graphiti_core.graphiti import Graphiti
+
+    mocks = _mock_clients()
+
+    # Default: edge_validators is None → stored as empty list
+    g = Graphiti(
+        graph_driver=mocks["graph_driver"],
+        llm_client=mocks["llm_client"],
+        embedder=mocks["embedder"],
+        cross_encoder=mocks["cross_encoder"],
+    )
+    assert g._edge_validators == []
+    assert g.clients.edge_validators == []
+
+
+def test_graphiti_stores_explicit_edge_validators():
+    """When edge_validators is passed, Graphiti stores them on _edge_validators and clients."""
+    from graphiti_core.graphiti import Graphiti
+    from graphiti_core.validation import EdgeDecision
+
+    class DummyValidator:
+        name = "dummy"
+
+        def validate_edge(self, edge, source_node, target_node, context):
+            return EdgeDecision(action="keep")
+
+    mocks = _mock_clients()
+
+    g = Graphiti(
+        graph_driver=mocks["graph_driver"],
+        llm_client=mocks["llm_client"],
+        embedder=mocks["embedder"],
+        cross_encoder=mocks["cross_encoder"],
+        edge_validators=[DummyValidator()],
+    )
+    assert len(g._edge_validators) == 1
+    assert g._edge_validators[0].name == "dummy"
+    assert g.clients.edge_validators == g._edge_validators
+
+
+def test_graphiti_clients_has_edge_validators_field():
+    """GraphitiClients Pydantic model exposes edge_validators as a field."""
+    from graphiti_core.graphiti_types import GraphitiClients
+
+    field_names = set(GraphitiClients.model_fields.keys())
+    assert "edge_validators" in field_names
+
+
+def test_graphiti_clients_default_edge_validators_is_empty_list():
+    """GraphitiClients constructor defaults edge_validators to []."""
+    from graphiti_core.graphiti_types import GraphitiClients
+
+    mocks = _mock_clients()
+    clients = GraphitiClients(
+        driver=mocks["graph_driver"],
+        llm_client=mocks["llm_client"],
+        embedder=mocks["embedder"],
+        cross_encoder=mocks["cross_encoder"],
+        tracer=mocks["tracer"],
+    )
+    assert clients.edge_validators == []

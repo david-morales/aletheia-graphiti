@@ -14,13 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from graphiti_core.cross_encoder import CrossEncoderClient
 from graphiti_core.driver.driver import GraphDriver
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.tracer import Tracer
+from graphiti_core.validation import EdgeValidator
 
 
 class GraphitiClients(BaseModel):
@@ -29,5 +30,8 @@ class GraphitiClients(BaseModel):
     embedder: EmbedderClient
     cross_encoder: CrossEncoderClient
     tracer: Tracer
+    # Edge validators: empty list means no hooks; behavior identical to pre-Task 8.
+    # Populated by Graphiti.__init__ from its edge_validators parameter.
+    edge_validators: list[EdgeValidator] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
