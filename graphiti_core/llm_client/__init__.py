@@ -14,10 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from .anthropic_client import AnthropicClient
 from .client import LLMClient
 from .config import LLMConfig
 from .errors import RateLimitError
 from .openai_client import OpenAIClient
 
-__all__ = ['LLMClient', 'OpenAIClient', 'AnthropicClient', 'LLMConfig', 'RateLimitError']
+# AnthropicClient is re-exported only when the `anthropic` package is
+# installed. The underlying module raises ImportError at import time when
+# the dependency is missing (lazy-dependency pattern), so we guard here
+# to keep `from graphiti_core.llm_client import ...` working for the rest
+# of the symbols in environments that don't install the anthropic extra.
+try:
+    from .anthropic_client import AnthropicClient
+
+    __all__ = ['LLMClient', 'OpenAIClient', 'AnthropicClient', 'LLMConfig', 'RateLimitError']
+except ImportError:
+    __all__ = ['LLMClient', 'OpenAIClient', 'LLMConfig', 'RateLimitError']
