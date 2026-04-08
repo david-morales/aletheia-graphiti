@@ -44,10 +44,79 @@ from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.content_chunking import generate_covering_chunks
 from graphiti_core.utils.datetime_utils import ensure_utc, utc_now
 from graphiti_core.utils.maintenance.dedup_helpers import _normalize_string_exact
+from graphiti_core.validation import EdgeDecision, EdgeValidator, ValidationContext
 
 MAX_NODES = 15
 
 logger = logging.getLogger(__name__)
+
+
+async def _apply_edge_validators(
+    extracted_edges: list[EntityEdge],
+    uuid_entity_map: dict[str, EntityNode],
+    validators: list[EdgeValidator],
+    context: ValidationContext,
+) -> list[EntityEdge]:
+    """Run each extracted edge through the validator chain.
+
+    Semantics:
+    - `keep`: edge passes to the next validator or to the downstream pipeline
+    - `drop`: edge is removed immediately; remaining validators are not called
+    - `warn`: edge is kept but the remaining validators still see it (a
+      warning is emitted via the logger)
+    - any validator raising is caught and treated as `keep` (fail-open)
+
+    If validators is empty, the input list is returned unchanged.
+    If a node is missing from uuid_entity_map, the edge is kept without
+    validation (the hook can't pass nodes to the validator, so it defers
+    the decision to the downstream pipeline).
+    """
+    if not validators:
+        return extracted_edges
+
+    kept: list[EntityEdge] = []
+    for edge in extracted_edges:
+        source_node = uuid_entity_map.get(edge.source_node_uuid)
+        target_node = uuid_entity_map.get(edge.target_node_uuid)
+
+        if source_node is None or target_node is None:
+            # Can't validate without node context; keep and let downstream handle
+            kept.append(edge)
+            continue
+
+        dropped = False
+        for validator in validators:
+            try:
+                decision = validator.validate_edge(edge, source_node, target_node, context)
+            except Exception as exc:
+                logger.warning(
+                    'Edge validator %s raised on edge %s: %s; failing open',
+                    getattr(validator, 'name', type(validator).__name__),
+                    edge.uuid, exc,
+                )
+                continue
+
+            if decision.action == 'drop':
+                logger.info(
+                    'Edge dropped by validator %s: %s (reason: %s)',
+                    getattr(validator, 'name', type(validator).__name__),
+                    edge.name, decision.reason,
+                )
+                dropped = True
+                break
+            elif decision.action == 'warn':
+                logger.warning(
+                    'Edge warned by validator %s: %s (reason: %s)',
+                    getattr(validator, 'name', type(validator).__name__),
+                    edge.name, decision.reason,
+                )
+                # continue to next validator
+            # 'keep' falls through to next validator or next edge
+
+        if not dropped:
+            kept.append(edge)
+
+    return kept
 
 
 def build_episodic_edges(
@@ -340,6 +409,28 @@ async def resolve_extracted_edges(
     driver = clients.driver
     llm_client = clients.llm_client
     embedder = clients.embedder
+
+    # Apply edge validators (if any registered on the GraphitiClients instance).
+    # MUST run BEFORE any parallel lists (valid_edges_list, related_edges_lists,
+    # edge_invalidation_candidates, edge_types_lst) are built, otherwise a
+    # validator that drops an edge will cause those lists to have mismatched
+    # lengths and the downstream `zip(..., strict=True)` calls will raise
+    # ValueError. The validator sees the edges with their node context from
+    # the `entities` parameter only; edges referencing nodes not yet fetched
+    # from the DB are kept unvalidated (fail-open) and let graphiti's
+    # phantom-UUID filter handle them downstream.
+    if getattr(clients, 'edge_validators', None):
+        temp_uuid_entity_map: dict[str, EntityNode] = {e.uuid: e for e in entities}
+        validator_ctx = ValidationContext(
+            episode_uuid=episode.uuid if episode is not None else "",
+            knowledge_graph=(episode.group_id if episode is not None else ""),
+            edge_type_map=edge_type_map,
+            entity_types={},
+        )
+        extracted_edges = await _apply_edge_validators(
+            extracted_edges, temp_uuid_entity_map, clients.edge_validators, validator_ctx
+        )
+
     await create_entity_edge_embeddings(embedder, extracted_edges)
 
     valid_edges_list: list[list[EntityEdge]] = await semaphore_gather(
@@ -405,6 +496,9 @@ async def resolve_extracted_edges(
     # Filter out edges with phantom UUID references that could not be resolved from the database.
     # This guards against LLM inconsistency between node-extraction and edge-extraction steps,
     # where edges may reference UUIDs of nodes that were never created in the current batch.
+    # Note: the edge validator hook runs much earlier, right after the dedup fast path,
+    # BEFORE the parallel lists are built, so by the time we get here the validator has
+    # already filtered its drops. This filter only handles the cross-episode UUID case.
     phantom_indices = [
         i
         for i, e in enumerate(extracted_edges)
