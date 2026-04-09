@@ -44,7 +44,7 @@ from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.content_chunking import generate_covering_chunks
 from graphiti_core.utils.datetime_utils import ensure_utc, utc_now
 from graphiti_core.utils.maintenance.dedup_helpers import _normalize_string_exact
-from graphiti_core.validation import EdgeDecision, EdgeValidator, ValidationContext
+from graphiti_core.validation import EdgeDecision, EdgeValidationObserver, EdgeValidator, ValidationContext
 
 MAX_NODES = 15
 
@@ -56,6 +56,8 @@ async def _apply_edge_validators(
     uuid_entity_map: dict[str, EntityNode],
     validators: list[EdgeValidator],
     context: ValidationContext,
+    observer: 'EdgeValidationObserver | None' = None,
+    dry_run: bool = False,
 ) -> list[EntityEdge]:
     """Run each extracted edge through the validator chain.
 
@@ -70,6 +72,14 @@ async def _apply_edge_validators(
     If a node is missing from uuid_entity_map, the edge is kept without
     validation (the hook can't pass nodes to the validator, so it defers
     the decision to the downstream pipeline).
+
+    Parameters
+    ----------
+    observer : EdgeValidationObserver | None
+        When set, record() / record_error() is called after each decision.
+    dry_run : bool
+        When True, drop decisions are recorded but converted to keep
+        (no edges actually removed).
     """
     if not validators:
         return extracted_edges
@@ -86,32 +96,62 @@ async def _apply_edge_validators(
 
         dropped = False
         for validator in validators:
+            validator_name = getattr(validator, 'name', type(validator).__name__)
             try:
                 decision = validator.validate_edge(edge, source_node, target_node, context)
             except Exception as exc:
                 logger.warning(
                     'Edge validator %s raised on edge %s: %s; failing open',
-                    getattr(validator, 'name', type(validator).__name__),
-                    edge.uuid, exc,
+                    validator_name, edge.uuid, exc,
                 )
+                if observer is not None:
+                    try:
+                        observer.record_error(
+                            edge=edge,
+                            source_node=source_node,
+                            target_node=target_node,
+                            context=context,
+                            validator_name=validator_name,
+                            error_message=str(exc),
+                            dry_run=dry_run,
+                        )
+                    except Exception:
+                        logger.warning('Observer.record_error() failed; ignoring')
                 continue
 
+            if observer is not None:
+                try:
+                    observer.record(
+                        edge=edge,
+                        source_node=source_node,
+                        target_node=target_node,
+                        context=context,
+                        validator_name=validator_name,
+                        decision=decision,
+                        dry_run=dry_run,
+                    )
+                except Exception:
+                    logger.warning('Observer.record() failed; ignoring')
+
             if decision.action == 'drop':
-                logger.info(
-                    'Edge dropped by validator %s: %s (reason: %s)',
-                    getattr(validator, 'name', type(validator).__name__),
-                    edge.name, decision.reason,
-                )
-                dropped = True
-                break
+                if not dry_run:
+                    logger.info(
+                        'Edge dropped by validator %s: %s (reason: %s)',
+                        validator_name, edge.name, decision.reason,
+                    )
+                    dropped = True
+                    break
+                else:
+                    logger.info(
+                        'Edge would be dropped by validator %s: %s (reason: %s) [dry-run]',
+                        validator_name, edge.name, decision.reason,
+                    )
+                    break  # still short-circuit remaining validators for this edge
             elif decision.action == 'warn':
                 logger.warning(
                     'Edge warned by validator %s: %s (reason: %s)',
-                    getattr(validator, 'name', type(validator).__name__),
-                    edge.name, decision.reason,
+                    validator_name, edge.name, decision.reason,
                 )
-                # continue to next validator
-            # 'keep' falls through to next validator or next edge
 
         if not dropped:
             kept.append(edge)
@@ -428,7 +468,12 @@ async def resolve_extracted_edges(
             entity_types={},
         )
         extracted_edges = await _apply_edge_validators(
-            extracted_edges, temp_uuid_entity_map, clients.edge_validators, validator_ctx
+            extracted_edges,
+            temp_uuid_entity_map,
+            clients.edge_validators,
+            validator_ctx,
+            observer=getattr(clients, 'validation_observer', None),
+            dry_run=getattr(clients, 'validation_dry_run', False),
         )
 
     await create_entity_edge_embeddings(embedder, extracted_edges)

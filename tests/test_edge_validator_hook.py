@@ -161,3 +161,110 @@ async def test_apply_validators_drop_shortcircuits_remaining_validators(context,
     kept = await _apply_edge_validators(edges, basic_uuid_map, [Drop(), ShouldNotRun()], context)
     assert kept == []
     assert called == ["drop"]  # ShouldNotRun never executed
+
+
+class _RecordingObserver:
+    """Test observer that records all calls."""
+
+    def __init__(self):
+        self.records = []
+        self.errors = []
+
+    def record(self, edge, source_node, target_node, context, validator_name, decision, dry_run=False):
+        self.records.append({
+            "edge_name": edge.name,
+            "validator": validator_name,
+            "action": decision.action,
+            "reason": decision.reason,
+            "dry_run": dry_run,
+        })
+
+    def record_error(self, edge, source_node, target_node, context, validator_name, error_message, dry_run=False):
+        self.errors.append({
+            "edge_name": edge.name,
+            "validator": validator_name,
+            "error": error_message,
+            "dry_run": dry_run,
+        })
+
+
+@pytest.mark.asyncio
+async def test_observer_records_keep_decision(context, basic_uuid_map):
+    """Observer.record() is called for every keep decision."""
+    from graphiti_core.utils.maintenance.edge_operations import _apply_edge_validators
+
+    observer = _RecordingObserver()
+    edges = [_make_edge("REL_A", "s1", "t1")]
+    kept = await _apply_edge_validators(
+        edges, basic_uuid_map, [_KeepAllValidator()], context,
+        observer=observer, dry_run=False,
+    )
+    assert len(kept) == 1
+    assert len(observer.records) == 1
+    assert observer.records[0]["action"] == "keep"
+    assert observer.records[0]["validator"] == "keep-all"
+    assert observer.records[0]["dry_run"] is False
+
+
+@pytest.mark.asyncio
+async def test_observer_records_drop_decision(context, basic_uuid_map):
+    """Observer.record() is called for drop decisions."""
+    from graphiti_core.utils.maintenance.edge_operations import _apply_edge_validators
+
+    observer = _RecordingObserver()
+    edges = [_make_edge("REL_A", "s1", "t1")]
+    kept = await _apply_edge_validators(
+        edges, basic_uuid_map, [_DropAllValidator()], context,
+        observer=observer, dry_run=False,
+    )
+    assert len(kept) == 0
+    assert len(observer.records) == 1
+    assert observer.records[0]["action"] == "drop"
+
+
+@pytest.mark.asyncio
+async def test_observer_records_error_on_exception(context, basic_uuid_map):
+    """Observer.record_error() is called when a validator raises."""
+    from graphiti_core.utils.maintenance.edge_operations import _apply_edge_validators
+
+    observer = _RecordingObserver()
+    edges = [_make_edge("REL_A", "s1", "t1")]
+    kept = await _apply_edge_validators(
+        edges, basic_uuid_map, [_BrokenValidator()], context,
+        observer=observer, dry_run=False,
+    )
+    assert len(kept) == 1  # fail-open
+    assert len(observer.errors) == 1
+    assert "oops" in observer.errors[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_converts_drops_to_keeps(context, basic_uuid_map):
+    """In dry-run mode, drop decisions are recorded but edges are kept."""
+    from graphiti_core.utils.maintenance.edge_operations import _apply_edge_validators
+
+    observer = _RecordingObserver()
+    edges = [_make_edge("REL_A", "s1", "t1"), _make_edge("REL_B", "s1", "t1")]
+    kept = await _apply_edge_validators(
+        edges, basic_uuid_map, [_DropAllValidator()], context,
+        observer=observer, dry_run=True,
+    )
+    # Both edges kept despite drop decisions
+    assert len(kept) == 2
+    # But observer recorded the drops
+    assert len(observer.records) == 2
+    assert all(r["action"] == "drop" for r in observer.records)
+    assert all(r["dry_run"] is True for r in observer.records)
+
+
+@pytest.mark.asyncio
+async def test_no_observer_still_works(context, basic_uuid_map):
+    """When observer is None, validator behavior is unchanged."""
+    from graphiti_core.utils.maintenance.edge_operations import _apply_edge_validators
+
+    edges = [_make_edge("REL_A", "s1", "t1")]
+    # No observer, no dry_run — existing behavior
+    kept = await _apply_edge_validators(
+        edges, basic_uuid_map, [_DropAllValidator()], context,
+    )
+    assert len(kept) == 0
