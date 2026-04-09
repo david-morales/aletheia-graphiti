@@ -80,3 +80,34 @@ class EdgeValidator(Protocol):
         target_node: "EntityNode",
         context: ValidationContext,
     ) -> EdgeDecision: ...
+
+
+@runtime_checkable
+class EdgeValidationObserver(Protocol):
+    """Protocol for observing validator decisions.
+
+    Consumers (e.g., aletheia's ValidationMetricsWriter) implement this
+    to record every keep/drop/warn/error decision for observability.
+    """
+
+    def record(
+        self,
+        edge: "EntityEdge",
+        source_node: "EntityNode",
+        target_node: "EntityNode",
+        context: ValidationContext,
+        validator_name: str,
+        decision: EdgeDecision,
+        dry_run: bool = False,
+    ) -> None: ...
+
+    def record_error(
+        self,
+        edge: "EntityEdge",
+        source_node: "EntityNode",
+        target_node: "EntityNode",
+        context: ValidationContext,
+        validator_name: str,
+        error_message: str,
+        dry_run: bool = False,
+    ) -> None: ...

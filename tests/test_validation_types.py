@@ -177,3 +177,25 @@ def test_graphiti_clients_default_edge_validators_is_empty_list():
         tracer=mocks["tracer"],
     )
     assert clients.edge_validators == []
+
+
+def test_observer_protocol_is_runtime_checkable():
+    from graphiti_core.validation import EdgeValidationObserver
+
+    class _StubObserver:
+        def record(self, edge, source_node, target_node, context, validator_name, decision, dry_run=False):
+            pass
+
+        def record_error(self, edge, source_node, target_node, context, validator_name, error_message, dry_run=False):
+            pass
+
+    assert isinstance(_StubObserver(), EdgeValidationObserver)
+
+
+def test_observer_protocol_rejects_non_conforming():
+    from graphiti_core.validation import EdgeValidationObserver
+
+    class _Bad:
+        pass
+
+    assert not isinstance(_Bad(), EdgeValidationObserver)
