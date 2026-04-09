@@ -199,3 +199,19 @@ def test_observer_protocol_rejects_non_conforming():
         pass
 
     assert not isinstance(_Bad(), EdgeValidationObserver)
+
+
+def test_graphiti_clients_validation_observer_default_none():
+    """GraphitiClients.validation_observer defaults to None."""
+    from graphiti_core.graphiti_types import GraphitiClients
+
+    mocks = _mock_clients()
+    clients = GraphitiClients(
+        driver=mocks["graph_driver"],
+        llm_client=mocks["llm_client"],
+        embedder=mocks["embedder"],
+        cross_encoder=mocks["cross_encoder"],
+        tracer=mocks["tracer"],
+    )
+    assert clients.validation_observer is None
+    assert clients.validation_dry_run is False

@@ -70,7 +70,7 @@ from graphiti_core.search.search_utils import (
 )
 from graphiti_core.telemetry import capture_event
 from graphiti_core.tracer import Tracer, create_tracer
-from graphiti_core.validation import EdgeValidator
+from graphiti_core.validation import EdgeValidator, EdgeValidationObserver
 from graphiti_core.utils.bulk_utils import (
     RawEpisode,
     add_nodes_and_edges_bulk,
@@ -149,6 +149,8 @@ class Graphiti:
         tracer: Tracer | None = None,
         trace_span_prefix: str = 'graphiti',
         edge_validators: list[EdgeValidator] | None = None,
+        validation_observer: EdgeValidationObserver | None = None,
+        validation_dry_run: bool = False,
     ):
         """
         Initialize a Graphiti instance.
@@ -239,6 +241,8 @@ class Graphiti:
         self._edge_validators: list[EdgeValidator] = (
             list(edge_validators) if edge_validators else []
         )
+        self._validation_observer = validation_observer
+        self._validation_dry_run = validation_dry_run
 
         self.clients = GraphitiClients(
             driver=self.driver,
@@ -247,6 +251,8 @@ class Graphiti:
             cross_encoder=self.cross_encoder,
             tracer=self.tracer,
             edge_validators=self._edge_validators,
+            validation_observer=self._validation_observer,
+            validation_dry_run=self._validation_dry_run,
         )
 
         self._entity_lock_manager = EntityLockManager()
