@@ -11,10 +11,10 @@ import difflib
 from dataclasses import dataclass, field
 from typing import Any
 
-from utils.cypher_extractor import extract_elements
+from utils.cypher_extractor import PropertyAccess, RelPattern, extract_elements
 
 # Internal Graphiti properties that are always valid on any node.
-_INTERNAL_PROPERTIES: set[str] = {
+_INTERNAL_PROPERTIES: frozenset[str] = frozenset({
     'name',
     'name_embedding',
     'summary',
@@ -24,7 +24,7 @@ _INTERNAL_PROPERTIES: set[str] = {
     'updated_at',
     'uuid',
     'expired_at',
-}
+})
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ def _validate_labels(
 
 def _validate_relationships(
     rel_types: list[str],
-    rel_patterns: list,
+    rel_patterns: list[RelPattern],
     var_labels: dict[str, str],
     schema: dict[str, Any],
 ) -> RelMatch:
@@ -223,7 +223,7 @@ def _validate_relationships(
 
 
 def _validate_properties(
-    properties: list,
+    properties: list[PropertyAccess],
     var_labels: dict[str, str],
     schema: dict[str, Any],
 ) -> PropMatch:

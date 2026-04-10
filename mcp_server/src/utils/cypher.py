@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from utils.cypher_quality import assess_quality, compute_result_signals, refine_verdict
+
 
 @dataclass
 class SanitizedQuery:
@@ -658,7 +660,6 @@ def format_result(
     envelope.update(payload)
 
     # Quality assessment
-    from utils.cypher_quality import assess_quality, compute_result_signals, refine_verdict
     quality = assess_quality(query, schema=schema)
     quality.result_signals = compute_result_signals(records, header, truncated=truncated)
     quality = refine_verdict(quality)
