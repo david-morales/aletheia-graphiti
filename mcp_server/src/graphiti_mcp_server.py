@@ -207,10 +207,16 @@ Tips:
 - Use valid_at to filter for temporally valid facts.
 """
 
-# MCP server instance
+# MCP server instance — read host from env to set DNS rebinding policy at init time.
+# When FASTMCP_HOST=0.0.0.0 (Docker), FastMCP skips DNS rebinding protection so
+# inter-container requests with Docker hostnames in the Host header are accepted.
+_init_host = os.environ.get('FASTMCP_HOST', '127.0.0.1')
+_init_port = int(os.environ.get('FASTMCP_PORT', '8000'))
 mcp = FastMCP(
     'Graphiti Agent Memory',
     instructions=GRAPHITI_MCP_INSTRUCTIONS,
+    host=_init_host,
+    port=_init_port,
 )
 
 # Global services
