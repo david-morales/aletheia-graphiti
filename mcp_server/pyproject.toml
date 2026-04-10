@@ -12,6 +12,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0",
     "typing-extensions>=4.0.0",
+    "antlr4-cypher>=0.1.2",
 ]
 
 [project.optional-dependencies]
