@@ -7,7 +7,14 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
-from utils.cypher_quality import UnknownProp, WrongLabelProp, assess_quality
+from utils.cypher_quality import (
+    UnknownProp,
+    WrongLabelProp,
+    assess_quality,
+    compute_result_signals,
+    refine_verdict,
+    ResultSignals,
+)
 
 SCHEMA = {
     'node_labels': {
@@ -227,3 +234,98 @@ class TestSerialization:
         q = assess_quality('MATCH (n:Evento) RETURN n', schema=None)
         d = q.to_dict()
         assert d['schema_match'] is None
+
+
+# ---------------------------------------------------------------------------
+# Result signals (post-execution)
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+class TestResultSignals:
+    def test_normal_result(self):
+        records = [{'name': 'Alice', 'date': '2024-01-01'}, {'name': 'Bob', 'date': '2024-02-01'}]
+        header = ['name', 'date']
+        rs = compute_result_signals(records, header, truncated=False)
+        assert rs.row_count == 2
+        assert rs.null_ratio == 0.0
+        assert rs.truncated is False
+
+    def test_empty_result(self):
+        rs = compute_result_signals([], [], truncated=False)
+        assert rs.row_count == 0
+        assert rs.null_ratio == 0.0
+
+    def test_null_ratio(self):
+        records = [
+            {'name': 'Alice', 'date': None},
+            {'name': None, 'date': None},
+        ]
+        header = ['name', 'date']
+        rs = compute_result_signals(records, header, truncated=False)
+        # 3 nulls out of 4 cells = 0.75
+        assert rs.null_ratio == pytest.approx(0.75)
+
+    def test_truncated(self):
+        records = [{'name': 'Alice'}]
+        header = ['name']
+        rs = compute_result_signals(records, header, truncated=True)
+        assert rs.truncated is True
+
+
+# ---------------------------------------------------------------------------
+# Verdict refinement (post-execution)
+# ---------------------------------------------------------------------------
+
+
+class TestRefineVerdict:
+    def test_schema_mismatch_preserved(self):
+        q = assess_quality('MATCH (n:Accidente) RETURN n', schema=SCHEMA)
+        assert q.verdict == 'schema_mismatch'
+        q.result_signals = compute_result_signals([], [], truncated=False)
+        refined = refine_verdict(q)
+        assert refined.verdict == 'schema_mismatch'
+
+    def test_parse_failed_preserved(self):
+        q = assess_quality('MATCH (n:Evento RETURN n', schema=SCHEMA)
+        assert q.verdict == 'parse_failed'
+        q.result_signals = compute_result_signals([], [], truncated=False)
+        refined = refine_verdict(q)
+        assert refined.verdict == 'parse_failed'
+
+    def test_empty_with_clean_schema(self):
+        q = assess_quality('MATCH (n:Evento) RETURN n.name', schema=SCHEMA)
+        q.result_signals = compute_result_signals([], [], truncated=False)
+        refined = refine_verdict(q)
+        assert refined.verdict == 'empty_legit'
+        assert refined.outcome == 'ok'
+
+    def test_high_null_ratio(self):
+        records = [
+            {'name': None, 'date': None},
+            {'name': None, 'date': None},
+        ]
+        q = assess_quality('MATCH (n:Evento) RETURN n.name', schema=SCHEMA)
+        q.result_signals = compute_result_signals(records, ['name', 'date'], truncated=False)
+        refined = refine_verdict(q)
+        assert refined.verdict == 'degraded'
+        assert refined.outcome == 'suspect'
+
+    def test_no_signals_unchanged(self):
+        q = assess_quality('MATCH (n:Evento) RETURN n.name', schema=SCHEMA)
+        assert q.result_signals is None
+        refined = refine_verdict(q)
+        assert refined.verdict == 'success'
+        assert refined.outcome == 'ok'
+
+    def test_normal_result_unchanged(self):
+        records = [
+            {'name': 'Alice', 'date': '2024-01-01'},
+            {'name': 'Bob', 'date': '2024-02-01'},
+        ]
+        q = assess_quality('MATCH (n:Evento) RETURN n.name', schema=SCHEMA)
+        q.result_signals = compute_result_signals(records, ['name', 'date'], truncated=False)
+        refined = refine_verdict(q)
+        assert refined.verdict == 'success'
+        assert refined.outcome == 'ok'

@@ -286,6 +286,50 @@ def _validate_properties(
 # ---------------------------------------------------------------------------
 
 
+_NULL_RATIO_THRESHOLD = 0.5
+
+
+def compute_result_signals(
+    records: list[dict[str, Any]],
+    header: list[str],
+    *,
+    truncated: bool,
+) -> ResultSignals:
+    """Compute post-execution quality signals from query results."""
+    row_count = len(records)
+    total_cells = row_count * len(header)
+    if total_cells == 0:
+        null_ratio = 0.0
+    else:
+        null_count = sum(1 for row in records for col in header if row.get(col) is None)
+        null_ratio = round(null_count / total_cells, 4)
+    return ResultSignals(row_count=row_count, null_ratio=null_ratio, truncated=truncated)
+
+
+def refine_verdict(quality: CypherQuality) -> CypherQuality:
+    """Refine verdict using post-execution result signals.
+
+    Rules (in priority order):
+    1. schema_mismatch or parse_failed -> keep as-is (don't downgrade)
+    2. result_signals is None -> keep as-is
+    3. row_count == 0 and verdict == "success" -> change to "empty_legit", outcome stays "ok"
+    4. null_ratio > threshold and verdict == "success" -> change to "degraded", outcome="suspect"
+    5. Otherwise -> keep as-is
+    """
+    if quality.verdict in ('schema_mismatch', 'parse_failed'):
+        return quality
+    if quality.result_signals is None:
+        return quality
+    if quality.result_signals.row_count == 0 and quality.verdict == 'success':
+        quality.verdict = 'empty_legit'
+        return quality
+    if quality.result_signals.null_ratio > _NULL_RATIO_THRESHOLD and quality.verdict == 'success':
+        quality.verdict = 'degraded'
+        quality.outcome = 'suspect'
+        return quality
+    return quality
+
+
 def assess_quality(query: str, *, schema: dict[str, Any] | None) -> CypherQuality:
     """Assess quality of a Cypher query against a graph schema."""
     elements = extract_elements(query)
