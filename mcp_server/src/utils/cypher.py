@@ -669,6 +669,7 @@ def format_result(
 
 def format_error(query: str, error: CypherError) -> dict[str, Any]:
     """Format a CypherError into the standard envelope structure."""
+    outcome = 'error' if error.stage == 'execution' else 'rejected'
     return {
         'query': query,
         'type': 'error',
@@ -681,4 +682,8 @@ def format_error(query: str, error: CypherError) -> dict[str, Any]:
             'doc_hint': error.doc_hint,
         },
         'execution_ms': 0,
+        'cypher_quality': {
+            'outcome': outcome,
+            'verdict': outcome,
+        },
     }

@@ -940,3 +940,37 @@ class TestCypherQualityInEnvelope:
             schema={'node_labels': {'Evento': {'properties': ['name']}}, 'relationship_types': {}},
         )
         assert result['cypher_quality']['verdict'] == 'empty_legit'
+
+
+class TestCypherQualityInErrorEnvelope:
+    """Verify cypher_quality field appears in format_error output."""
+
+    def test_rejected_query_has_quality(self):
+        err = CypherError(
+            stage='falkordb_dialect', reason='apoc_unsupported',
+            found='apoc.path.expand()', explanation='Not supported',
+            suggestion='Use paths', doc_hint='',
+        )
+        result = format_error("MATCH ... apoc.path.expand() ...", err)
+        assert 'cypher_quality' in result
+        assert result['cypher_quality']['outcome'] == 'rejected'
+        assert result['cypher_quality']['verdict'] == 'rejected'
+
+    def test_execution_error_has_quality(self):
+        err = CypherError(
+            stage='execution', reason='query_failed',
+            found='SyntaxError', explanation='Bad syntax',
+            suggestion='Fix it', doc_hint='',
+        )
+        result = format_error("BAD QUERY", err)
+        assert result['cypher_quality']['outcome'] == 'error'
+        assert result['cypher_quality']['verdict'] == 'error'
+
+    def test_security_rejection_has_quality(self):
+        err = CypherError(
+            stage='security', reason='write_operation',
+            found='DELETE', explanation='Not allowed',
+            suggestion='Use MATCH', doc_hint='',
+        )
+        result = format_error("MATCH (n) DELETE n", err)
+        assert result['cypher_quality']['outcome'] == 'rejected'
