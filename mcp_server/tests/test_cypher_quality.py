@@ -287,12 +287,29 @@ class TestRefineVerdict:
         refined = refine_verdict(q)
         assert refined.verdict == 'schema_mismatch'
 
-    def test_parse_failed_preserved(self):
+    def test_parse_failed_preserved_on_empty(self):
+        """parse_failed stays when execution also returned 0 rows."""
         q = assess_quality('MATCH (n:Evento RETURN n', schema=SCHEMA)
         assert q.verdict == 'parse_failed'
         q.result_signals = compute_result_signals([], [], truncated=False)
         refined = refine_verdict(q)
         assert refined.verdict == 'parse_failed'
+
+    def test_parse_failed_downgraded_on_success(self):
+        """parse_failed downgrades to success when query actually returned rows.
+
+        Our ANTLR parser doesn't cover all valid Cypher (e.g. consecutive
+        WITH clauses). A parse error with successful execution is a false
+        positive in the parser, not a query problem.
+        """
+        q = assess_quality('MATCH (n:Evento RETURN n', schema=SCHEMA)
+        assert q.verdict == 'parse_failed'
+        q.result_signals = compute_result_signals(
+            [{'name': 'Alice'}, {'name': 'Bob'}], ['name'], truncated=False,
+        )
+        refined = refine_verdict(q)
+        assert refined.verdict == 'success'
+        assert refined.outcome == 'ok'
 
     def test_empty_with_clean_schema(self):
         q = assess_quality('MATCH (n:Evento) RETURN n.name', schema=SCHEMA)

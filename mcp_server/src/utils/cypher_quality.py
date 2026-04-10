@@ -310,14 +310,21 @@ def refine_verdict(quality: CypherQuality) -> CypherQuality:
     """Refine verdict using post-execution result signals.
 
     Rules (in priority order):
-    1. schema_mismatch or parse_failed -> keep as-is (don't downgrade)
-    2. result_signals is None -> keep as-is
-    3. row_count == 0 and verdict == "success" -> change to "empty_legit", outcome stays "ok"
-    4. null_ratio > threshold and verdict == "success" -> change to "degraded", outcome="suspect"
-    5. Otherwise -> keep as-is
+    1. schema_mismatch -> keep as-is (don't downgrade)
+    2. parse_failed + successful execution (rows > 0) -> downgrade to success
+       (our parser doesn't cover all valid Cypher — e.g. consecutive WITH clauses)
+    3. result_signals is None -> keep as-is
+    4. row_count == 0 and verdict == "success" -> change to "empty_legit", outcome stays "ok"
+    5. null_ratio > threshold and verdict == "success" -> change to "degraded", outcome="suspect"
+    6. Otherwise -> keep as-is
     """
-    if quality.verdict in ('schema_mismatch', 'parse_failed'):
+    if quality.verdict == 'schema_mismatch':
         return quality
+    if quality.verdict == 'parse_failed' and quality.result_signals is not None:
+        if quality.result_signals.row_count > 0:
+            quality.verdict = 'success'
+            quality.outcome = 'ok'
+            return quality
     if quality.result_signals is None:
         return quality
     if quality.result_signals.row_count == 0 and quality.verdict == 'success':
