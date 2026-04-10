@@ -618,6 +618,7 @@ def format_result(
     auto_fixes: list[str],
     execution_ms: float,
     limit: int,
+    schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Classify results and build a typed JSON envelope with metadata.
 
@@ -655,6 +656,13 @@ def format_result(
 
     # Merge type-specific payload into envelope
     envelope.update(payload)
+
+    # Quality assessment
+    from utils.cypher_quality import assess_quality, compute_result_signals, refine_verdict
+    quality = assess_quality(query, schema=schema)
+    quality.result_signals = compute_result_signals(records, header, truncated=truncated)
+    quality = refine_verdict(quality)
+    envelope['cypher_quality'] = quality.to_dict()
 
     return envelope
 

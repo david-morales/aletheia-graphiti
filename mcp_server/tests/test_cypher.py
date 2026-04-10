@@ -882,3 +882,61 @@ class TestCypherIntegration:
     async def test_run_cypher_ro_enforcement(self):
         """Write queries are rejected at both pipeline and database level."""
         pytest.skip('Integration test — run manually with FalkorDB')
+
+
+class TestCypherQualityInEnvelope:
+    """Verify cypher_quality field appears in format_result output."""
+
+    def test_quality_field_present(self):
+        records = [{'name': 'Alice'}]
+        header = ['name']
+        result = format_result(
+            records, header,
+            query="MATCH (n:Evento) RETURN n.name",
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema={'node_labels': {'Evento': {'properties': ['name']}}, 'relationship_types': {}},
+        )
+        assert 'cypher_quality' in result
+        assert result['cypher_quality']['verdict'] == 'success'
+
+    def test_quality_schema_mismatch(self):
+        records = []
+        header = []
+        result = format_result(
+            records, header,
+            query="MATCH (n:Fake) RETURN n.name",
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema={'node_labels': {'Evento': {'properties': ['name']}}, 'relationship_types': {}},
+        )
+        assert result['cypher_quality']['verdict'] == 'schema_mismatch'
+
+    def test_quality_without_schema(self):
+        records = [{'x': 1}]
+        header = ['x']
+        result = format_result(
+            records, header,
+            query="MATCH (n) RETURN count(n) AS x",
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema=None,
+        )
+        assert result['cypher_quality']['verdict'] == 'success'
+
+    def test_quality_empty_legit(self):
+        """Empty result with valid schema -> empty_legit verdict."""
+        records = []
+        header = []
+        result = format_result(
+            records, header,
+            query="MATCH (n:Evento) RETURN n.name",
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema={'node_labels': {'Evento': {'properties': ['name']}}, 'relationship_types': {}},
+        )
+        assert result['cypher_quality']['verdict'] == 'empty_legit'

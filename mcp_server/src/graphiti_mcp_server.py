@@ -1773,7 +1773,9 @@ async def run_cypher(query: str) -> dict[str, Any]:
                 record[field_name] = row[i] if i < len(row) else None
             records.append(record)
 
-        return format_result(records, header, sanitized.query, sanitized.auto_fixes, execution_ms, limit)
+        _cache = getattr(graphiti_service, '_schema_cache', None) if graphiti_service else None
+        schema = _cache if isinstance(_cache, dict) else None
+        return format_result(records, header, sanitized.query, sanitized.auto_fixes, execution_ms, limit, schema=schema)
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
