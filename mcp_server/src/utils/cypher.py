@@ -227,7 +227,6 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
 
 # Reject-track patterns
 _APOC_RE = re.compile(r'apoc\.\w+[\.\w]*\(', re.IGNORECASE)
-_PATTERN_COMPREHENSION_RE = re.compile(r'\[\s*\(.*?\|', re.DOTALL)
 _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
 _CALL_SUBQUERY_RE = re.compile(r'\bCALL\s*\{', re.IGNORECASE)
 _MAP_PROJECTION_RE = re.compile(r'\w+\s*\{\s*\.\w+')
@@ -260,19 +259,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             doc_hint='FalkorDB supports openCypher variable-length paths with [*min..max] syntax',
         )
 
-    # 2. Pattern comprehensions  [(n)-[:REL]->(m) | m.prop]
-    m = _PATTERN_COMPREHENSION_RE.search(query)
-    if m:
-        return CypherError(
-            stage='falkordb_dialect',
-            reason='pattern_comprehension_unsupported',
-            found=m.group(0),
-            explanation='Pattern comprehensions are not supported in FalkorDB.',
-            suggestion='Use WITH + MATCH + collect() to achieve the same result',
-            doc_hint='Rewrite as: MATCH (n)-[:REL]->(m) WITH n, collect(m.prop) AS props',
-        )
-
-    # 3. EXISTS {} subqueries (NOT EXISTS((n)--()) which is valid)
+    # 2. EXISTS {} subqueries (NOT EXISTS((n)--()) which is valid)
     m = _EXISTS_SUBQUERY_RE.search(query)
     if m:
         return CypherError(
@@ -284,7 +271,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             doc_hint='FalkorDB supports EXISTS with inline path patterns, not subquery blocks',
         )
 
-    # 4. CALL {} subqueries
+    # 3. CALL {} subqueries
     m = _CALL_SUBQUERY_RE.search(query)
     if m:
         return CypherError(
@@ -296,7 +283,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             doc_hint='Rewrite CALL {} blocks as sequential WITH + MATCH clauses',
         )
 
-    # 5. Map projections  n {.name, .date}
+    # 4. Map projections  n {.name, .date}
     m = _MAP_PROJECTION_RE.search(query)
     if m:
         return CypherError(

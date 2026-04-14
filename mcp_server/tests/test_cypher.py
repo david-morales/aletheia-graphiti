@@ -139,12 +139,10 @@ class TestStage2Reject:
         assert 'variable-length' in err.suggestion.lower()
         assert err.doc_hint != ''
 
-    def test_reject_pattern_comprehension(self):
+    def test_pass_pattern_comprehension(self):
+        # Pattern comprehensions ARE supported in FalkorDB.
         query = 'MATCH (n:Occurrence) RETURN n.name, [(n)-[:INVOLVED_AIRCRAFT]->(a) | a.name] AS aircraft'
-        err = _check_falkordb_dialect(query)
-        assert err is not None
-        assert err.reason == 'pattern_comprehension_unsupported'
-        assert 'collect' in err.suggestion.lower()
+        assert _check_falkordb_dialect(query) is None
 
     def test_reject_exists_subquery(self):
         query = 'MATCH (n:Aircraft) WHERE EXISTS { MATCH (n)<-[:INVOLVED_AIRCRAFT]-(o) } RETURN n'
