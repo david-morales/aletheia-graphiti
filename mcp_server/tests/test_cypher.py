@@ -257,6 +257,18 @@ class TestStage2AutoFixBareVariable:
         fixed, fixes = _fix_falkordb_dialect(query)
         assert fixed == query
 
+    def test_comma_separated_patterns_second_var_unchanged(self):
+        # Known limitation: regex only matches a bare variable immediately
+        # after MATCH.  Second-position bare variable in comma-separated
+        # patterns is left alone.  Documents the limitation explicitly so a
+        # future regex change cannot silently introduce an unsafe rewrite
+        # for this case without updating the test.
+        query = 'MATCH (a)-[:R1]->(b), c-[:R2]->(d) RETURN a, b, c, d'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'c-[:R2]->' in fixed
+        assert '(c)-[:R2]->' not in fixed
+        assert fixes == []
+
 
 class TestStage2Ordering:
     def test_apoc_with_date_rejects_on_apoc(self):

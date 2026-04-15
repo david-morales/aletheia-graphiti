@@ -243,6 +243,15 @@ _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
 # followed by `-[` without intervening parens.
 # Group 1: the MATCH keyword (preserved in substitution).
 # Group 2: the bare variable name (wrapped in parens).
+#
+# Known limitations of this regex-only approach (AST parsing would cover them):
+#  - Comma-separated patterns in one MATCH don't get second-position vars
+#    wrapped (e.g. `MATCH (a)-[:R]->(b), c-[:R]->(d)` leaves `c` alone —
+#    the classify_execution_error layer still returns a useful error).
+#  - Whitespace (tabs, multiple spaces) between MATCH and the variable is
+#    normalized to a single space.
+#  - Text inside string literals matching the pattern will also be rewritten;
+#    probability of this occurring in LLM-generated Cypher is very low.
 _BARE_VAR_IN_PATTERN_RE = re.compile(
     r'(\bOPTIONAL\s+MATCH\b|\bMATCH\b)\s+([A-Za-z_]\w*)(?=\s*-\s*\[)',
     re.IGNORECASE,
