@@ -1093,3 +1093,24 @@ class TestClassifyExecutionError:
         )
         err = classify_execution_error(msg)
         assert err.reason == 'bare_variable_in_pattern'
+
+
+class TestRunCypherToolDescription:
+    def test_description_mentions_falkordb_dialect(self):
+        import re
+        from pathlib import Path
+        src_path = Path(__file__).parent.parent / 'src' / 'graphiti_mcp_server.py'
+        source = src_path.read_text()
+        # Find the run_cypher async function and capture its docstring.
+        m = re.search(
+            r'async def run_cypher\([^)]*\)[^:]*:\s*"""(.*?)"""',
+            source,
+            re.DOTALL,
+        )
+        assert m, 'run_cypher docstring not found'
+        doc = m.group(1)
+        assert 'FalkorDB' in doc
+        assert 'dialect' in doc.lower()
+        assert 'parens' in doc.lower() or 'parenthes' in doc.lower()
+        assert 'UNWIND' in doc
+        assert 'date' in doc.lower()

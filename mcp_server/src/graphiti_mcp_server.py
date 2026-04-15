@@ -1738,8 +1738,16 @@ async def run_cypher(query: str) -> dict[str, Any]:
     """Execute a read-only Cypher query against the knowledge graph.
 
     The query is validated and sanitized before execution.
-    Write operations are blocked. LIMIT 200 is auto-injected if missing; explicit LIMIT values are respected.
-    Returns typed JSON (scalar, tabular, graph, path) with metadata.
+    Write operations are blocked. LIMIT 200 is auto-injected if missing;
+    explicit LIMIT values are respected.  Returns typed JSON (scalar,
+    tabular, graph, path) with metadata.
+
+    Cypher dialect: FalkorDB openCypher (a few notable differences from
+    Neo4j).  Your system prompt may include a `FalkorDB Cypher dialect`
+    section — follow it.  Common gotchas: bound variables in patterns
+    must stay in parens (`(var)-[:R]->()`, not `var-[:R]->()`); WHERE
+    attaches only to MATCH/OPTIONAL MATCH/WITH (never directly to
+    UNWIND); dates are strings (`n.date > '2024-01-01'`, no `date()`).
     """
     if graphiti_service is None:
         return format_error(query, CypherError(
