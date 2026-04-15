@@ -79,6 +79,7 @@ from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
     CypherError,
+    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
@@ -1785,13 +1786,8 @@ async def run_cypher(query: str) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
-        result = format_error(sanitized.query, CypherError(
-            stage='execution',
-            reason='query_failed',
-            found=str(e),
-            explanation=f'FalkorDB returned an error: {e}',
-            suggestion='Check your Cypher syntax. Use get_schema to verify label and property names.',
-        ))
+        error = classify_execution_error(str(e))
+        result = format_error(sanitized.query, error)
         result['auto_fixes'] = sanitized.auto_fixes
         return result
 
