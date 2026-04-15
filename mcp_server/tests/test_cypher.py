@@ -150,12 +150,10 @@ class TestStage2Reject:
         assert err is not None
         assert err.reason == 'exists_subquery_unsupported'
 
-    def test_reject_call_subquery(self):
+    def test_pass_call_subquery(self):
+        # CALL {} subqueries ARE supported in FalkorDB.
         query = 'MATCH (n:Occurrence) CALL { WITH n MATCH (n)-[:OPERATED_BY]->(op) RETURN op } RETURN n, op'
-        err = _check_falkordb_dialect(query)
-        assert err is not None
-        assert err.reason == 'call_subquery_unsupported'
-        assert 'OPTIONAL MATCH' in err.suggestion
+        assert _check_falkordb_dialect(query) is None
 
     def test_reject_map_projection(self):
         query = 'MATCH (n:Occurrence) RETURN n {.name, .date_value, .description}'
@@ -302,6 +300,12 @@ class TestStage3SecurityWhitelist:
     def test_keyword_in_property_not_matched(self):
         # n.description should not trigger on any keyword
         assert _check_whitelist('MATCH (n) RETURN n.description') is None
+
+    def test_allow_call_subquery_block(self):
+        # CALL { ... } subquery — no procedure name after CALL, so the
+        # security whitelist should not treat it as a forbidden procedure.
+        query = 'MATCH (n) CALL { WITH n MATCH (n)-[r]->(m) RETURN m } RETURN n, m'
+        assert _check_whitelist(query) is None
 
 
 class TestStage4SafetyInjection:

@@ -228,7 +228,6 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
 # Reject-track patterns
 _APOC_RE = re.compile(r'apoc\.\w+[\.\w]*\(', re.IGNORECASE)
 _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
-_CALL_SUBQUERY_RE = re.compile(r'\bCALL\s*\{', re.IGNORECASE)
 _MAP_PROJECTION_RE = re.compile(r'\w+\s*\{\s*\.\w+')
 
 # Auto-fix patterns
@@ -271,19 +270,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             doc_hint='FalkorDB supports EXISTS with inline path patterns, not subquery blocks',
         )
 
-    # 3. CALL {} subqueries
-    m = _CALL_SUBQUERY_RE.search(query)
-    if m:
-        return CypherError(
-            stage='falkordb_dialect',
-            reason='call_subquery_unsupported',
-            found=m.group(0),
-            explanation='CALL {} subqueries are not supported in FalkorDB.',
-            suggestion='Use WITH + OPTIONAL MATCH to achieve similar results',
-            doc_hint='Rewrite CALL {} blocks as sequential WITH + MATCH clauses',
-        )
-
-    # 4. Map projections  n {.name, .date}
+    # 3. Map projections  n {.name, .date}
     m = _MAP_PROJECTION_RE.search(query)
     if m:
         return CypherError(
