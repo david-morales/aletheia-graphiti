@@ -173,6 +173,43 @@ class TestStage2Reject:
         assert _check_falkordb_dialect(query) is None
 
 
+class TestStage2RejectUnwindWhere:
+    def test_reject_unwind_where_no_with(self):
+        query = (
+            'MATCH (p:Persona) WITH p '
+            'UNWIND [1,2,3] AS x '
+            'WHERE x > 1 '
+            'RETURN p, x'
+        )
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'unwind_where_missing_with'
+        assert 'WITH' in err.suggestion
+
+    def test_reject_unwind_where_multiline(self):
+        query = (
+            'MATCH (p) UNWIND p.list AS item\n'
+            'WHERE item IS NOT NULL\n'
+            'RETURN item'
+        )
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'unwind_where_missing_with'
+
+    def test_pass_unwind_with_where(self):
+        # UNWIND ... AS x WITH x WHERE ... is the valid form.
+        query = 'UNWIND [1,2,3] AS x WITH x WHERE x > 1 RETURN x'
+        assert _check_falkordb_dialect(query) is None
+
+    def test_pass_unwind_alone(self):
+        query = 'UNWIND [1,2,3] AS x RETURN x'
+        assert _check_falkordb_dialect(query) is None
+
+    def test_pass_unwind_followed_by_match(self):
+        query = "UNWIND ['a','b'] AS name MATCH (n {name: name}) RETURN n"
+        assert _check_falkordb_dialect(query) is None
+
+
 class TestStage2AutoFix:
     def test_strip_date_function(self):
         query = "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o"

@@ -229,6 +229,16 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
 _APOC_RE = re.compile(r'apoc\.\w+[\.\w]*\(', re.IGNORECASE)
 _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
 
+# UNWIND ... AS x [then] WHERE   (no WITH or MATCH between UNWIND and WHERE)
+# Multiline-aware; case-insensitive.  Matches when the token after the
+# alias-and-any-whitespace is WHERE (not MATCH, WITH, RETURN, etc.).
+# Uses a tempered pattern to stop at intervening WITH/MATCH/OPTIONAL/RETURN
+# keywords so legitimate UNWIND...WITH...WHERE forms are not matched.
+_UNWIND_WHERE_NO_WITH_RE = re.compile(
+    r'\bUNWIND\b(?:(?!\b(?:WITH|MATCH|OPTIONAL|RETURN)\b).)+?\bAS\s+\w+\s+WHERE\b',
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Auto-fix patterns
 _DATE_WRAPPER_RE = re.compile(
     r'\b(?:date|datetime|localDateTime)\s*\(\s*([\'"][^\'"]+[\'"])\s*\)',
@@ -286,6 +296,21 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             explanation='EXISTS {} subqueries are not supported in FalkorDB.',
             suggestion='Use WHERE EXISTS((n)-[:REL]->()) pattern syntax instead',
             doc_hint='FalkorDB supports EXISTS with inline path patterns, not subquery blocks',
+        )
+
+    # 3. UNWIND ... WHERE (must be UNWIND ... WITH ... WHERE)
+    m = _UNWIND_WHERE_NO_WITH_RE.search(query)
+    if m:
+        return CypherError(
+            stage='falkordb_dialect',
+            reason='unwind_where_missing_with',
+            found=m.group(0)[:80],
+            explanation='WHERE cannot attach directly to UNWIND. Insert a WITH clause between UNWIND and WHERE.',
+            suggestion=(
+                'Rewrite `UNWIND list AS x WHERE ...` as '
+                '`UNWIND list AS x WITH x[, other_bound_vars] WHERE ...`.'
+            ),
+            doc_hint='FalkorDB openCypher: WHERE attaches to MATCH / OPTIONAL MATCH / WITH only.',
         )
 
     return None
