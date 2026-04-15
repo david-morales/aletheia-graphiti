@@ -234,6 +234,17 @@ _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
 # alias-and-any-whitespace is WHERE (not MATCH, WITH, RETURN, etc.).
 # Uses a tempered pattern to stop at intervening WITH/MATCH/OPTIONAL/RETURN
 # keywords so legitimate UNWIND...WITH...WHERE forms are not matched.
+#
+# Known limitations of this regex-only approach:
+#  - `CALL` is intentionally NOT in the stop-set: practical CALL{} subquery
+#    bodies open with WITH or contain RETURN, both of which already terminate
+#    the span.  A pathological `UNWIND a AS n CALL { CREATE ... } WHERE ...`
+#    would over-match, but write operations are blocked by the security stage.
+#  - String literals containing the stop-words (e.g.
+#    `UNWIND ['WITH','MATCH'] AS k WHERE k IS NOT NULL`) are false negatives
+#    because the regex word-boundaries match inside quotes.  Such queries
+#    fall through to FalkorDB and surface via classify_execution_error().
+# A proper fix for these cases requires AST parsing.
 _UNWIND_WHERE_NO_WITH_RE = re.compile(
     r'\bUNWIND\b(?:(?!\b(?:WITH|MATCH|OPTIONAL|RETURN)\b).)+?\bAS\s+\w+\s+WHERE\b',
     re.IGNORECASE | re.DOTALL,
@@ -308,7 +319,8 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             explanation='WHERE cannot attach directly to UNWIND. Insert a WITH clause between UNWIND and WHERE.',
             suggestion=(
                 'Rewrite `UNWIND list AS x WHERE ...` as '
-                '`UNWIND list AS x WITH x[, other_bound_vars] WHERE ...`.'
+                '`UNWIND list AS x WITH x, <other_bound_vars> WHERE ...` '
+                '(include any prior-bound variables you need to keep in scope).'
             ),
             doc_hint='FalkorDB openCypher: WHERE attaches to MATCH / OPTIONAL MATCH / WITH only.',
         )
