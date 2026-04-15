@@ -228,7 +228,6 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
 # Reject-track patterns
 _APOC_RE = re.compile(r'apoc\.\w+[\.\w]*\(', re.IGNORECASE)
 _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
-_MAP_PROJECTION_RE = re.compile(r'\w+\s*\{\s*\.\w+')
 
 # Auto-fix patterns
 _DATE_WRAPPER_RE = re.compile(
@@ -268,18 +267,6 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             explanation='EXISTS {} subqueries are not supported in FalkorDB.',
             suggestion='Use WHERE EXISTS((n)-[:REL]->()) pattern syntax instead',
             doc_hint='FalkorDB supports EXISTS with inline path patterns, not subquery blocks',
-        )
-
-    # 3. Map projections  n {.name, .date}
-    m = _MAP_PROJECTION_RE.search(query)
-    if m:
-        return CypherError(
-            stage='falkordb_dialect',
-            reason='map_projection_unsupported',
-            found=m.group(0),
-            explanation='Map projections are not supported in FalkorDB.',
-            suggestion='Return properties individually: RETURN n.name, n.date',
-            doc_hint='Use explicit property access instead of map projection syntax',
         )
 
     return None

@@ -155,12 +155,10 @@ class TestStage2Reject:
         query = 'MATCH (n:Occurrence) CALL { WITH n MATCH (n)-[:OPERATED_BY]->(op) RETURN op } RETURN n, op'
         assert _check_falkordb_dialect(query) is None
 
-    def test_reject_map_projection(self):
+    def test_pass_map_projection(self):
+        # Map projections ARE supported in FalkorDB.
         query = 'MATCH (n:Occurrence) RETURN n {.name, .date_value, .description}'
-        err = _check_falkordb_dialect(query)
-        assert err is not None
-        assert err.reason == 'map_projection_unsupported'
-        assert 'individually' in err.suggestion.lower()
+        assert _check_falkordb_dialect(query) is None
 
     def test_pass_clean_query(self):
         query = 'MATCH (n:Occurrence) RETURN n.name, n.date_value'
