@@ -387,17 +387,20 @@ class ExecutionErrorPattern:
     example_fix: str | None = None
 
 
+# Order matters: more specific patterns before general ones.  The first
+# matching pattern wins.  Append new patterns at the end of the list and
+# tighten matchers if a new pattern overlaps an existing one.
 _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
     ExecutionErrorPattern(
         name='bare_variable_in_pattern',
-        matcher=re.compile(r"Invalid input '-': expected '='", re.IGNORECASE),
+        matcher=re.compile(r"Invalid input '-': expected '='"),
         suggestion=(
             'A bound variable inside a MATCH/OPTIONAL MATCH pattern must be '
             'wrapped in parentheses. Use `(var)-[:REL]->(other)` instead of '
             '`var-[:REL]->(other)`.'
         ),
         doc_hint='FalkorDB openCypher: pattern nodes must be parenthesized.',
-        example_fix='OPTIONAL MATCH (parte)-[:TIPIFICADO_COMO]->(tipo:TipoDelito)',
+        example_fix='OPTIONAL MATCH (n)-[:REL]->(m)',
     ),
     ExecutionErrorPattern(
         name='unwind_where_missing_with',

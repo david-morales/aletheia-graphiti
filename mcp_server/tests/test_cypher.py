@@ -1083,7 +1083,13 @@ class TestClassifyExecutionError:
         assert 'syntax' in err.suggestion.lower()
 
     def test_classify_first_match_wins(self):
-        # If an error matches two patterns, the first listed wins.
-        msg = "errMsg: Invalid input '-': expected '=' and also expected WITH"
+        # Construct a message that genuinely matches BOTH patterns — bare-var
+        # `Invalid input '-': expected '='` AND unwind-where `expected WITH ...
+        # errCtx: WHERE`.  The first pattern listed (bare_variable_in_pattern)
+        # must win.  Guards against a future re-ordering of the table.
+        msg = (
+            "errMsg: Invalid input '-': expected '=' "
+            "expected WITH line: 5, column: 2 errCtx: WHERE x"
+        )
         err = classify_execution_error(msg)
-        assert err.reason in ('bare_variable_in_pattern', 'unwind_where_missing_with')
+        assert err.reason == 'bare_variable_in_pattern'
