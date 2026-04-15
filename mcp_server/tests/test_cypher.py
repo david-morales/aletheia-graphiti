@@ -223,6 +223,41 @@ class TestStage2AutoFix:
         assert fixes == []
 
 
+class TestStage2AutoFixBareVariable:
+    def test_fix_bare_variable_in_optional_match(self):
+        query = 'MATCH (p:Persona) OPTIONAL MATCH parte-[:TIPIFICADO_COMO]->(tipo:TipoDelito) RETURN p, tipo'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert '(parte)-[:TIPIFICADO_COMO]->' in fixed
+        assert 'parte-[:TIPIFICADO_COMO]->' not in fixed
+        assert any('bare variable' in f.lower() for f in fixes)
+
+    def test_fix_bare_variable_in_match(self):
+        query = 'MATCH a-[:KNOWS]->(b) RETURN a, b'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert '(a)-[:KNOWS]->' in fixed
+        assert any('bare variable' in f.lower() for f in fixes)
+
+    def test_fix_bare_variable_idempotent(self):
+        # Applying twice produces the same result.
+        query = 'OPTIONAL MATCH x-[:R]->(y) RETURN x, y'
+        fixed_once, _ = _fix_falkordb_dialect(query)
+        fixed_twice, fixes_twice = _fix_falkordb_dialect(fixed_once)
+        assert fixed_once == fixed_twice
+        assert fixes_twice == []  # second pass finds nothing to fix
+
+    def test_no_fix_when_var_already_parenthesized(self):
+        query = 'MATCH (a)-[:KNOWS]->(b) RETURN a, b'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert not any('bare variable' in f.lower() for f in fixes)
+
+    def test_no_fix_when_no_pattern_match(self):
+        # MATCH with parens and a WHERE — must not be mangled.
+        query = 'MATCH (a:Persona) WHERE a.name = "X" RETURN a'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+
+
 class TestStage2Ordering:
     def test_apoc_with_date_rejects_on_apoc(self):
         query = "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"

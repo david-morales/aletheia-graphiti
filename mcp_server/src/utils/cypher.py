@@ -238,6 +238,16 @@ _LOWER_RE = re.compile(r'\blower\s*\(', re.IGNORECASE)
 _UPPER_RE = re.compile(r'\bupper\s*\(', re.IGNORECASE)
 _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
 
+# Bare variable in pattern:  MATCH parte-[:R]->(x)  ->  MATCH (parte)-[:R]->(x)
+# Matches a word-variable immediately after MATCH/OPTIONAL MATCH that is
+# followed by `-[` without intervening parens.
+# Group 1: the MATCH keyword (preserved in substitution).
+# Group 2: the bare variable name (wrapped in parens).
+_BARE_VAR_IN_PATTERN_RE = re.compile(
+    r'(\bOPTIONAL\s+MATCH\b|\bMATCH\b)\s+([A-Za-z_]\w*)(?=\s*-\s*\[)',
+    re.IGNORECASE,
+)
+
 
 def _check_falkordb_dialect(query: str) -> CypherError | None:
     """Reject track — return a CypherError for FalkorDB-incompatible patterns.
@@ -303,6 +313,12 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
     if new_query != query:
         query = new_query
         fixes.append('Stripped PROFILE/EXPLAIN prefix (not supported in FalkorDB)')
+
+    # 5. Wrap bare variables in MATCH/OPTIONAL MATCH patterns.
+    new_query = _BARE_VAR_IN_PATTERN_RE.sub(r'\1 (\2)', query)
+    if new_query != query:
+        query = new_query
+        fixes.append('Wrapped bare variable in parens (FalkorDB pattern syntax requires parenthesized nodes)')
 
     return query, fixes
 
