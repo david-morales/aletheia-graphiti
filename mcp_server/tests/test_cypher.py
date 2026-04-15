@@ -19,6 +19,7 @@ from utils.cypher import (
     _fix_falkordb_dialect,
     _fix_llm_syntax,
     _inject_safety,
+    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
@@ -1058,3 +1059,31 @@ class TestCypherQualityInErrorEnvelope:
         )
         result = format_error("MATCH (n) DELETE n", err)
         assert result['cypher_quality']['outcome'] == 'rejected'
+
+
+class TestClassifyExecutionError:
+    def test_classify_unwind_where_missing_with(self):
+        msg = "errMsg: Invalid input 'H': expected WITH line: 10, column: 2 errCtx: WHERE evento.numero"
+        err = classify_execution_error(msg)
+        assert err.reason == 'unwind_where_missing_with'
+        assert 'WITH' in err.suggestion
+        assert err.doc_hint != ''
+
+    def test_classify_bare_variable(self):
+        msg = "errMsg: Invalid input '-': expected '=' line: 5, column: 21 errCtx: OPTIONAL MATCH parte-[:R]->(t)"
+        err = classify_execution_error(msg)
+        assert err.reason == 'bare_variable_in_pattern'
+        assert 'paren' in err.suggestion.lower()
+
+    def test_classify_unknown_error_returns_generic(self):
+        msg = "errMsg: some completely unknown error that we haven't seen"
+        err = classify_execution_error(msg)
+        assert err.stage == 'execution'
+        assert err.reason == 'query_failed'
+        assert 'syntax' in err.suggestion.lower()
+
+    def test_classify_first_match_wins(self):
+        # If an error matches two patterns, the first listed wins.
+        msg = "errMsg: Invalid input '-': expected '=' and also expected WITH"
+        err = classify_execution_error(msg)
+        assert err.reason in ('bare_variable_in_pattern', 'unwind_where_missing_with')

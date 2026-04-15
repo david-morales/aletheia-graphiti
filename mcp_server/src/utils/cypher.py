@@ -370,6 +370,80 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Execution-error classification (Layer 3)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExecutionErrorPattern:
+    """Maps a FalkorDB parser-error string to an actionable CypherError.
+
+    Walked in order by :func:`classify_execution_error`; first match wins.
+    """
+
+    name: str
+    matcher: re.Pattern
+    suggestion: str
+    doc_hint: str
+    example_fix: str | None = None
+
+
+_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
+    ExecutionErrorPattern(
+        name='bare_variable_in_pattern',
+        matcher=re.compile(r"Invalid input '-': expected '='", re.IGNORECASE),
+        suggestion=(
+            'A bound variable inside a MATCH/OPTIONAL MATCH pattern must be '
+            'wrapped in parentheses. Use `(var)-[:REL]->(other)` instead of '
+            '`var-[:REL]->(other)`.'
+        ),
+        doc_hint='FalkorDB openCypher: pattern nodes must be parenthesized.',
+        example_fix='OPTIONAL MATCH (parte)-[:TIPIFICADO_COMO]->(tipo:TipoDelito)',
+    ),
+    ExecutionErrorPattern(
+        name='unwind_where_missing_with',
+        matcher=re.compile(r"expected WITH.+errCtx:\s*WHERE\b", re.IGNORECASE | re.DOTALL),
+        suggestion=(
+            'WHERE cannot attach to UNWIND directly. Insert WITH between them: '
+            '`UNWIND list AS x WITH x WHERE x.prop IS NOT NULL`.'
+        ),
+        doc_hint='FalkorDB openCypher: WHERE attaches only to MATCH/OPTIONAL MATCH/WITH.',
+        example_fix='UNWIND list AS x WITH x WHERE x.prop IS NOT NULL RETURN x',
+    ),
+    # More patterns added as they surface from Langfuse observations.
+]
+
+
+def classify_execution_error(msg: str) -> CypherError:
+    """Map a FalkorDB execution-error message to an actionable CypherError.
+
+    Walks :data:`_EXECUTION_ERROR_PATTERNS` in order.  First match wins.
+    On no match, returns the generic envelope to preserve current
+    behavior for unknown errors.
+    """
+    for pattern in _EXECUTION_ERROR_PATTERNS:
+        if pattern.matcher.search(msg):
+            explanation = f'FalkorDB returned an error: {msg}'
+            if pattern.example_fix:
+                explanation += f'\nCorrected example: {pattern.example_fix}'
+            return CypherError(
+                stage='execution',
+                reason=pattern.name,
+                found=msg,
+                explanation=explanation,
+                suggestion=pattern.suggestion,
+                doc_hint=pattern.doc_hint,
+            )
+
+    return CypherError(
+        stage='execution',
+        reason='query_failed',
+        found=msg,
+        explanation=f'FalkorDB returned an error: {msg}',
+        suggestion='Check your Cypher syntax. Use get_schema to verify label and property names.',
+    )
+
+
+# ---------------------------------------------------------------------------
 # Stage 3: Security whitelist — fail-safe keyword gate
 # ---------------------------------------------------------------------------
 
