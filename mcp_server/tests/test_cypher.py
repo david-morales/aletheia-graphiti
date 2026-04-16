@@ -308,6 +308,46 @@ class TestStage2AutoFixBareVariable:
         assert fixes == []
 
 
+class TestStage2AutoFixNonAscii:
+    def test_fix_non_ascii_alias(self):
+        query = "MATCH (p:Persona) WITH p, toInteger(substring(p.fecha, 6, 4)) AS año_nacimiento RETURN año_nacimiento"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        # ñ → n (1:1 transliteration via str.maketrans)
+        assert 'ano_nacimiento' in fixed
+        assert 'año_nacimiento' not in fixed
+        assert any('non-ascii' in f.lower() or 'transliterat' in f.lower() for f in fixes)
+
+    def test_non_ascii_in_string_literal_preserved(self):
+        query = "MATCH (n) WHERE n.name CONTAINS 'INTIMIDACIÓN' RETURN n AS año"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'INTIMIDACIÓN' in fixed  # string literal preserved
+        assert 'AS ano' in fixed  # alias transliterated (ñ → n)
+        assert 'año' not in fixed.replace("'INTIMIDACIÓN'", '')  # outside string is clean
+
+    def test_no_fix_when_all_ascii(self):
+        query = 'MATCH (n:Persona) RETURN n.name AS nombre'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert not any('non-ascii' in f.lower() or 'transliterat' in f.lower() for f in fixes)
+
+    def test_fix_idempotent(self):
+        query = "WITH n AS señal RETURN señal"
+        fixed_once, _ = _fix_falkordb_dialect(query)
+        fixed_twice, fixes2 = _fix_falkordb_dialect(fixed_once)
+        assert fixed_once == fixed_twice
+        assert not any('non-ascii' in f.lower() or 'transliterat' in f.lower() for f in fixes2)
+
+    def test_multiple_non_ascii_aliases(self):
+        query = "WITH 1 AS año, 2 AS señal, 3 AS código RETURN año, señal, código"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'ano' in fixed  # ñ → n
+        assert 'senal' in fixed  # ñ → n
+        assert 'codigo' in fixed  # ó → o
+        assert 'año' not in fixed
+        assert 'señal' not in fixed
+        assert 'código' not in fixed
+
+
 class TestStage2Ordering:
     def test_apoc_with_date_rejects_on_apoc(self):
         query = "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"
@@ -1081,6 +1121,12 @@ class TestClassifyExecutionError:
         assert err.stage == 'execution'
         assert err.reason == 'query_failed'
         assert 'syntax' in err.suggestion.lower()
+
+    def test_classify_non_ascii_identifier(self):
+        msg = "errMsg: Invalid input '\ufffd': expected ',' errCtx: AS año_nacimiento"
+        err = classify_execution_error(msg)
+        assert err.reason == 'non_ascii_identifier'
+        assert 'ASCII' in err.suggestion
 
     def test_classify_first_match_wins(self):
         # Construct a message that genuinely matches BOTH patterns — bare-var

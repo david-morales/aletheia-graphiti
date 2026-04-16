@@ -259,6 +259,42 @@ _LOWER_RE = re.compile(r'\blower\s*\(', re.IGNORECASE)
 _UPPER_RE = re.compile(r'\bupper\s*\(', re.IGNORECASE)
 _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
 
+# Non-ASCII identifier transliteration.  FalkorDB only accepts ASCII in
+# variable names and aliases.  We transliterate common accented characters
+# in Cypher identifiers (outside of string literals) to their ASCII
+# equivalents.  This handles the most common Spanish/French/German cases.
+_NON_ASCII_TRANS = str.maketrans(
+    'áàâäãåéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÅÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+    'aaaaaaeeeeiiiiooooouuuuncAAAAAAEEEEIIIIOOOOOUUUUNC',
+)
+
+# Matches an identifier (word chars + non-ASCII) that appears as a Cypher
+# alias or variable — i.e. NOT inside a string literal.  We use a
+# conservative approach: find all word-like tokens that contain at least
+# one non-ASCII character and are NOT between quotes.
+_STRING_LITERAL_SKIP_RE = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+
+
+def _transliterate_non_ascii_identifiers(query: str) -> str:
+    """Replace non-ASCII characters in identifiers with ASCII equivalents.
+
+    Preserves string literals untouched — only identifiers (variable names,
+    aliases) are transliterated.
+    """
+    # Split the query into string-literal vs non-literal segments.
+    parts = []
+    last_end = 0
+    for m in _STRING_LITERAL_SKIP_RE.finditer(query):
+        # Non-literal segment before this string
+        segment = query[last_end:m.start()]
+        parts.append(segment.translate(_NON_ASCII_TRANS))
+        # String literal — preserve as-is
+        parts.append(m.group(0))
+        last_end = m.end()
+    # Trailing non-literal segment
+    parts.append(query[last_end:].translate(_NON_ASCII_TRANS))
+    return ''.join(parts)
+
 # Bare variable in pattern:  MATCH parte-[:R]->(x)  ->  MATCH (parte)-[:R]->(x)
 # Matches a word-variable immediately after MATCH/OPTIONAL MATCH that is
 # followed by `-[` without intervening parens.
@@ -366,6 +402,14 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
         query = new_query
         fixes.append('Wrapped bare variable in parens (FalkorDB pattern syntax requires parenthesized nodes)')
 
+    # 6. Transliterate non-ASCII characters in identifiers/aliases.
+    # FalkorDB's parser only accepts ASCII in variable names and aliases.
+    # Common with Spanish-language LLM output (año → anno, señal → sennal).
+    new_query = _transliterate_non_ascii_identifiers(query)
+    if new_query != query:
+        query = new_query
+        fixes.append('Transliterated non-ASCII characters in identifiers (FalkorDB requires ASCII-only names)')
+
     return query, fixes
 
 
@@ -411,6 +455,16 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         ),
         doc_hint='FalkorDB openCypher: WHERE attaches only to MATCH/OPTIONAL MATCH/WITH.',
         example_fix='UNWIND list AS x WITH x WHERE x.prop IS NOT NULL RETURN x',
+    ),
+    ExecutionErrorPattern(
+        name='non_ascii_identifier',
+        matcher=re.compile(r"Invalid input '.*?[^\x00-\x7F]|Invalid input '\ufffd'"),
+        suggestion=(
+            'FalkorDB identifiers (variable names, aliases) must be ASCII-only. '
+            'Replace accented characters: año → anno, señal → sennal, etc.'
+        ),
+        doc_hint='FalkorDB openCypher: identifiers are ASCII [A-Za-z0-9_] only.',
+        example_fix='WITH toInteger(val) AS anno_nacimiento',
     ),
     # More patterns added as they surface from Langfuse observations.
 ]
