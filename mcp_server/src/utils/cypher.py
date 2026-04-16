@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from utils.cypher_quality import assess_quality, compute_result_signals, refine_verdict
 
@@ -172,37 +172,44 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
         query = m.group(1)
         fixes.append('Extracted query from code block wrapper')
 
-    # 2. Smart quote replacement
-    replaced_smart = False
-    for smart, straight in _SMART_QUOTE_MAP.items():
-        if smart in query:
-            query = query.replace(smart, straight)
-            replaced_smart = True
-    if replaced_smart:
+    # 2. Smart quote replacement — code spans only.
+    # Smart quotes inside existing string literals are preserved as content,
+    # and those inside comments are not user-relevant.  We only want to fix
+    # LLM-typed smart outer quotes that appear in code position.
+    def _smart_quote_fix(s: str) -> str:
+        for smart, straight in _SMART_QUOTE_MAP.items():
+            if smart in s:
+                s = s.replace(smart, straight)
+        return s
+    new_query = _apply_to_code_spans(query, _smart_quote_fix)
+    if new_query != query:
+        query = new_query
         fixes.append('Replaced smart quotes with straight quotes')
 
-    # 3. HTML entity decoding
-    decoded = html.unescape(query)
-    if decoded != query:
-        query = decoded
+    # 3. HTML entity decoding — code spans only, same rationale.
+    new_query = _apply_to_code_spans(query, html.unescape)
+    if new_query != query:
+        query = new_query
         fixes.append('Decoded HTML entities')
 
-    # 4. Multi-word identifier quoting (skip if match contains a Cypher keyword)
-    # Node labels
-    new_query = _LABEL_RE.sub(
-        lambda m: f'`{m.group(1)}`' if not _contains_keyword(m.group(1)) else m.group(1),
-        query,
-    )
-    # Property keys
-    new_query = _PROP_KEY_RE.sub(
-        lambda m: f'`{m.group(1)}`' if not _contains_keyword(m.group(1)) else m.group(1),
-        new_query,
-    )
-    # Relationship types
-    new_query = _REL_TYPE_RE.sub(
-        lambda m: f'{m.group(1)}`{m.group(2)}`' if not _contains_keyword(m.group(2)) else m.group(0),
-        new_query,
-    )
+    # 4. Multi-word identifier quoting — code spans only (skip if match
+    # contains a Cypher keyword).  Also preserves anything already inside
+    # string literals or comments.
+    def _backtick_fix(s: str) -> str:
+        s = _LABEL_RE.sub(
+            lambda m: f'`{m.group(1)}`' if not _contains_keyword(m.group(1)) else m.group(1),
+            s,
+        )
+        s = _PROP_KEY_RE.sub(
+            lambda m: f'`{m.group(1)}`' if not _contains_keyword(m.group(1)) else m.group(1),
+            s,
+        )
+        s = _REL_TYPE_RE.sub(
+            lambda m: f'{m.group(1)}`{m.group(2)}`' if not _contains_keyword(m.group(2)) else m.group(0),
+            s,
+        )
+        return s
+    new_query = _apply_to_code_spans(query, _backtick_fix)
     if new_query != query:
         query = new_query
         fixes.append('Backtick-quoted multi-word identifiers')
@@ -219,6 +226,72 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
             fixes.append(f'Injected RETURN {var_list}')
 
     return query, fixes
+
+
+# ---------------------------------------------------------------------------
+# Non-code span mask — shared across Stage 1, Stage 2b, and Stage 3.
+# ---------------------------------------------------------------------------
+
+# Matches Cypher spans whose content is NOT executable code: string literals
+# (single- and double-quoted with escape handling), line comments (`//` to
+# end-of-line), and block comments (`/* ... */`).  Pipeline operations that
+# look at or transform code (identifier rewrites, keyword scans, auto-fixes)
+# must mask these out first — otherwise we silently mutate user-authored
+# content or trigger false-positive keyword rejections on text that is only
+# quoted or commented.
+_NON_CODE_SPAN_RE = re.compile(
+    r"""(?x)
+    "(?:[^"\\]|\\.)*"        # double-quoted string literal
+    | '(?:[^'\\]|\\.)*'      # single-quoted string literal
+    | //[^\n]*               # line comment
+    | /\*[\s\S]*?\*/         # block comment
+    """
+)
+
+
+def _apply_to_code_spans(query: str, fn: Callable[[str], str]) -> str:
+    """Apply ``fn`` to code segments only; preserve string literals + comments verbatim.
+
+    ``fn`` is a string -> string transformation applied once per code segment
+    (the text between or outside non-code spans).  The non-code spans matched
+    by :data:`_NON_CODE_SPAN_RE` are reinserted unchanged.
+
+    Use this for fixes that inspect or transform identifiers, keywords, or
+    syntactic tokens that never legitimately appear inside a string literal.
+    """
+    parts: list[str] = []
+    last = 0
+    for m in _NON_CODE_SPAN_RE.finditer(query):
+        parts.append(fn(query[last:m.start()]))
+        parts.append(m.group(0))
+        last = m.end()
+    parts.append(fn(query[last:]))
+    return ''.join(parts)
+
+
+# Comment-only mask: line + block comments.  Unlike _NON_CODE_SPAN_RE, this
+# does NOT mask string literals, so transformations that legitimately match
+# patterns spanning a string (e.g. `date('2024-01-01')` → `'2024-01-01'`)
+# can still find their input.
+_COMMENT_SPAN_RE = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/')
+
+
+def _apply_outside_comments(query: str, fn: Callable[[str], str]) -> str:
+    """Apply ``fn`` to non-comment regions; preserve comments verbatim.
+
+    Use this for fixes whose regex legitimately consumes a string literal as
+    part of its match (e.g. stripping `date('...')` to `'...'`).  Comments
+    remain untouched so that commented-out examples are never silently
+    rewritten and no false-positive ``auto_fixes`` entry is produced.
+    """
+    parts: list[str] = []
+    last = 0
+    for m in _COMMENT_SPAN_RE.finditer(query):
+        parts.append(fn(query[last:m.start()]))
+        parts.append(m.group(0))
+        last = m.end()
+    parts.append(fn(query[last:]))
+    return ''.join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -261,39 +334,23 @@ _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
 
 # Non-ASCII identifier transliteration.  FalkorDB only accepts ASCII in
 # variable names and aliases.  We transliterate common accented characters
-# in Cypher identifiers (outside of string literals) to their ASCII
-# equivalents.  This handles the most common Spanish/French/German cases.
+# in Cypher identifiers (outside of string literals and comments) to their
+# ASCII equivalents.  This handles the most common Spanish/French/German cases.
 _NON_ASCII_TRANS = str.maketrans(
     'áàâäãåéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÅÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
     'aaaaaaeeeeiiiiooooouuuuncAAAAAAEEEEIIIIOOOOOUUUUNC',
 )
 
-# Matches an identifier (word chars + non-ASCII) that appears as a Cypher
-# alias or variable — i.e. NOT inside a string literal.  We use a
-# conservative approach: find all word-like tokens that contain at least
-# one non-ASCII character and are NOT between quotes.
-_STRING_LITERAL_SKIP_RE = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
-
 
 def _transliterate_non_ascii_identifiers(query: str) -> str:
     """Replace non-ASCII characters in identifiers with ASCII equivalents.
 
-    Preserves string literals untouched — only identifiers (variable names,
-    aliases) are transliterated.
+    Preserves string literals and comments untouched — only identifiers
+    (variable names, aliases) are transliterated.  Implemented on top of
+    :func:`_apply_to_code_spans` so the non-code-span policy is consistent
+    across every Stage 2b fix.
     """
-    # Split the query into string-literal vs non-literal segments.
-    parts = []
-    last_end = 0
-    for m in _STRING_LITERAL_SKIP_RE.finditer(query):
-        # Non-literal segment before this string
-        segment = query[last_end:m.start()]
-        parts.append(segment.translate(_NON_ASCII_TRANS))
-        # String literal — preserve as-is
-        parts.append(m.group(0))
-        last_end = m.end()
-    # Trailing non-literal segment
-    parts.append(query[last_end:].translate(_NON_ASCII_TRANS))
-    return ''.join(parts)
+    return _apply_to_code_spans(query, lambda s: s.translate(_NON_ASCII_TRANS))
 
 # Bare variable in pattern:  MATCH parte-[:R]->(x)  ->  MATCH (parte)-[:R]->(x)
 # Matches a word-variable immediately after MATCH/OPTIONAL MATCH that is
@@ -319,10 +376,16 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
     """Reject track — return a CypherError for FalkorDB-incompatible patterns.
 
     Returns None if the query is clean.  Checks are ordered by severity; the
-    first match wins.
+    first match wins.  String literals and comments are masked via
+    :func:`_strip_non_code_spans` before each reject pattern is evaluated so
+    mentions inside quotes or comments cannot falsely trigger rejection.
     """
+    # Code-only view: strings replaced by ` _STR_ `, comments by ` _CMT_ `.
+    # Reject patterns below look for real code usage, not mere mentions.
+    code_only = _strip_non_code_spans(query)
+
     # 1. APOC procedures
-    m = _APOC_RE.search(query)
+    m = _APOC_RE.search(code_only)
     if m:
         return CypherError(
             stage='falkordb_dialect',
@@ -334,7 +397,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
         )
 
     # 2. EXISTS {} subqueries (NOT EXISTS((n)--()) which is valid)
-    m = _EXISTS_SUBQUERY_RE.search(query)
+    m = _EXISTS_SUBQUERY_RE.search(code_only)
     if m:
         return CypherError(
             stage='falkordb_dialect',
@@ -346,7 +409,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
         )
 
     # 3. UNWIND ... WHERE (must be UNWIND ... WITH ... WHERE)
-    m = _UNWIND_WHERE_NO_WITH_RE.search(query)
+    m = _UNWIND_WHERE_NO_WITH_RE.search(code_only)
     if m:
         return CypherError(
             stage='falkordb_dialect',
@@ -368,43 +431,51 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
     """Auto-fix track — apply lossless transformations for FalkorDB compatibility.
 
     Returns the fixed query and a list of human-readable descriptions of
-    each fix applied.
+    each fix applied.  Every step operates only on code spans via
+    :func:`_apply_to_code_spans`, so text inside string literals and
+    comments is never silently rewritten and the ``fixes`` list never
+    reports a false positive for content that didn't need changing.
     """
     fixes: list[str] = []
 
-    # 1. Strip date/datetime/localDateTime wrappers
-    new_query = _DATE_WRAPPER_RE.sub(r'\1', query)
+    # 1. Strip date/datetime/localDateTime wrappers.
+    # The wrapper regex legitimately consumes a string literal as part of
+    # its match (`date('2024-01-01')`), so we can only mask comments here —
+    # not string literals.
+    new_query = _apply_outside_comments(query, lambda s: _DATE_WRAPPER_RE.sub(r'\1', s))
     if new_query != query:
         query = new_query
         fixes.append('Stripped date/datetime wrapper functions (FalkorDB uses string dates)')
 
-    # 2. Fix lower() -> toLower()
-    new_query = _LOWER_RE.sub('toLower(', query)
+    # 2. Fix lower() -> toLower() (code only)
+    new_query = _apply_to_code_spans(query, lambda s: _LOWER_RE.sub('toLower(', s))
     if new_query != query:
         query = new_query
         fixes.append('Replaced lower() with toLower()')
 
-    # 3. Fix upper() -> toUpper()
-    new_query = _UPPER_RE.sub('toUpper(', query)
+    # 3. Fix upper() -> toUpper() (code only)
+    new_query = _apply_to_code_spans(query, lambda s: _UPPER_RE.sub('toUpper(', s))
     if new_query != query:
         query = new_query
         fixes.append('Replaced upper() with toUpper()')
 
-    # 4. Strip PROFILE/EXPLAIN prefix
-    new_query = _PROFILE_EXPLAIN_RE.sub('', query)
+    # 4. Strip PROFILE/EXPLAIN prefix (code only; anchored to start-of-span)
+    new_query = _apply_to_code_spans(query, lambda s: _PROFILE_EXPLAIN_RE.sub('', s))
     if new_query != query:
         query = new_query
         fixes.append('Stripped PROFILE/EXPLAIN prefix (not supported in FalkorDB)')
 
-    # 5. Wrap bare variables in MATCH/OPTIONAL MATCH patterns.
-    new_query = _BARE_VAR_IN_PATTERN_RE.sub(r'\1 (\2)', query)
+    # 5. Wrap bare variables in MATCH/OPTIONAL MATCH patterns (code only).
+    new_query = _apply_to_code_spans(query, lambda s: _BARE_VAR_IN_PATTERN_RE.sub(r'\1 (\2)', s))
     if new_query != query:
         query = new_query
         fixes.append('Wrapped bare variable in parens (FalkorDB pattern syntax requires parenthesized nodes)')
 
     # 6. Transliterate non-ASCII characters in identifiers/aliases.
     # FalkorDB's parser only accepts ASCII in variable names and aliases.
-    # Common with Spanish-language LLM output (año → anno, señal → sennal).
+    # Common with Spanish-language LLM output (año → ano, señal → senal).
+    # Uses the shared helper so content inside string literals and
+    # comments is preserved.
     new_query = _transliterate_non_ascii_identifiers(query)
     if new_query != query:
         query = new_query
@@ -511,20 +582,32 @@ _BLOCKED_KEYWORDS: set[str] = {
 
 # Patterns for stripping non-keyword tokens before scanning
 _STRING_LITERAL_RE = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+_COMMENT_RE = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/')
 _BACKTICK_IDENT_RE = re.compile(r'`[^`]*`')
 _PROPERTY_ACCESS_RE = re.compile(r'\.(\w+)')
 _CALL_PROCEDURE_RE = re.compile(r'\bCALL\s+([\w.]+)', re.IGNORECASE)
 
 
+def _strip_non_code_spans(query: str) -> str:
+    """Return a whitespace-padded copy of ``query`` with string literals and
+    comments replaced by placeholder tokens.  Used by the security whitelist
+    so that blocked keywords inside strings or comments do not trigger
+    false-positive rejections.
+    """
+    cleaned = _STRING_LITERAL_RE.sub(' _STR_ ', query)
+    cleaned = _COMMENT_RE.sub(' _CMT_ ', cleaned)
+    return cleaned
+
+
 def _extract_keyword_tokens(query: str) -> list[str]:
     """Extract keyword-level tokens from a Cypher query for security scanning.
 
-    Strips string literals, backtick-quoted identifiers, and property-access
-    names so that blocked keywords inside those contexts are not matched.
-    Returns uppercase tokens.
+    Strips string literals, comments, backtick-quoted identifiers, and
+    property-access names so that blocked keywords inside those contexts
+    are not matched.  Returns uppercase tokens.
     """
-    # 1. Remove string literals (replace with placeholder to preserve spacing)
-    cleaned = _STRING_LITERAL_RE.sub(' _STR_ ', query)
+    # 1. Remove string literals + comments (replace with placeholders to preserve spacing)
+    cleaned = _strip_non_code_spans(query)
     # 2. Remove backtick-quoted identifiers
     cleaned = _BACKTICK_IDENT_RE.sub(' _BT_ ', cleaned)
     # 3. Remove property access (.word) so e.g. n.description won't match
@@ -539,9 +622,16 @@ def _check_whitelist(query: str) -> CypherError | None:
 
     Returns a CypherError with stage='security' and reason='write_operation'
     if a blocked keyword is found.  Returns None if the query is clean.
+
+    String literals and comments are masked before scanning so that blocked
+    keywords appearing only inside quotes or comments do not trigger
+    false-positive rejections (e.g. `// CREATE a diagnostic query`).
     """
-    # Special check: CALL is allowed only for db.* procedures
-    for m in _CALL_PROCEDURE_RE.finditer(query):
+    # Special check: CALL is allowed only for db.* procedures.
+    # Operate on the masked view so `// CALL apoc.foo()` inside a comment
+    # and `'CALL dbms.something'` inside a string don't falsely trigger.
+    code_only = _strip_non_code_spans(query)
+    for m in _CALL_PROCEDURE_RE.finditer(code_only):
         proc_name = m.group(1).lower()
         if not proc_name.startswith('db.'):
             return CypherError(
