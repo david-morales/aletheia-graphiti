@@ -19,6 +19,7 @@ from utils.cypher import (
     _fix_falkordb_dialect,
     _fix_llm_syntax,
     _inject_safety,
+    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
@@ -139,12 +140,10 @@ class TestStage2Reject:
         assert 'variable-length' in err.suggestion.lower()
         assert err.doc_hint != ''
 
-    def test_reject_pattern_comprehension(self):
+    def test_pass_pattern_comprehension(self):
+        # Pattern comprehensions ARE supported in FalkorDB.
         query = 'MATCH (n:Occurrence) RETURN n.name, [(n)-[:INVOLVED_AIRCRAFT]->(a) | a.name] AS aircraft'
-        err = _check_falkordb_dialect(query)
-        assert err is not None
-        assert err.reason == 'pattern_comprehension_unsupported'
-        assert 'collect' in err.suggestion.lower()
+        assert _check_falkordb_dialect(query) is None
 
     def test_reject_exists_subquery(self):
         query = 'MATCH (n:Aircraft) WHERE EXISTS { MATCH (n)<-[:INVOLVED_AIRCRAFT]-(o) } RETURN n'
@@ -152,19 +151,15 @@ class TestStage2Reject:
         assert err is not None
         assert err.reason == 'exists_subquery_unsupported'
 
-    def test_reject_call_subquery(self):
+    def test_pass_call_subquery(self):
+        # CALL {} subqueries ARE supported in FalkorDB.
         query = 'MATCH (n:Occurrence) CALL { WITH n MATCH (n)-[:OPERATED_BY]->(op) RETURN op } RETURN n, op'
-        err = _check_falkordb_dialect(query)
-        assert err is not None
-        assert err.reason == 'call_subquery_unsupported'
-        assert 'OPTIONAL MATCH' in err.suggestion
+        assert _check_falkordb_dialect(query) is None
 
-    def test_reject_map_projection(self):
+    def test_pass_map_projection(self):
+        # Map projections ARE supported in FalkorDB.
         query = 'MATCH (n:Occurrence) RETURN n {.name, .date_value, .description}'
-        err = _check_falkordb_dialect(query)
-        assert err is not None
-        assert err.reason == 'map_projection_unsupported'
-        assert 'individually' in err.suggestion.lower()
+        assert _check_falkordb_dialect(query) is None
 
     def test_pass_clean_query(self):
         query = 'MATCH (n:Occurrence) RETURN n.name, n.date_value'
@@ -176,6 +171,43 @@ class TestStage2Reject:
 
     def test_pass_exists_pattern(self):
         query = 'MATCH (n:Aircraft) WHERE EXISTS((n)<-[:INVOLVED_AIRCRAFT]-()) RETURN n'
+        assert _check_falkordb_dialect(query) is None
+
+
+class TestStage2RejectUnwindWhere:
+    def test_reject_unwind_where_no_with(self):
+        query = (
+            'MATCH (p:Persona) WITH p '
+            'UNWIND [1,2,3] AS x '
+            'WHERE x > 1 '
+            'RETURN p, x'
+        )
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'unwind_where_missing_with'
+        assert 'WITH' in err.suggestion
+
+    def test_reject_unwind_where_multiline(self):
+        query = (
+            'MATCH (p) UNWIND p.list AS item\n'
+            'WHERE item IS NOT NULL\n'
+            'RETURN item'
+        )
+        err = _check_falkordb_dialect(query)
+        assert err is not None
+        assert err.reason == 'unwind_where_missing_with'
+
+    def test_pass_unwind_with_where(self):
+        # UNWIND ... AS x WITH x WHERE ... is the valid form.
+        query = 'UNWIND [1,2,3] AS x WITH x WHERE x > 1 RETURN x'
+        assert _check_falkordb_dialect(query) is None
+
+    def test_pass_unwind_alone(self):
+        query = 'UNWIND [1,2,3] AS x RETURN x'
+        assert _check_falkordb_dialect(query) is None
+
+    def test_pass_unwind_followed_by_match(self):
+        query = "UNWIND ['a','b'] AS name MATCH (n {name: name}) RETURN n"
         assert _check_falkordb_dialect(query) is None
 
 
@@ -227,6 +259,93 @@ class TestStage2AutoFix:
         fixed, fixes = _fix_falkordb_dialect(query)
         assert fixed == query
         assert fixes == []
+
+
+class TestStage2AutoFixBareVariable:
+    def test_fix_bare_variable_in_optional_match(self):
+        query = 'MATCH (p:Persona) OPTIONAL MATCH parte-[:TIPIFICADO_COMO]->(tipo:TipoDelito) RETURN p, tipo'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert '(parte)-[:TIPIFICADO_COMO]->' in fixed
+        assert 'parte-[:TIPIFICADO_COMO]->' not in fixed
+        assert any('bare variable' in f.lower() for f in fixes)
+
+    def test_fix_bare_variable_in_match(self):
+        query = 'MATCH a-[:KNOWS]->(b) RETURN a, b'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert '(a)-[:KNOWS]->' in fixed
+        assert any('bare variable' in f.lower() for f in fixes)
+
+    def test_fix_bare_variable_idempotent(self):
+        # Applying twice produces the same result.
+        query = 'OPTIONAL MATCH x-[:R]->(y) RETURN x, y'
+        fixed_once, _ = _fix_falkordb_dialect(query)
+        fixed_twice, fixes_twice = _fix_falkordb_dialect(fixed_once)
+        assert fixed_once == fixed_twice
+        assert fixes_twice == []  # second pass finds nothing to fix
+
+    def test_no_fix_when_var_already_parenthesized(self):
+        query = 'MATCH (a)-[:KNOWS]->(b) RETURN a, b'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert not any('bare variable' in f.lower() for f in fixes)
+
+    def test_no_fix_when_no_pattern_match(self):
+        # MATCH with parens and a WHERE — must not be mangled.
+        query = 'MATCH (a:Persona) WHERE a.name = "X" RETURN a'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+
+    def test_comma_separated_patterns_second_var_unchanged(self):
+        # Known limitation: regex only matches a bare variable immediately
+        # after MATCH.  Second-position bare variable in comma-separated
+        # patterns is left alone.  Documents the limitation explicitly so a
+        # future regex change cannot silently introduce an unsafe rewrite
+        # for this case without updating the test.
+        query = 'MATCH (a)-[:R1]->(b), c-[:R2]->(d) RETURN a, b, c, d'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'c-[:R2]->' in fixed
+        assert '(c)-[:R2]->' not in fixed
+        assert fixes == []
+
+
+class TestStage2AutoFixNonAscii:
+    def test_fix_non_ascii_alias(self):
+        query = "MATCH (p:Persona) WITH p, toInteger(substring(p.fecha, 6, 4)) AS año_nacimiento RETURN año_nacimiento"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        # ñ → n (1:1 transliteration via str.maketrans)
+        assert 'ano_nacimiento' in fixed
+        assert 'año_nacimiento' not in fixed
+        assert any('non-ascii' in f.lower() or 'transliterat' in f.lower() for f in fixes)
+
+    def test_non_ascii_in_string_literal_preserved(self):
+        query = "MATCH (n) WHERE n.name CONTAINS 'INTIMIDACIÓN' RETURN n AS año"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'INTIMIDACIÓN' in fixed  # string literal preserved
+        assert 'AS ano' in fixed  # alias transliterated (ñ → n)
+        assert 'año' not in fixed.replace("'INTIMIDACIÓN'", '')  # outside string is clean
+
+    def test_no_fix_when_all_ascii(self):
+        query = 'MATCH (n:Persona) RETURN n.name AS nombre'
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert not any('non-ascii' in f.lower() or 'transliterat' in f.lower() for f in fixes)
+
+    def test_fix_idempotent(self):
+        query = "WITH n AS señal RETURN señal"
+        fixed_once, _ = _fix_falkordb_dialect(query)
+        fixed_twice, fixes2 = _fix_falkordb_dialect(fixed_once)
+        assert fixed_once == fixed_twice
+        assert not any('non-ascii' in f.lower() or 'transliterat' in f.lower() for f in fixes2)
+
+    def test_multiple_non_ascii_aliases(self):
+        query = "WITH 1 AS año, 2 AS señal, 3 AS código RETURN año, señal, código"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'ano' in fixed  # ñ → n
+        assert 'senal' in fixed  # ñ → n
+        assert 'codigo' in fixed  # ó → o
+        assert 'año' not in fixed
+        assert 'señal' not in fixed
+        assert 'código' not in fixed
 
 
 class TestStage2Ordering:
@@ -304,6 +423,12 @@ class TestStage3SecurityWhitelist:
     def test_keyword_in_property_not_matched(self):
         # n.description should not trigger on any keyword
         assert _check_whitelist('MATCH (n) RETURN n.description') is None
+
+    def test_allow_call_subquery_block(self):
+        # CALL { ... } subquery — no procedure name after CALL, so the
+        # security whitelist should not treat it as a forbidden procedure.
+        query = 'MATCH (n) CALL { WITH n MATCH (n)-[r]->(m) RETURN m } RETURN n, m'
+        assert _check_whitelist(query) is None
 
 
 class TestStage4SafetyInjection:
@@ -974,3 +1099,64 @@ class TestCypherQualityInErrorEnvelope:
         )
         result = format_error("MATCH (n) DELETE n", err)
         assert result['cypher_quality']['outcome'] == 'rejected'
+
+
+class TestClassifyExecutionError:
+    def test_classify_unwind_where_missing_with(self):
+        msg = "errMsg: Invalid input 'H': expected WITH line: 10, column: 2 errCtx: WHERE evento.numero"
+        err = classify_execution_error(msg)
+        assert err.reason == 'unwind_where_missing_with'
+        assert 'WITH' in err.suggestion
+        assert err.doc_hint != ''
+
+    def test_classify_bare_variable(self):
+        msg = "errMsg: Invalid input '-': expected '=' line: 5, column: 21 errCtx: OPTIONAL MATCH parte-[:R]->(t)"
+        err = classify_execution_error(msg)
+        assert err.reason == 'bare_variable_in_pattern'
+        assert 'paren' in err.suggestion.lower()
+
+    def test_classify_unknown_error_returns_generic(self):
+        msg = "errMsg: some completely unknown error that we haven't seen"
+        err = classify_execution_error(msg)
+        assert err.stage == 'execution'
+        assert err.reason == 'query_failed'
+        assert 'syntax' in err.suggestion.lower()
+
+    def test_classify_non_ascii_identifier(self):
+        msg = "errMsg: Invalid input '\ufffd': expected ',' errCtx: AS año_nacimiento"
+        err = classify_execution_error(msg)
+        assert err.reason == 'non_ascii_identifier'
+        assert 'ASCII' in err.suggestion
+
+    def test_classify_first_match_wins(self):
+        # Construct a message that genuinely matches BOTH patterns — bare-var
+        # `Invalid input '-': expected '='` AND unwind-where `expected WITH ...
+        # errCtx: WHERE`.  The first pattern listed (bare_variable_in_pattern)
+        # must win.  Guards against a future re-ordering of the table.
+        msg = (
+            "errMsg: Invalid input '-': expected '=' "
+            "expected WITH line: 5, column: 2 errCtx: WHERE x"
+        )
+        err = classify_execution_error(msg)
+        assert err.reason == 'bare_variable_in_pattern'
+
+
+class TestRunCypherToolDescription:
+    def test_description_mentions_falkordb_dialect(self):
+        import re
+        from pathlib import Path
+        src_path = Path(__file__).parent.parent / 'src' / 'graphiti_mcp_server.py'
+        source = src_path.read_text()
+        # Find the run_cypher async function and capture its docstring.
+        m = re.search(
+            r'async def run_cypher\([^)]*\)[^:]*:\s*"""(.*?)"""',
+            source,
+            re.DOTALL,
+        )
+        assert m, 'run_cypher docstring not found'
+        doc = m.group(1)
+        assert 'FalkorDB' in doc
+        assert 'dialect' in doc.lower()
+        assert 'parens' in doc.lower() or 'parenthes' in doc.lower()
+        assert 'UNWIND' in doc
+        assert 'date' in doc.lower()

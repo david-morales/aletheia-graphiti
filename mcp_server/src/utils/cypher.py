@@ -227,10 +227,28 @@ def _fix_llm_syntax(query: str) -> tuple[str, list[str]]:
 
 # Reject-track patterns
 _APOC_RE = re.compile(r'apoc\.\w+[\.\w]*\(', re.IGNORECASE)
-_PATTERN_COMPREHENSION_RE = re.compile(r'\[\s*\(.*?\|', re.DOTALL)
 _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
-_CALL_SUBQUERY_RE = re.compile(r'\bCALL\s*\{', re.IGNORECASE)
-_MAP_PROJECTION_RE = re.compile(r'\w+\s*\{\s*\.\w+')
+
+# UNWIND ... AS x [then] WHERE   (no WITH or MATCH between UNWIND and WHERE)
+# Multiline-aware; case-insensitive.  Matches when the token after the
+# alias-and-any-whitespace is WHERE (not MATCH, WITH, RETURN, etc.).
+# Uses a tempered pattern to stop at intervening WITH/MATCH/OPTIONAL/RETURN
+# keywords so legitimate UNWIND...WITH...WHERE forms are not matched.
+#
+# Known limitations of this regex-only approach:
+#  - `CALL` is intentionally NOT in the stop-set: practical CALL{} subquery
+#    bodies open with WITH or contain RETURN, both of which already terminate
+#    the span.  A pathological `UNWIND a AS n CALL { CREATE ... } WHERE ...`
+#    would over-match, but write operations are blocked by the security stage.
+#  - String literals containing the stop-words (e.g.
+#    `UNWIND ['WITH','MATCH'] AS k WHERE k IS NOT NULL`) are false negatives
+#    because the regex word-boundaries match inside quotes.  Such queries
+#    fall through to FalkorDB and surface via classify_execution_error().
+# A proper fix for these cases requires AST parsing.
+_UNWIND_WHERE_NO_WITH_RE = re.compile(
+    r'\bUNWIND\b(?:(?!\b(?:WITH|MATCH|OPTIONAL|RETURN)\b).)+?\bAS\s+\w+\s+WHERE\b',
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Auto-fix patterns
 _DATE_WRAPPER_RE = re.compile(
@@ -240,6 +258,61 @@ _DATE_WRAPPER_RE = re.compile(
 _LOWER_RE = re.compile(r'\blower\s*\(', re.IGNORECASE)
 _UPPER_RE = re.compile(r'\bupper\s*\(', re.IGNORECASE)
 _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
+
+# Non-ASCII identifier transliteration.  FalkorDB only accepts ASCII in
+# variable names and aliases.  We transliterate common accented characters
+# in Cypher identifiers (outside of string literals) to their ASCII
+# equivalents.  This handles the most common Spanish/French/German cases.
+_NON_ASCII_TRANS = str.maketrans(
+    'áàâäãåéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÅÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+    'aaaaaaeeeeiiiiooooouuuuncAAAAAAEEEEIIIIOOOOOUUUUNC',
+)
+
+# Matches an identifier (word chars + non-ASCII) that appears as a Cypher
+# alias or variable — i.e. NOT inside a string literal.  We use a
+# conservative approach: find all word-like tokens that contain at least
+# one non-ASCII character and are NOT between quotes.
+_STRING_LITERAL_SKIP_RE = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+
+
+def _transliterate_non_ascii_identifiers(query: str) -> str:
+    """Replace non-ASCII characters in identifiers with ASCII equivalents.
+
+    Preserves string literals untouched — only identifiers (variable names,
+    aliases) are transliterated.
+    """
+    # Split the query into string-literal vs non-literal segments.
+    parts = []
+    last_end = 0
+    for m in _STRING_LITERAL_SKIP_RE.finditer(query):
+        # Non-literal segment before this string
+        segment = query[last_end:m.start()]
+        parts.append(segment.translate(_NON_ASCII_TRANS))
+        # String literal — preserve as-is
+        parts.append(m.group(0))
+        last_end = m.end()
+    # Trailing non-literal segment
+    parts.append(query[last_end:].translate(_NON_ASCII_TRANS))
+    return ''.join(parts)
+
+# Bare variable in pattern:  MATCH parte-[:R]->(x)  ->  MATCH (parte)-[:R]->(x)
+# Matches a word-variable immediately after MATCH/OPTIONAL MATCH that is
+# followed by `-[` without intervening parens.
+# Group 1: the MATCH keyword (preserved in substitution).
+# Group 2: the bare variable name (wrapped in parens).
+#
+# Known limitations of this regex-only approach (AST parsing would cover them):
+#  - Comma-separated patterns in one MATCH don't get second-position vars
+#    wrapped (e.g. `MATCH (a)-[:R]->(b), c-[:R]->(d)` leaves `c` alone —
+#    the classify_execution_error layer still returns a useful error).
+#  - Whitespace (tabs, multiple spaces) between MATCH and the variable is
+#    normalized to a single space.
+#  - Text inside string literals matching the pattern will also be rewritten;
+#    probability of this occurring in LLM-generated Cypher is very low.
+_BARE_VAR_IN_PATTERN_RE = re.compile(
+    r'(\bOPTIONAL\s+MATCH\b|\bMATCH\b)\s+([A-Za-z_]\w*)(?=\s*-\s*\[)',
+    re.IGNORECASE,
+)
 
 
 def _check_falkordb_dialect(query: str) -> CypherError | None:
@@ -260,19 +333,7 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             doc_hint='FalkorDB supports openCypher variable-length paths with [*min..max] syntax',
         )
 
-    # 2. Pattern comprehensions  [(n)-[:REL]->(m) | m.prop]
-    m = _PATTERN_COMPREHENSION_RE.search(query)
-    if m:
-        return CypherError(
-            stage='falkordb_dialect',
-            reason='pattern_comprehension_unsupported',
-            found=m.group(0),
-            explanation='Pattern comprehensions are not supported in FalkorDB.',
-            suggestion='Use WITH + MATCH + collect() to achieve the same result',
-            doc_hint='Rewrite as: MATCH (n)-[:REL]->(m) WITH n, collect(m.prop) AS props',
-        )
-
-    # 3. EXISTS {} subqueries (NOT EXISTS((n)--()) which is valid)
+    # 2. EXISTS {} subqueries (NOT EXISTS((n)--()) which is valid)
     m = _EXISTS_SUBQUERY_RE.search(query)
     if m:
         return CypherError(
@@ -284,28 +345,20 @@ def _check_falkordb_dialect(query: str) -> CypherError | None:
             doc_hint='FalkorDB supports EXISTS with inline path patterns, not subquery blocks',
         )
 
-    # 4. CALL {} subqueries
-    m = _CALL_SUBQUERY_RE.search(query)
+    # 3. UNWIND ... WHERE (must be UNWIND ... WITH ... WHERE)
+    m = _UNWIND_WHERE_NO_WITH_RE.search(query)
     if m:
         return CypherError(
             stage='falkordb_dialect',
-            reason='call_subquery_unsupported',
-            found=m.group(0),
-            explanation='CALL {} subqueries are not supported in FalkorDB.',
-            suggestion='Use WITH + OPTIONAL MATCH to achieve similar results',
-            doc_hint='Rewrite CALL {} blocks as sequential WITH + MATCH clauses',
-        )
-
-    # 5. Map projections  n {.name, .date}
-    m = _MAP_PROJECTION_RE.search(query)
-    if m:
-        return CypherError(
-            stage='falkordb_dialect',
-            reason='map_projection_unsupported',
-            found=m.group(0),
-            explanation='Map projections are not supported in FalkorDB.',
-            suggestion='Return properties individually: RETURN n.name, n.date',
-            doc_hint='Use explicit property access instead of map projection syntax',
+            reason='unwind_where_missing_with',
+            found=m.group(0)[:80],
+            explanation='WHERE cannot attach directly to UNWIND. Insert a WITH clause between UNWIND and WHERE.',
+            suggestion=(
+                'Rewrite `UNWIND list AS x WHERE ...` as '
+                '`UNWIND list AS x WITH x, <other_bound_vars> WHERE ...` '
+                '(include any prior-bound variables you need to keep in scope).'
+            ),
+            doc_hint='FalkorDB openCypher: WHERE attaches to MATCH / OPTIONAL MATCH / WITH only.',
         )
 
     return None
@@ -343,7 +396,108 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
         query = new_query
         fixes.append('Stripped PROFILE/EXPLAIN prefix (not supported in FalkorDB)')
 
+    # 5. Wrap bare variables in MATCH/OPTIONAL MATCH patterns.
+    new_query = _BARE_VAR_IN_PATTERN_RE.sub(r'\1 (\2)', query)
+    if new_query != query:
+        query = new_query
+        fixes.append('Wrapped bare variable in parens (FalkorDB pattern syntax requires parenthesized nodes)')
+
+    # 6. Transliterate non-ASCII characters in identifiers/aliases.
+    # FalkorDB's parser only accepts ASCII in variable names and aliases.
+    # Common with Spanish-language LLM output (año → anno, señal → sennal).
+    new_query = _transliterate_non_ascii_identifiers(query)
+    if new_query != query:
+        query = new_query
+        fixes.append('Transliterated non-ASCII characters in identifiers (FalkorDB requires ASCII-only names)')
+
     return query, fixes
+
+
+# ---------------------------------------------------------------------------
+# Execution-error classification (Layer 3)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExecutionErrorPattern:
+    """Maps a FalkorDB parser-error string to an actionable CypherError.
+
+    Walked in order by :func:`classify_execution_error`; first match wins.
+    """
+
+    name: str
+    matcher: re.Pattern
+    suggestion: str
+    doc_hint: str
+    example_fix: str | None = None
+
+
+# Order matters: more specific patterns before general ones.  The first
+# matching pattern wins.  Append new patterns at the end of the list and
+# tighten matchers if a new pattern overlaps an existing one.
+_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
+    ExecutionErrorPattern(
+        name='bare_variable_in_pattern',
+        matcher=re.compile(r"Invalid input '-': expected '='"),
+        suggestion=(
+            'A bound variable inside a MATCH/OPTIONAL MATCH pattern must be '
+            'wrapped in parentheses. Use `(var)-[:REL]->(other)` instead of '
+            '`var-[:REL]->(other)`.'
+        ),
+        doc_hint='FalkorDB openCypher: pattern nodes must be parenthesized.',
+        example_fix='OPTIONAL MATCH (n)-[:REL]->(m)',
+    ),
+    ExecutionErrorPattern(
+        name='unwind_where_missing_with',
+        matcher=re.compile(r"expected WITH.+errCtx:\s*WHERE\b", re.IGNORECASE | re.DOTALL),
+        suggestion=(
+            'WHERE cannot attach to UNWIND directly. Insert WITH between them: '
+            '`UNWIND list AS x WITH x WHERE x.prop IS NOT NULL`.'
+        ),
+        doc_hint='FalkorDB openCypher: WHERE attaches only to MATCH/OPTIONAL MATCH/WITH.',
+        example_fix='UNWIND list AS x WITH x WHERE x.prop IS NOT NULL RETURN x',
+    ),
+    ExecutionErrorPattern(
+        name='non_ascii_identifier',
+        matcher=re.compile(r"Invalid input '.*?[^\x00-\x7F]|Invalid input '\ufffd'"),
+        suggestion=(
+            'FalkorDB identifiers (variable names, aliases) must be ASCII-only. '
+            'Replace accented characters: año → anno, señal → sennal, etc.'
+        ),
+        doc_hint='FalkorDB openCypher: identifiers are ASCII [A-Za-z0-9_] only.',
+        example_fix='WITH toInteger(val) AS anno_nacimiento',
+    ),
+    # More patterns added as they surface from Langfuse observations.
+]
+
+
+def classify_execution_error(msg: str) -> CypherError:
+    """Map a FalkorDB execution-error message to an actionable CypherError.
+
+    Walks :data:`_EXECUTION_ERROR_PATTERNS` in order.  First match wins.
+    On no match, returns the generic envelope to preserve current
+    behavior for unknown errors.
+    """
+    for pattern in _EXECUTION_ERROR_PATTERNS:
+        if pattern.matcher.search(msg):
+            explanation = f'FalkorDB returned an error: {msg}'
+            if pattern.example_fix:
+                explanation += f'\nCorrected example: {pattern.example_fix}'
+            return CypherError(
+                stage='execution',
+                reason=pattern.name,
+                found=msg,
+                explanation=explanation,
+                suggestion=pattern.suggestion,
+                doc_hint=pattern.doc_hint,
+            )
+
+    return CypherError(
+        stage='execution',
+        reason='query_failed',
+        found=msg,
+        explanation=f'FalkorDB returned an error: {msg}',
+        suggestion='Check your Cypher syntax. Use get_schema to verify label and property names.',
+    )
 
 
 # ---------------------------------------------------------------------------
