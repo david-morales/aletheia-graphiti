@@ -537,6 +537,23 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         doc_hint='FalkorDB openCypher: identifiers are ASCII [A-Za-z0-9_] only.',
         example_fix='WITH toInteger(val) AS anno_nacimiento',
     ),
+    ExecutionErrorPattern(
+        name='function_arity_mismatch',
+        matcher=re.compile(
+            r"Received (\d+) arguments? to function '(\w+)', expected (at most \d+|at least \d+|exactly \d+|\d+)",
+            re.IGNORECASE,
+        ),
+        suggestion=(
+            "FalkorDB's function signature differs from Neo4j's — some functions take "
+            "fewer arguments in FalkorDB.  Most common: `round(x, precision)` "
+            "(Neo4j) is unsupported; FalkorDB's `round(x)` takes only one argument.  "
+            "For decimal precision use arithmetic: "
+            "`round(x * 100.0) / 100.0` for 2 decimals.  For other functions, check "
+            "FalkorDB docs for the correct signature."
+        ),
+        doc_hint='FalkorDB openCypher: function arities can differ from Neo4j.',
+        example_fix='round(avg(val) * 100.0) / 100.0  // 2-decimal precision',
+    ),
     # More patterns added as they surface from Langfuse observations.
 ]
 

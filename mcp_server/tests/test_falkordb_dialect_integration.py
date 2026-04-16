@@ -109,3 +109,17 @@ class TestExecutionErrorClassification:
         )
         err = classify_execution_error(raw_msg)
         assert err.reason == 'unwind_where_missing_with'
+
+    def test_round_arity_mismatch_end_to_end(self, graph):
+        # LLM generates Neo4j's `round(x, N)` signature (Round 2 Q2 incident).
+        # FalkorDB rejects at execution time; classifier converts the
+        # cryptic message into an actionable envelope.
+        query = 'MATCH (n:Persona) RETURN round(avg(size(n.name)), 2) AS avg_len LIMIT 1'
+        result = validate_and_sanitize(query)
+        assert isinstance(result, SanitizedQuery), f'Pipeline unexpectedly rejected: {result}'
+        try:
+            graph.ro_query(result.query)
+            pytest.fail('Expected FalkorDB to reject round(x, 2) as arity mismatch')
+        except Exception as e:
+            err = classify_execution_error(str(e))
+            assert err.reason == 'function_arity_mismatch'
