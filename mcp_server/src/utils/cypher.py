@@ -518,14 +518,16 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         example_fix='OPTIONAL MATCH (n)-[:REL]->(m)',
     ),
     ExecutionErrorPattern(
-        name='unwind_where_missing_with',
+        name='where_needs_with',
         matcher=re.compile(r"expected WITH.+errCtx:\s*WHERE\b", re.IGNORECASE | re.DOTALL),
         suggestion=(
-            'WHERE cannot attach to UNWIND directly. Insert WITH between them: '
-            '`UNWIND list AS x WITH x WHERE x.prop IS NOT NULL`.'
+            'WHERE cannot attach to RETURN or UNWIND. Compute projections or '
+            'unwound aliases in a WITH clause first, then filter, then RETURN. '
+            'Example: `WITH expr AS alias WHERE alias IS NOT NULL RETURN alias`. '
+            'For UNWIND: `UNWIND list AS x WITH x WHERE x.prop IS NOT NULL RETURN x`.'
         ),
         doc_hint='FalkorDB openCypher: WHERE attaches only to MATCH/OPTIONAL MATCH/WITH.',
-        example_fix='UNWIND list AS x WITH x WHERE x.prop IS NOT NULL RETURN x',
+        example_fix='WITH expr AS alias WHERE alias IS NOT NULL RETURN alias',
     ),
     ExecutionErrorPattern(
         name='non_ascii_identifier',

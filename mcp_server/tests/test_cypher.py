@@ -1102,12 +1102,29 @@ class TestCypherQualityInErrorEnvelope:
 
 
 class TestClassifyExecutionError:
-    def test_classify_unwind_where_missing_with(self):
+    def test_classify_where_needs_with_unwind_shape(self):
+        # FalkorDB emits the same parser error for both UNWIND-WHERE and
+        # RETURN-WHERE: `expected WITH ... errCtx: WHERE ...`. The classifier
+        # can't see the query, so it emits a single reason covering both.
         msg = "errMsg: Invalid input 'H': expected WITH line: 10, column: 2 errCtx: WHERE evento.numero"
         err = classify_execution_error(msg)
-        assert err.reason == 'unwind_where_missing_with'
+        assert err.reason == 'where_needs_with'
         assert 'WITH' in err.suggestion
         assert err.doc_hint != ''
+
+    def test_classify_where_needs_with_return_shape(self):
+        # Observed in the field: LLM wrote `RETURN <projections> WHERE alias IS NOT NULL`
+        # on policia-partes. FalkorDB emits the same `expected WITH ... errCtx: WHERE`
+        # message, and the classifier used to mislabel it as UNWIND-specific.
+        # Suggestion must now mention RETURN explicitly so the LLM retry converges.
+        msg = (
+            "errMsg: Invalid input 'H': expected WITH line: 33, column: 2, offset: 1376 "
+            "errCtx: WHERE tipo_contacto IS NOT NULL errCtxOffset: 1"
+        )
+        err = classify_execution_error(msg)
+        assert err.reason == 'where_needs_with'
+        assert 'RETURN' in err.suggestion
+        assert 'WITH' in err.suggestion
 
     def test_classify_bare_variable(self):
         msg = "errMsg: Invalid input '-': expected '=' line: 5, column: 21 errCtx: OPTIONAL MATCH parte-[:R]->(t)"
@@ -1145,8 +1162,8 @@ class TestClassifyExecutionError:
 
     def test_classify_first_match_wins(self):
         # Construct a message that genuinely matches BOTH patterns — bare-var
-        # `Invalid input '-': expected '='` AND unwind-where `expected WITH ...
-        # errCtx: WHERE`.  The first pattern listed (bare_variable_in_pattern)
+        # `Invalid input '-': expected '='` AND where-needs-with `expected WITH
+        # ... errCtx: WHERE`.  The first pattern listed (bare_variable_in_pattern)
         # must win.  Guards against a future re-ordering of the table.
         msg = (
             "errMsg: Invalid input '-': expected '=' "
