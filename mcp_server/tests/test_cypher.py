@@ -1141,6 +1141,143 @@ class TestClassifyExecutionError:
         assert err.reason == 'bare_variable_in_pattern'
 
 
+class TestNonCodeSpanPreservation:
+    """Pipeline operations must only inspect / modify code spans.
+
+    String literals and comments are user-authored content that must pass
+    through unchanged.  These tests lock in the categorical behavior across
+    Stage 1 (LLM fixups), Stage 2a (reject track), Stage 2b (auto-fix
+    track), and Stage 3 (security whitelist).
+    """
+
+    # ---- Stage 2b auto-fix: each fix must not modify comments/strings ----
+
+    def test_date_wrapper_in_line_comment_preserved(self):
+        query = "// use date('2024-01-01') for comparisons\nMATCH (n) RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "date('2024-01-01')" in fixed
+        assert fixes == []
+
+    def test_date_wrapper_in_block_comment_preserved(self):
+        query = "/* date('2024-01-01') is the syntax */\nMATCH (n) RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "date('2024-01-01')" in fixed
+        assert fixes == []
+
+    def test_lower_in_comment_preserved(self):
+        query = "// don't use lower(), use toLower()\nMATCH (n) RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'lower()' in fixed
+        assert fixes == []
+
+    def test_upper_in_comment_preserved(self):
+        query = "// upper() is unsupported\nMATCH (n) RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'upper()' in fixed
+        assert fixes == []
+
+    def test_bare_var_in_comment_preserved(self):
+        query = "// Example: MATCH foo-[:R]->(bar) RETURN foo\nMATCH (p) RETURN p"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'MATCH foo-[:R]->(bar)' in fixed
+        assert fixes == []
+
+    def test_non_ascii_in_comment_preserved(self):
+        query = "// año actual 2026\nMATCH (p) RETURN p.name AS nombre"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert 'año actual' in fixed
+        assert fixes == []
+
+    def test_non_ascii_in_string_preserved(self):
+        query = "MATCH (n) WHERE n.name = 'AÑO 2026' RETURN n.name AS nombre"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "'AÑO 2026'" in fixed
+        assert fixes == []
+
+    def test_non_ascii_identifier_still_fixed_with_comment(self):
+        # Comment with accents + identifier with accents — identifier gets
+        # fixed, comment preserved.
+        query = "// año actual 2026\nWITH val AS año_nacimiento RETURN año_nacimiento"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        # Comment preserved
+        assert '// año actual 2026' in fixed
+        # Identifier transliterated
+        assert 'ano_nacimiento' in fixed
+        # Only one fix reported
+        assert any('non-ascii' in f.lower() for f in fixes)
+
+    # ---- Stage 2a reject: mentions inside comments/strings don't trigger ----
+
+    def test_apoc_in_comment_not_rejected(self):
+        query = "// apoc.path.expand is not supported\nMATCH (n) RETURN n"
+        assert _check_falkordb_dialect(query) is None
+
+    def test_apoc_in_string_not_rejected(self):
+        query = "MATCH (n) WHERE n.doc = 'apoc.path.expand(x)' RETURN n"
+        assert _check_falkordb_dialect(query) is None
+
+    def test_exists_brace_in_comment_not_rejected(self):
+        query = "// EXISTS { ... } subqueries are unsupported\nMATCH (n) RETURN n"
+        assert _check_falkordb_dialect(query) is None
+
+    def test_unwind_where_in_comment_not_rejected(self):
+        query = "// UNWIND list AS x WHERE x > 0 fails\nMATCH (n) RETURN n"
+        assert _check_falkordb_dialect(query) is None
+
+    # ---- Stage 3 security whitelist: keywords in non-code spans ignored ----
+
+    def test_create_in_comment_not_rejected(self):
+        assert _check_whitelist("// CREATE a diagnostic\nMATCH (p) RETURN count(p)") is None
+
+    def test_delete_in_string_not_rejected(self):
+        assert _check_whitelist("MATCH (p) WHERE p.note = 'DELETE this' RETURN p") is None
+
+    def test_set_merge_in_block_comment_not_rejected(self):
+        assert _check_whitelist("/* SET and MERGE docs */\nMATCH (p) RETURN p") is None
+
+    def test_call_apoc_in_comment_not_rejected(self):
+        assert _check_whitelist("// Don't use CALL apoc.foo()\nCALL db.labels()") is None
+
+    def test_real_create_still_rejected(self):
+        err = _check_whitelist('CREATE (n:Test)')
+        assert err is not None
+        assert err.reason == 'write_operation'
+
+    def test_real_call_apoc_still_rejected(self):
+        err = _check_whitelist("MATCH (n) CALL apoc.path.expand(n, 'R>') YIELD p RETURN p")
+        assert err is not None
+
+    # ---- End-to-end pipeline: Spanish comments must not pollute auto_fixes ----
+
+    def test_spanish_comments_no_false_auto_fix(self):
+        # Realistic LLM output from the 2026-04-16 Round-1 incident: Spanish
+        # comments with accented characters should pass through the pipeline
+        # with an empty auto_fixes list (besides LIMIT injection).
+        query = (
+            "// Análisis completo de KHADIJA DAOUD\n"
+            "// Calcular edad aproximada (asumiendo año actual 2026)\n"
+            "MATCH (p:Persona {name: 'KHADIJA DAOUD'}) RETURN p"
+        )
+        result = validate_and_sanitize(query)
+        assert isinstance(result, SanitizedQuery)
+        # Only the LIMIT injection should have fired
+        real_fixes = [f for f in result.auto_fixes if 'LIMIT' not in f]
+        assert real_fixes == []
+        # Content preserved
+        assert 'Análisis' in result.query
+        assert 'año actual' in result.query
+
+    # ---- Edge case: `//` inside a string literal is NOT a comment ----
+
+    def test_url_in_string_not_treated_as_comment(self):
+        # String literal containing `//` (URL-like) — the string mask wins,
+        # the comment regex must not treat the quoted `//` as a comment start.
+        query = "MATCH (n) WHERE n.url = 'http://example.com/path' RETURN n"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert fixes == []
+
+
 class TestRunCypherToolDescription:
     def test_description_mentions_falkordb_dialect(self):
         import re
