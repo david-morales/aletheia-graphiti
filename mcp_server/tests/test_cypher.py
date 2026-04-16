@@ -1128,6 +1128,21 @@ class TestClassifyExecutionError:
         assert err.reason == 'non_ascii_identifier'
         assert 'ASCII' in err.suggestion
 
+    def test_classify_round_arity_mismatch(self):
+        # Observed verbatim from FalkorDB on `round(avg(x), 2)` (Round 2 Q2).
+        msg = "Received 2 arguments to function 'round', expected at most 1"
+        err = classify_execution_error(msg)
+        assert err.reason == 'function_arity_mismatch'
+        assert 'round' in err.suggestion.lower() or '100.0' in err.suggestion
+
+    def test_classify_arity_mismatch_other_functions(self):
+        # Pattern is generic — the same error shape for any FalkorDB/Neo4j
+        # arity delta should still classify correctly.
+        msg = "Received 3 arguments to function 'size', expected at most 1"
+        err = classify_execution_error(msg)
+        assert err.reason == 'function_arity_mismatch'
+        assert 'arit' in err.suggestion.lower() or 'signature' in err.suggestion.lower()
+
     def test_classify_first_match_wins(self):
         # Construct a message that genuinely matches BOTH patterns — bare-var
         # `Invalid input '-': expected '='` AND unwind-where `expected WITH ...
