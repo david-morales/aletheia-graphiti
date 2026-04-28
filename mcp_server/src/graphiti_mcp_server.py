@@ -511,6 +511,12 @@ async def add_memory(
         add_memory(episodes=[
             {"name": "Doc 1", "content": "...", "source": "text", "source_description": "report"},
         ])
+
+    Used by downstream services (e.g., aletheia-extraction) to persist extracted
+    records into the knowledge graph after ontology mapping and human approval.
+
+    See docs/extraction-integration.md for the integration contract:
+    response shape, adapter recipe (where applicable), and error modes.
     """
     global graphiti_service, queue_service
 
@@ -1475,6 +1481,12 @@ async def get_schema() -> dict[str, Any]:
     Returns node labels with property keys, relationship types with
     source->target patterns, and counts. Results are cached until
     new data is ingested via add_memory.
+
+    Used by downstream services (e.g., aletheia-extraction) to discover
+    available entity and relationship types before generating extraction strategies.
+
+    See docs/extraction-integration.md for the integration contract:
+    response shape, adapter recipe (where applicable), and error modes.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
@@ -1678,6 +1690,12 @@ async def get_ontology_structure() -> dict[str, Any]:
 
     Returns entity classes (with inheritance, alt_labels, descriptions)
     and relationship classes (with source/target constraints).
+
+    Used by downstream services (e.g., aletheia-extraction) to map raw data
+    fields to ontology-typed entities and relationships before ingestion.
+
+    See docs/extraction-integration.md for the integration contract:
+    response shape, adapter recipe (where applicable), and error modes.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}

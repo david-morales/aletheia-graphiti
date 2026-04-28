@@ -290,6 +290,8 @@ workflows.
 
 For detailed setup instructions and usage examples, see the [MCP server README](./mcp_server/README.md).
 
+**Downstream service integration.** The MCP server exposes a stable subset of tools for use by downstream services (e.g., `aletheia-extraction`). See [`docs/extraction-integration.md`](docs/extraction-integration.md) for the integration contract: connection setup, the 3 tools downstream services consume (`get_ontology_structure`, `get_schema`, `add_memory`), response shapes, and error modes.
+
 ## REST Service
 
 The `server` directory contains an API service for interacting with the Graphiti API. It is built using FastAPI.
