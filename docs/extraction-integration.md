@@ -51,7 +51,7 @@ async def get_ontology_structure() -> dict[str, Any]:
     """
 ```
 
-The tool takes **no arguments**. The destination ontology graph is determined server-side from the connector's configured `ontology_graph` (set at server startup). Note: this tool is registered dynamically via `register_dynamic_tools()` (see `mcp_server/src/graphiti_mcp_server.py:1826`, body line 1838), not via the `@mcp.tool()` decorator — but the wire-level contract is identical.
+The tool takes **no arguments**. The destination ontology graph is determined server-side from the connector's configured `ontology_graph` (set at server startup). Note: this tool is registered dynamically via `register_dynamic_tools()` (which calls `mcp.add_tool(get_ontology_structure)` at server startup), not via the `@mcp.tool()` decorator — but the wire-level contract is identical.
 
 ### Response shape
 
@@ -200,7 +200,7 @@ async def get_schema() -> dict[str, Any]:
     """
 ```
 
-The tool takes **no arguments**. The destination graph is the connector's configured `group_id` (set at server startup). Like `get_ontology_structure`, this is registered via `register_dynamic_tools()` (`mcp_server/src/graphiti_mcp_server.py:1826`, body line 1837).
+The tool takes **no arguments**. The destination graph is the connector's configured `group_id` (set at server startup). Like `get_ontology_structure`, this is registered dynamically via `register_dynamic_tools()` (which calls `mcp.add_tool(get_schema)` at server startup).
 
 ### Response shape
 
@@ -500,4 +500,4 @@ Caller owns the retry policy. The graphiti MCP server itself does not retry acro
 
 ## 7. Forward-looking
 
-The graphiti MCP server exposes additional tools beyond the 3 documented above: `search_ontology`, `explore_ontology`, `run_cypher`, `profile_graph`. These are **available for future extraction work** (e.g., richer enrichment passes, ad-hoc Cypher escape hatches) but are **not part of the current extraction integration contract**. The server also registers `search` (line 1833) and `explore_node` (line 1834) for free-text search and node exploration; those are reserved for reasoning-engine use cases not yet anticipated by extraction, so they're not listed alongside the four enrichment-relevant tools above. When a downstream service needs one of these, it should be added to this document with the same shape (signature, response, error modes) as Sections 2-4.
+The graphiti MCP server exposes additional tools beyond the 3 documented above: `search_ontology`, `explore_ontology`, `run_cypher`, `profile_graph`. These are **available for future extraction work** (e.g., richer enrichment passes, ad-hoc Cypher escape hatches) but are **not part of the current extraction integration contract**. The server also registers `search` and `explore_node` via `register_dynamic_tools()` for free-text search and node exploration; those are reserved for reasoning-engine use cases not yet anticipated by extraction, so they're not listed alongside the four enrichment-relevant tools above. When a downstream service needs one of these, it should be added to this document with the same shape (signature, response, error modes) as Sections 2-4.
