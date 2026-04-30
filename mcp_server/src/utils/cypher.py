@@ -556,6 +556,30 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         doc_hint='FalkorDB openCypher: function arities can differ from Neo4j.',
         example_fix='round(avg(val) * 100.0) / 100.0  // 2-decimal precision',
     ),
+    ExecutionErrorPattern(
+        name='variable_not_in_scope',
+        # FalkorDB emits messages like `'pi' not defined` when a variable is
+        # referenced where it isn't bound. The most common cause we see is
+        # cross-side reference in UNION / UNION ALL (each side has its own
+        # scope), followed by missing carry-through in WITH and plain typos.
+        matcher=re.compile(r"'(\w+)' not defined", re.IGNORECASE),
+        suggestion=(
+            'A referenced variable is not in scope at the point of use. '
+            'Common causes: (1) you referenced it on the other side of '
+            'UNION / UNION ALL — each side has its own scope, so variables '
+            'from the left half are not visible on the right; (2) it was '
+            'not carried through a preceding WITH; (3) typo in the name. '
+            'Fix: either repeat the MATCH chain on each side of UNION, or '
+            'collapse to a single MATCH chain and use CASE / coalesce to '
+            'pick between alternatives.'
+        ),
+        doc_hint='FalkorDB openCypher: UNION sides have independent scope; WITH must carry every variable used downstream.',
+        example_fix=(
+            'MATCH (n) OPTIONAL MATCH (n)-[:R1]->(a) '
+            'OPTIONAL MATCH (n)-[:R2]->(b) '
+            'RETURN n, CASE WHEN a IS NOT NULL THEN a.x ELSE b.x END AS x'
+        ),
+    ),
     # More patterns added as they surface from Langfuse observations.
 ]
 

@@ -1113,13 +1113,13 @@ class TestClassifyExecutionError:
         assert err.doc_hint != ''
 
     def test_classify_where_needs_with_return_shape(self):
-        # Observed in the field: LLM wrote `RETURN <projections> WHERE alias IS NOT NULL`
-        # on policia-partes. FalkorDB emits the same `expected WITH ... errCtx: WHERE`
-        # message, and the classifier used to mislabel it as UNWIND-specific.
+        # Observed in the field: LLM wrote `RETURN <projections> WHERE alias IS NOT NULL`.
+        # FalkorDB emits the same `expected WITH ... errCtx: WHERE` message as for
+        # the UNWIND case, and the classifier used to mislabel it as UNWIND-specific.
         # Suggestion must now mention RETURN explicitly so the LLM retry converges.
         msg = (
             "errMsg: Invalid input 'H': expected WITH line: 33, column: 2, offset: 1376 "
-            "errCtx: WHERE tipo_contacto IS NOT NULL errCtxOffset: 1"
+            "errCtx: WHERE alias_name IS NOT NULL errCtxOffset: 1"
         )
         err = classify_execution_error(msg)
         assert err.reason == 'where_needs_with'
@@ -1159,6 +1159,27 @@ class TestClassifyExecutionError:
         err = classify_execution_error(msg)
         assert err.reason == 'function_arity_mismatch'
         assert 'arit' in err.suggestion.lower() or 'signature' in err.suggestion.lower()
+
+    def test_classify_variable_not_in_scope(self):
+        # Observed in the field: LLM wrote a UNION ALL where the right
+        # side referenced variables defined only on the left side. FalkorDB
+        # responds with `'<var>' not defined`. The classifier used to fall
+        # through to the generic `query_failed` envelope; now it should give
+        # explicit guidance about UNION scope and WITH carry-through.
+        msg = "'x' not defined"
+        err = classify_execution_error(msg)
+        assert err.reason == 'variable_not_in_scope'
+        assert 'UNION' in err.suggestion
+        assert 'WITH' in err.suggestion
+        assert err.doc_hint != ''
+
+    def test_classify_variable_not_in_scope_full_envelope(self):
+        # The matcher is anchored on the `'<var>' not defined` substring, so
+        # it should still classify when wrapped in the full FalkorDB error
+        # envelope (errMsg / line / column trim).
+        msg = "errMsg: 'foo_bar' not defined line: 12, column: 8"
+        err = classify_execution_error(msg)
+        assert err.reason == 'variable_not_in_scope'
 
     def test_classify_first_match_wins(self):
         # Construct a message that genuinely matches BOTH patterns — bare-var

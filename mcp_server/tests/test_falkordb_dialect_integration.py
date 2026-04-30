@@ -111,13 +111,13 @@ class TestExecutionErrorClassification:
         assert err.reason == 'where_needs_with'
 
     def test_return_where_parser_error_is_classified(self):
-        # Observed on policia-partes: LLM emitted `RETURN <projections> WHERE
-        # alias IS NOT NULL ORDER BY fecha LIMIT 201`. FalkorDB's parser error
+        # Observed in the field: LLM emitted `RETURN <projections> WHERE
+        # alias IS NOT NULL ORDER BY ts LIMIT 201`. FalkorDB's parser error
         # is the same shape as the UNWIND-WHERE case, so the classifier must
         # give a suggestion that works for both query shapes.
         raw_msg = (
             "errMsg: Invalid input 'H': expected WITH line: 33, column: 2, offset: 1376 "
-            "errCtx: WHERE tipo_contacto IS NOT NULL errCtxOffset: 1"
+            "errCtx: WHERE alias_name IS NOT NULL errCtxOffset: 1"
         )
         err = classify_execution_error(raw_msg)
         assert err.reason == 'where_needs_with'
