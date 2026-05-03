@@ -835,13 +835,19 @@ def _format_tabular(
 
 
 def _format_node(node: Any) -> dict[str, Any]:
-    """Format a FalkorDB Node into a serialisable dict, filtering :Entity label."""
+    """Format a FalkorDB Node into a serialisable dict, filtering :Entity label.
+
+    Strips ``*_embedding`` properties — they're huge vectors useless for the
+    LLM and easily blow Anthropic's 200K context limit when run_cypher
+    returns multiple full nodes (e.g. ``RETURN n, m, k``).
+    """
     labels = [lbl for lbl in (node.labels if hasattr(node, 'labels') else []) if lbl != 'Entity']
     props = node.properties if hasattr(node, 'properties') else {}
+    clean_props = {k: v for k, v in dict(props).items() if not k.endswith('_embedding')}
     return {
         'id': node.id if hasattr(node, 'id') else None,
         'labels': labels,
-        'properties': dict(props),
+        'properties': clean_props,
     }
 
 
