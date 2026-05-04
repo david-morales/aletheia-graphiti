@@ -15,6 +15,7 @@ from typing import Any, Literal, Optional
 
 from dotenv import load_dotenv
 from graphiti_core import Graphiti
+from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EpisodeType, EpisodicNode
 from graphiti_core.utils.bulk_utils import RawEpisode
@@ -243,6 +244,35 @@ class GraphitiService:
         self._schema_dirty: bool = True
         self.domain_profile: 'DomainProfile | None' = None
 
+    async def _connect_ontology_client(self, db_config: dict, embedder_client) -> 'Graphiti | None':
+        """Build and return an ontology Graphiti client.
+
+        Returns None if the configured database provider has no ontology support.
+        Raises on connection failure (caller decides how to handle).
+        """
+        if self.config.database.provider.lower() != 'falkordb':
+            logger.warning(
+                f'Ontology graph not supported for {self.config.database.provider} provider'
+            )
+            return None
+
+        ontology_graph_name = self.config.graphiti.ontology_graph
+        ontology_driver = FalkorDriver(
+            host=db_config['host'],
+            port=db_config['port'],
+            username=db_config.get('username'),
+            password=db_config['password'],
+            database=ontology_graph_name,
+        )
+        client = Graphiti(
+            graph_driver=ontology_driver,
+            llm_client=None,
+            embedder=embedder_client,
+        )
+        await client.build_indices_and_constraints()
+        logger.info(f'Ontology graph connected: {ontology_graph_name}')
+        return client
+
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
         try:
@@ -360,31 +390,7 @@ class GraphitiService:
             # Initialize ontology client if configured
             if self.config.graphiti.ontology_graph:
                 try:
-                    ontology_graph_name = self.config.graphiti.ontology_graph
-                    if self.config.database.provider.lower() == 'falkordb':
-                        from graphiti_core.driver.falkordb_driver import FalkorDriver
-
-                        ontology_driver = FalkorDriver(
-                            host=db_config['host'],
-                            port=db_config['port'],
-                            username=db_config.get('username'),
-                            password=db_config['password'],
-                            database=ontology_graph_name,
-                        )
-
-                        self.ontology_client = Graphiti(
-                            graph_driver=ontology_driver,
-                            llm_client=None,
-                            embedder=embedder_client,
-                        )
-                    else:
-                        logger.warning(
-                            f'Ontology graph not supported for {self.config.database.provider} provider'
-                        )
-
-                    if self.ontology_client:
-                        await self.ontology_client.build_indices_and_constraints()
-                        logger.info(f'Ontology graph connected: {ontology_graph_name}')
+                    self.ontology_client = await self._connect_ontology_client(db_config, embedder_client)
                 except Exception as e:
                     logger.warning(f'Failed to connect to ontology graph: {e}')
                     self.ontology_client = None
