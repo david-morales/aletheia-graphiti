@@ -126,6 +126,11 @@ else:
 # DEFAULT: 10 (suitable for OpenAI Tier 3, mid-tier Anthropic)
 SEMAPHORE_LIMIT = int(os.getenv('SEMAPHORE_LIMIT', 10))
 
+# Resilience: bounded retry for FalkorDB connection failures during init/reconnect.
+_RETRY_ATTEMPTS = 3
+_RETRY_INITIAL_BACKOFF_S = 1.0
+_RETRY_BACKOFF_MULTIPLIER = 2.0
+
 
 # Configure structured logging with timestamps
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -247,8 +252,11 @@ class GraphitiService:
     async def _connect_ontology_client(self, db_config: dict, embedder_client) -> 'Graphiti | None':
         """Build and return an ontology Graphiti client.
 
+        Retries up to _RETRY_ATTEMPTS times with exponential backoff to survive
+        transient FalkorDB connection failures.
+
         Returns None if the configured database provider has no ontology support.
-        Raises on connection failure (caller decides how to handle).
+        Raises on persistent connection failure after all retries exhausted.
         """
         if self.config.database.provider.lower() != 'falkordb':
             logger.warning(
@@ -269,9 +277,28 @@ class GraphitiService:
             llm_client=None,
             embedder=embedder_client,
         )
-        await client.build_indices_and_constraints()
-        logger.info(f'Ontology graph connected: {ontology_graph_name}')
-        return client
+
+        backoff = _RETRY_INITIAL_BACKOFF_S
+        last_exc: Exception | None = None
+        for attempt in range(1, _RETRY_ATTEMPTS + 1):
+            try:
+                await client.build_indices_and_constraints()
+                logger.info(f'Ontology graph connected: {ontology_graph_name}')
+                return client
+            except Exception as e:
+                last_exc = e
+                if attempt < _RETRY_ATTEMPTS:
+                    logger.warning(
+                        f'Ontology connect attempt {attempt}/{_RETRY_ATTEMPTS} failed: {e}. '
+                        f'Retrying in {backoff:.1f}s...'
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= _RETRY_BACKOFF_MULTIPLIER
+                else:
+                    logger.warning(
+                        f'Ontology connect gave up after {_RETRY_ATTEMPTS} attempts: {e}'
+                    )
+        raise last_exc  # type: ignore[misc]
 
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""

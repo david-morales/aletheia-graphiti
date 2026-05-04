@@ -32,3 +32,75 @@ class TestConnectOntologyClient:
 
         assert client is mock_graphiti
         mock_graphiti.build_indices_and_constraints.assert_awaited_once()
+
+
+class TestOntologyConnectRetry:
+    """Bounded retry on ontology client connect."""
+
+    @pytest.mark.asyncio
+    async def test_recovers_after_one_transient_failure(self, monkeypatch):
+        """A single failure on build_indices_and_constraints is retried successfully."""
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        # Speed up: tighter backoff for the test
+        monkeypatch.setattr('graphiti_mcp_server._RETRY_INITIAL_BACKOFF_S', 0.01)
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        cfg.database.provider = 'falkordb'
+        svc = GraphitiService(cfg)
+
+        attempt_log: list[int] = []
+
+        async def flaky_build_indices():
+            attempt_log.append(len(attempt_log) + 1)
+            if len(attempt_log) == 1:
+                raise ConnectionResetError('peer reset')
+
+        with patch('graphiti_mcp_server.FalkorDriver'), \
+             patch('graphiti_mcp_server.Graphiti') as mock_graphiti_cls:
+            mock_graphiti = MagicMock()
+            mock_graphiti.build_indices_and_constraints = flaky_build_indices
+            mock_graphiti_cls.return_value = mock_graphiti
+
+            client = await svc._connect_ontology_client(
+                {'host': 'h', 'port': 6379, 'password': 'p'},
+                embedder_client=MagicMock(),
+            )
+
+        assert client is mock_graphiti
+        assert len(attempt_log) == 2  # one failure, one success
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_max_attempts(self, monkeypatch):
+        """Persistent failure raises after exactly _RETRY_ATTEMPTS attempts."""
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        monkeypatch.setattr('graphiti_mcp_server._RETRY_INITIAL_BACKOFF_S', 0.01)
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        cfg.database.provider = 'falkordb'
+        svc = GraphitiService(cfg)
+
+        attempt_log: list[int] = []
+
+        async def always_failing():
+            attempt_log.append(len(attempt_log) + 1)
+            raise ConnectionResetError('persistent failure')
+
+        with patch('graphiti_mcp_server.FalkorDriver'), \
+             patch('graphiti_mcp_server.Graphiti') as mock_graphiti_cls:
+            mock_graphiti = MagicMock()
+            mock_graphiti.build_indices_and_constraints = always_failing
+            mock_graphiti_cls.return_value = mock_graphiti
+
+            with pytest.raises(ConnectionResetError):
+                await svc._connect_ontology_client(
+                    {'host': 'h', 'port': 6379, 'password': 'p'},
+                    embedder_client=MagicMock(),
+                )
+
+        assert len(attempt_log) == 3  # _RETRY_ATTEMPTS
