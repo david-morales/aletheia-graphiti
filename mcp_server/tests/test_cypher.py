@@ -348,6 +348,62 @@ class TestStage2AutoFixNonAscii:
         assert 'código' not in fixed
 
 
+class TestStage2AutoFixNotInList:
+    def test_fix_property_not_in_list(self):
+        # Most common case: `prop.x NOT IN [a, b, c]` rewritten to
+        # `NOT (prop.x IN [a, b, c])`. Semantically equivalent, parses cleanly.
+        query = "MATCH (n) WHERE n.kind NOT IN ['a', 'b', 'c'] RETURN n LIMIT 1"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "NOT (n.kind IN ['a', 'b', 'c'])" in fixed
+        assert "NOT IN" not in fixed
+        assert any('NOT IN' in f and 'NOT (' in f for f in fixes)
+
+    def test_fix_simple_var_not_in_list(self):
+        query = "WITH 1 AS x WHERE x NOT IN [1, 2, 3] RETURN x"
+        fixed, _ = _fix_falkordb_dialect(query)
+        assert "NOT (x IN [1, 2, 3])" in fixed
+
+    def test_fix_inside_case(self):
+        # The actual field-observed shape: `count(CASE WHEN x NOT IN [...] THEN 1 END)`.
+        query = (
+            "MATCH (o) RETURN count(CASE WHEN o.kind NOT IN ['a', 'b'] "
+            "THEN 1 ELSE 0 END) AS c"
+        )
+        fixed, _ = _fix_falkordb_dialect(query)
+        assert "NOT (o.kind IN ['a', 'b'])" in fixed
+        assert "NOT IN" not in fixed
+
+    def test_already_correct_form_unchanged(self):
+        # Don't double-wrap an already-correct `NOT (x IN [...])` form.
+        query = "MATCH (n) WHERE NOT (n.kind IN ['a', 'b']) RETURN n LIMIT 1"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert fixed == query
+        assert not any('NOT IN' in f for f in fixes)
+
+    def test_not_in_inside_string_literal_preserved(self):
+        # Don't rewrite text inside string literals.
+        query = "MATCH (n) WHERE n.note = 'x NOT IN [a, b]' RETURN n LIMIT 1"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "'x NOT IN [a, b]'" in fixed
+        assert not any('NOT IN' in f for f in fixes)
+
+    def test_complex_expression_falls_through(self):
+        # Function-call or compound expressions on the LHS are out of scope
+        # for this regex auto-fix (would need balanced-paren matching). The
+        # query must be left untouched so the Layer-3 classifier handles it
+        # with the actionable error message.
+        query = "MATCH (n) WHERE coalesce(n.x, n.y) NOT IN ['a'] RETURN n LIMIT 1"
+        fixed, _ = _fix_falkordb_dialect(query)
+        assert fixed == query
+
+    def test_fix_idempotent(self):
+        query = "MATCH (n) WHERE n.x NOT IN [1, 2] RETURN n LIMIT 1"
+        fixed_once, _ = _fix_falkordb_dialect(query)
+        fixed_twice, fixes2 = _fix_falkordb_dialect(fixed_once)
+        assert fixed_once == fixed_twice
+        assert not any('NOT IN' in f for f in fixes2)
+
+
 class TestStage2AutoFixNotEquals:
     def test_fix_simple_not_equals(self):
         # FalkorDB rejects `!=` outright; only `<>` is accepted. The fixer

@@ -337,6 +337,19 @@ _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
 # inside string literals/comments are preserved.
 _NEQ_RE = re.compile(r'!=')
 
+# `<expr> NOT IN [list]` is rejected by FalkorDB's parser; the equivalent
+# `NOT (<expr> IN [list])` parses correctly. Match a simple LHS (a bare
+# identifier or single-dot property access) followed by NOT IN [<flat list>].
+# Limiting to flat lists (no nested brackets) keeps the regex safe; balanced
+# function-call expressions (e.g. `coalesce(x, y) NOT IN [...]`) fall through
+# to the Layer-3 classifier with its actionable suggestion.
+# Group 1: the LHS expression (e.g. `n.kind` or `x`).
+# Group 2: the bracketed list literal verbatim (`[...]`).
+_NOT_IN_RE = re.compile(
+    r'\b((?:\w+\.)?\w+)\s+NOT\s+IN\s+(\[[^\[\]]+\])',
+    re.IGNORECASE,
+)
+
 # Non-ASCII identifier transliteration.  FalkorDB only accepts ASCII in
 # variable names and aliases.  We transliterate common accented characters
 # in Cypher identifiers (outside of string literals and comments) to their
@@ -469,6 +482,35 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
     if new_query != query:
         query = new_query
         fixes.append('Replaced != with <> (FalkorDB only accepts the openCypher canonical form)')
+
+    # 3c. Rewrite `<expr> NOT IN [list]` -> `NOT (<expr> IN [list])`.
+    # FalkorDB rejects the prefix-style form; the parenthesized form is the
+    # canonical openCypher equivalent. Limited to simple LHS expressions
+    # (identifier or single-dot property access) and flat list literals.
+    #
+    # Cannot use `_apply_to_code_spans` because list items are themselves
+    # string literals (`['a', 'b']`), so the per-chunk approach would split
+    # the match. Cannot blindly use `_apply_outside_comments` either, because
+    # a literal `... NOT IN [...]` substring inside a string value would get
+    # rewritten. Walk all candidate matches on the full query and skip those
+    # whose LHS starts inside a string literal.
+    string_spans = [(m.start(), m.end()) for m in _STRING_LITERAL_RE.finditer(query)]
+    def _lhs_is_in_string(pos: int) -> bool:
+        return any(s <= pos < e for s, e in string_spans)
+    out_parts: list[str] = []
+    last = 0
+    rewrote = False
+    for m in _NOT_IN_RE.finditer(query):
+        if _lhs_is_in_string(m.start()):
+            continue
+        out_parts.append(query[last:m.start()])
+        out_parts.append(f'NOT ({m.group(1)} IN {m.group(2)})')
+        last = m.end()
+        rewrote = True
+    if rewrote:
+        out_parts.append(query[last:])
+        query = ''.join(out_parts)
+        fixes.append('Rewrote `x NOT IN [...]` to `NOT (x IN [...])` (FalkorDB only accepts the parenthesized form)')
 
     # 4. Strip PROFILE/EXPLAIN prefix (code only; anchored to start-of-span)
     new_query = _apply_to_code_spans(query, lambda s: _PROFILE_EXPLAIN_RE.sub('', s))
