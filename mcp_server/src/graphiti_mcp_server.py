@@ -248,6 +248,8 @@ class GraphitiService:
         self._schema_cache: dict | None = None
         self._schema_dirty: bool = True
         self.domain_profile: 'DomainProfile | None' = None
+        self._cached_db_config: dict | None = None
+        self._cached_embedder_client = None
 
     async def _connect_ontology_client(self, db_config: dict, embedder_client) -> 'Graphiti | None':
         """Build and return an ontology Graphiti client.
@@ -298,6 +300,33 @@ class GraphitiService:
                     )
                     raise
 
+    async def _ensure_ontology_client(self) -> bool:
+        """Ensure self.ontology_client is connected; lazy-reconnect if it dropped.
+
+        Returns True if the client is usable (existing or freshly reconnected);
+        False if no ontology graph is configured, or if reconnect failed.
+        """
+        if self.ontology_client is not None:
+            return True
+
+        if not self.config.graphiti.ontology_graph:
+            return False
+
+        if self._cached_db_config is None or self._cached_embedder_client is None:
+            # initialize() never ran successfully; nothing to retry from
+            return False
+
+        try:
+            self.ontology_client = await self._connect_ontology_client(
+                self._cached_db_config,
+                self._cached_embedder_client,
+            )
+            return self.ontology_client is not None
+        except Exception as e:
+            logger.warning(f'Lazy ontology reconnect failed: {e}')
+            self.ontology_client = None
+            return False
+
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
         try:
@@ -319,6 +348,8 @@ class GraphitiService:
 
             # Get database configuration
             db_config = DatabaseDriverFactory.create_config(self.config.database)
+            self._cached_db_config = db_config
+            self._cached_embedder_client = embedder_client
 
             # Build entity types from configuration
             custom_types = None

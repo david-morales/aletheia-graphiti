@@ -104,3 +104,83 @@ class TestOntologyConnectRetry:
                 )
 
         assert len(attempt_log) == 3  # _RETRY_ATTEMPTS
+
+
+class TestEnsureOntologyClient:
+    """Lazy reconnect when ontology_client is None at runtime."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_client_already_exists(self):
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        svc = GraphitiService(cfg)
+        svc.ontology_client = MagicMock()  # already connected
+
+        ok = await svc._ensure_ontology_client()
+        assert ok is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_ontology_configured(self):
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = None  # not configured
+        svc = GraphitiService(cfg)
+        svc.ontology_client = None
+
+        ok = await svc._ensure_ontology_client()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_reconnects_when_client_is_none_and_config_set(self, monkeypatch):
+        """When ontology_graph is set but client is None, attempt reconnect."""
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        cfg.database.provider = 'falkordb'
+        svc = GraphitiService(cfg)
+        svc.ontology_client = None
+
+        # Stub the db_config + embedder cache that initialize() sets up
+        svc._cached_db_config = {'host': 'h', 'port': 6379, 'password': 'p'}
+        svc._cached_embedder_client = MagicMock()
+
+        rebuilt = MagicMock()
+
+        async def fake_connect(db_config, embedder_client):
+            return rebuilt
+
+        monkeypatch.setattr(svc, '_connect_ontology_client', fake_connect)
+
+        ok = await svc._ensure_ontology_client()
+        assert ok is True
+        assert svc.ontology_client is rebuilt
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_reconnect_fails(self, monkeypatch):
+        """If reconnect raises, client stays None and helper returns False."""
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        cfg.database.provider = 'falkordb'
+        svc = GraphitiService(cfg)
+        svc.ontology_client = None
+        svc._cached_db_config = {'host': 'h', 'port': 6379, 'password': 'p'}
+        svc._cached_embedder_client = MagicMock()
+
+        async def failing_connect(db_config, embedder_client):
+            raise ConnectionResetError('still down')
+
+        monkeypatch.setattr(svc, '_connect_ontology_client', failing_connect)
+
+        ok = await svc._ensure_ontology_client()
+        assert ok is False
+        assert svc.ontology_client is None
