@@ -249,7 +249,7 @@ class GraphitiService:
         self._schema_dirty: bool = True
         self.domain_profile: 'DomainProfile | None' = None
         self._cached_db_config: dict | None = None
-        self._cached_embedder_client = None
+        self._cached_embedder_client: Any = None
 
     async def _connect_ontology_client(self, db_config: dict, embedder_client) -> 'Graphiti | None':
         """Build and return an ontology Graphiti client.

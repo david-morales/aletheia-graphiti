@@ -184,3 +184,20 @@ class TestEnsureOntologyClient:
         ok = await svc._ensure_ontology_client()
         assert ok is False
         assert svc.ontology_client is None
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_cache_unset(self):
+        """If initialize() never ran, cache is None and reconnect can't happen."""
+        from graphiti_mcp_server import GraphitiService
+        from config.schema import GraphitiConfig
+
+        cfg = GraphitiConfig()
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        cfg.database.provider = 'falkordb'
+        svc = GraphitiService(cfg)
+        svc.ontology_client = None  # explicit
+        # _cached_db_config and _cached_embedder_client stay at their __init__ defaults (None)
+
+        ok = await svc._ensure_ontology_client()
+        assert ok is False
+        assert svc.ontology_client is None
