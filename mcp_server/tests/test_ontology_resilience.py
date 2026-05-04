@@ -23,7 +23,7 @@ class TestConnectOntologyClient:
         db_config = {'host': 'h', 'port': 6379, 'password': 'p'}
         embedder = MagicMock()
 
-        with patch('graphiti_mcp_server.FalkorDriver') as mock_driver_cls, \
+        with patch('graphiti_mcp_server.FalkorDriver'), \
              patch('graphiti_mcp_server.Graphiti') as mock_graphiti_cls:
             mock_graphiti = AsyncMock()
             mock_graphiti_cls.return_value = mock_graphiti
