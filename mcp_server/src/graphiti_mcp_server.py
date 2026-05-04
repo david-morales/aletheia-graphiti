@@ -1336,6 +1336,7 @@ async def search_ontology(
 
     if not await graphiti_service._ensure_ontology_client():
         return ErrorResponse(error='No ontology graph configured for this server')
+    assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     try:
         search_config = resolve_search_config(search_mode, reranker, limit)
@@ -1406,6 +1407,7 @@ async def explore_ontology(
 
     if not await graphiti_service._ensure_ontology_client():
         return ErrorResponse(error='No ontology graph configured for this server')
+    assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     if not node_name and not node_uuid:
         return ErrorResponse(error='Provide either node_name or node_uuid')
@@ -1764,6 +1766,7 @@ async def get_ontology_structure() -> dict[str, Any]:
 
     if not await graphiti_service._ensure_ontology_client():
         return {'error': 'No ontology graph configured for this connector.'}
+    assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     try:
         ontology_client = graphiti_service.ontology_client
