@@ -279,14 +279,12 @@ class GraphitiService:
         )
 
         backoff = _RETRY_INITIAL_BACKOFF_S
-        last_exc: Exception | None = None
         for attempt in range(1, _RETRY_ATTEMPTS + 1):
             try:
                 await client.build_indices_and_constraints()
                 logger.info(f'Ontology graph connected: {ontology_graph_name}')
                 return client
-            except Exception as e:
-                last_exc = e
+            except Exception as e:  # transient FalkorDB connect/protocol errors come in many flavors
                 if attempt < _RETRY_ATTEMPTS:
                     logger.warning(
                         f'Ontology connect attempt {attempt}/{_RETRY_ATTEMPTS} failed: {e}. '
@@ -298,7 +296,7 @@ class GraphitiService:
                     logger.warning(
                         f'Ontology connect gave up after {_RETRY_ATTEMPTS} attempts: {e}'
                     )
-        raise last_exc  # type: ignore[misc]
+                    raise
 
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
