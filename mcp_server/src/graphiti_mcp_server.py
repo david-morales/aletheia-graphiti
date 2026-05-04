@@ -440,8 +440,25 @@ class GraphitiService:
                 # Re-raise other errors
                 raise
 
-            # Build indices
-            await self.client.build_indices_and_constraints()
+            # Retry build_indices to survive transient FalkorDB blips during cold start
+            backoff = _RETRY_INITIAL_BACKOFF_S
+            for attempt in range(1, _RETRY_ATTEMPTS + 1):
+                try:
+                    await self.client.build_indices_and_constraints()
+                    break
+                except Exception as e:  # transient FalkorDB connect/protocol errors come in many flavors
+                    if attempt < _RETRY_ATTEMPTS:
+                        logger.warning(
+                            f'Main client build_indices attempt {attempt}/{_RETRY_ATTEMPTS} '
+                            f'failed: {e}. Retrying in {backoff:.1f}s...'
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff *= _RETRY_BACKOFF_MULTIPLIER
+                    else:
+                        logger.error(
+                            f'Main client build_indices gave up after {_RETRY_ATTEMPTS} attempts: {e}'
+                        )
+                        raise
 
             # Initialize ontology client if configured
             if self.config.graphiti.ontology_graph:
