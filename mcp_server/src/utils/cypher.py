@@ -331,6 +331,11 @@ _DATE_WRAPPER_RE = re.compile(
 _LOWER_RE = re.compile(r'\blower\s*\(', re.IGNORECASE)
 _UPPER_RE = re.compile(r'\bupper\s*\(', re.IGNORECASE)
 _PROFILE_EXPLAIN_RE = re.compile(r'^\s*(PROFILE|EXPLAIN)\s+', re.IGNORECASE)
+# `!=` is a Neo4j/SQL convenience that FalkorDB does not support — only the
+# canonical openCypher `<>` works. Match a bare `!=` (the `!` is otherwise
+# unused in Cypher syntax). Run via `_apply_to_code_spans` so occurrences
+# inside string literals/comments are preserved.
+_NEQ_RE = re.compile(r'!=')
 
 # Non-ASCII identifier transliteration.  FalkorDB only accepts ASCII in
 # variable names and aliases.  We transliterate common accented characters
@@ -459,6 +464,12 @@ def _fix_falkordb_dialect(query: str) -> tuple[str, list[str]]:
         query = new_query
         fixes.append('Replaced upper() with toUpper()')
 
+    # 3b. Fix `!=` -> `<>` (code only — string literals and comments preserved).
+    new_query = _apply_to_code_spans(query, lambda s: _NEQ_RE.sub('<>', s))
+    if new_query != query:
+        query = new_query
+        fixes.append('Replaced != with <> (FalkorDB only accepts the openCypher canonical form)')
+
     # 4. Strip PROFILE/EXPLAIN prefix (code only; anchored to start-of-span)
     new_query = _apply_to_code_spans(query, lambda s: _PROFILE_EXPLAIN_RE.sub('', s))
     if new_query != query:
@@ -555,6 +566,44 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         ),
         doc_hint='FalkorDB openCypher: function arities can differ from Neo4j.',
         example_fix='round(avg(val) * 100.0) / 100.0  // 2-decimal precision',
+    ),
+    ExecutionErrorPattern(
+        name='not_equals_operator',
+        # FalkorDB rejects `!=` with `Invalid input '!'`. The expected-token
+        # list always includes `<>` (the canonical openCypher form). Match on
+        # the combination — `Invalid input '!'` plus a `<>` mention in the
+        # expected list — to avoid catching unrelated `!`-bearing errors.
+        matcher=re.compile(
+            r"Invalid input '!'.*'<>'",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        suggestion=(
+            'FalkorDB does not support the `!=` operator. Use the openCypher '
+            'canonical form `<>` instead. Layer-2 auto-fix normally rewrites '
+            'this before execution; if you see this error, double-check that '
+            '`!=` was not embedded in something the auto-fixer skipped (e.g. a '
+            'parameterized expression).'
+        ),
+        doc_hint='FalkorDB openCypher: only `<>` is the not-equals operator; `!=` is not accepted.',
+        example_fix='WHERE n.status <> "None"',
+    ),
+    ExecutionErrorPattern(
+        name='not_in_list_form',
+        # FalkorDB rejects `x NOT IN [a, b, c]` — must be `NOT (x IN [a, b, c])`.
+        # Error fingerprint: `Invalid input ','` plus `expected ... ']'` plus
+        # the errCtx containing `NOT IN [`. Scope by all three so we don't
+        # over-match generic comma errors.
+        matcher=re.compile(
+            r"Invalid input ','.*\]'.*errCtx:[^\n]*\bNOT IN \[",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        suggestion=(
+            'FalkorDB does not accept `x NOT IN [list]`. Wrap the IN test in '
+            'parens and prefix NOT: `NOT (x IN [list])`. This is semantically '
+            'equivalent and parses correctly.'
+        ),
+        doc_hint='FalkorDB openCypher: NOT IN with a list literal must be written as NOT (x IN [...]).',
+        example_fix='WHERE NOT (n.kind IN ["a", "b", "c"])',
     ),
     ExecutionErrorPattern(
         name='variable_not_in_scope',

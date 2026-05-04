@@ -348,6 +348,38 @@ class TestStage2AutoFixNonAscii:
         assert 'código' not in fixed
 
 
+class TestStage2AutoFixNotEquals:
+    def test_fix_simple_not_equals(self):
+        # FalkorDB rejects `!=` outright; only `<>` is accepted. The fixer
+        # rewrites bare `!=` to `<>` so the query reaches FalkorDB cleanly.
+        query = "MATCH (n) WITH n LIMIT 1 RETURN count(CASE WHEN n.x != 'None' THEN 1 END) AS c"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "<>" in fixed
+        assert "!=" not in fixed
+        assert any('!=' in f and '<>' in f for f in fixes)
+
+    def test_fix_not_equals_in_where(self):
+        query = "MATCH (n) WHERE n.x != 'foo' RETURN n LIMIT 1"
+        fixed, _ = _fix_falkordb_dialect(query)
+        assert "n.x <> 'foo'" in fixed
+        assert "!=" not in fixed
+
+    def test_not_equals_inside_string_literal_preserved(self):
+        # The literal `!=` must NOT be replaced inside a string.
+        query = "MATCH (n) WHERE n.label = 'a != b' RETURN n LIMIT 1"
+        fixed, fixes = _fix_falkordb_dialect(query)
+        assert "'a != b'" in fixed
+        # No fix entry — the operator never appeared outside a string.
+        assert not any('!=' in f for f in fixes)
+
+    def test_fix_idempotent(self):
+        query = "MATCH (n) WHERE n.x != 1 RETURN n LIMIT 1"
+        fixed_once, _ = _fix_falkordb_dialect(query)
+        fixed_twice, fixes2 = _fix_falkordb_dialect(fixed_once)
+        assert fixed_once == fixed_twice
+        assert not any('!=' in f for f in fixes2)
+
+
 class TestStage2Ordering:
     def test_apoc_with_date_rejects_on_apoc(self):
         query = "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"
@@ -1172,6 +1204,40 @@ class TestClassifyExecutionError:
         assert 'UNION' in err.suggestion
         assert 'WITH' in err.suggestion
         assert err.doc_hint != ''
+
+    def test_classify_not_equals_operator(self):
+        # FalkorDB rejects `!=` with `Invalid input '!'` and the expected-token
+        # list including `<>`. Layer-2 auto-fix should normally catch this
+        # before execution, but defense-in-depth at Layer 3 still gives a
+        # clear message if the auto-fix ever misses an edge case.
+        msg = (
+            "errMsg: Invalid input '!': expected '.', '(', AND, OR, XOR, NOT, "
+            "'=~', '=', '<>', '+', '-', '*', '/', '%', '^', IN, CONTAINS, "
+            "STARTS WITH, ENDS WITH, '<=', '>=', '<', '>', IS NULL, IS NOT NULL, "
+            "'[', '{', a label or THEN line: 1, column: 53"
+        )
+        err = classify_execution_error(msg)
+        assert err.reason == 'not_equals_operator'
+        assert '<>' in err.suggestion
+        assert '!=' in err.suggestion
+
+    def test_classify_not_in_list_form(self):
+        # FalkorDB does NOT support `x NOT IN [list]` even with parens around
+        # the list — only `NOT (x IN [list])`. The parser fails on the comma
+        # inside the list because it has already consumed the `[` as something
+        # else. Tell the LLM to wrap with explicit parens and prefix NOT.
+        msg = (
+            "errMsg: Invalid input ',': expected '.', AND, OR, XOR, NOT, '=~', "
+            "'=', '<>', '+', '-', '*', '/', '%', '^', IN, CONTAINS, STARTS WITH, "
+            "ENDS WITH, '<=', '>=', '<', '>', IS NULL, IS NOT NULL, '[', '{', "
+            "a label, ']' or '..' line: 1, column: 32, offset: 31 "
+            "errCtx: MATCH (n) WHERE n.x NOT IN ['a', 'b'] RETURN n LIMIT 1 "
+            "errCtxOffset: 31"
+        )
+        err = classify_execution_error(msg)
+        assert err.reason == 'not_in_list_form'
+        assert 'NOT (' in err.suggestion
+        assert 'IN [' in err.suggestion
 
     def test_classify_variable_not_in_scope_full_envelope(self):
         # The matcher is anchored on the `'<var>' not defined` substring, so
