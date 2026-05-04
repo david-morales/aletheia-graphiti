@@ -201,3 +201,57 @@ class TestEnsureOntologyClient:
         ok = await svc._ensure_ontology_client()
         assert ok is False
         assert svc.ontology_client is None
+
+
+class TestToolLazyReconnect:
+    """Tools that need the ontology client invoke _ensure_ontology_client first."""
+
+    @pytest.mark.asyncio
+    async def test_get_ontology_structure_reconnects_when_client_is_none(self, monkeypatch):
+        """When ontology_client died, get_ontology_structure rebuilds it before erroring."""
+        from graphiti_mcp_server import get_ontology_structure
+        from config.schema import GraphitiConfig
+
+        # Build a real-ish service shape via mocks
+        svc = MagicMock()
+        svc.config = GraphitiConfig()
+        svc.config.graphiti.ontology_graph = 'test_ontology'
+        svc.ontology_client = None  # simulate dropped connection
+
+        rebuilt = MagicMock()
+        rebuilt.driver = MagicMock()
+        rebuilt.driver.execute_query = AsyncMock(return_value=([], None, None))
+
+        async def fake_ensure():
+            svc.ontology_client = rebuilt
+            return True
+
+        svc._ensure_ontology_client = fake_ensure
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_structure()
+
+        assert 'error' not in result
+        assert result['ontology_graph'] == 'test_ontology'
+
+    @pytest.mark.asyncio
+    async def test_get_ontology_structure_returns_canned_error_when_reconnect_fails(self):
+        """Reconnect attempt fails → original canned error preserved."""
+        from graphiti_mcp_server import get_ontology_structure
+        from config.schema import GraphitiConfig
+
+        svc = MagicMock()
+        svc.config = GraphitiConfig()
+        svc.config.graphiti.ontology_graph = 'test_ontology'
+        svc.ontology_client = None
+
+        async def fake_ensure():
+            return False  # reconnect failed
+
+        svc._ensure_ontology_client = fake_ensure
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_structure()
+
+        assert 'error' in result
+        assert 'No ontology graph configured' in result['error']

@@ -113,6 +113,9 @@ def make_mock_services(group_id: str = 'test-group'):
     mock_graphiti_service.get_client = AsyncMock(return_value=mock_client)
     mock_graphiti_service.entity_types = None
     mock_graphiti_service.ontology_client = None
+    # Default: no ontology configured — matches ontology_client=None semantics.
+    # Tests that exercise the happy path must override this with AsyncMock(return_value=True).
+    mock_graphiti_service._ensure_ontology_client = AsyncMock(return_value=False)
 
     mock_queue_service = AsyncMock()
 
@@ -836,6 +839,7 @@ class TestSearchOntology:
         svc, queue, cfg, client = make_mock_services()
         ontology_client = AsyncMock()
         svc.ontology_client = ontology_client
+        svc._ensure_ontology_client = AsyncMock(return_value=True)
 
         node = make_mock_node(uuid='onto-1', name='AirworthinessDirective', labels=['OntologyClass'])
         ontology_client.search_ = AsyncMock(
@@ -891,6 +895,7 @@ class TestExploreOntology:
     async def test_neither_name_nor_uuid(self):
         svc, queue, cfg, client = make_mock_services()
         svc.ontology_client = AsyncMock()
+        svc._ensure_ontology_client = AsyncMock(return_value=True)
 
         with (
             patch('graphiti_mcp_server.graphiti_service', svc),
@@ -906,6 +911,7 @@ class TestExploreOntology:
         svc, queue, cfg, client = make_mock_services()
         ontology_client = AsyncMock()
         svc.ontology_client = ontology_client
+        svc._ensure_ontology_client = AsyncMock(return_value=True)
         cfg.graphiti.ontology_graph = 'test_ontology'
 
         # First call: name resolution

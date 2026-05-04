@@ -1334,7 +1334,7 @@ async def search_ontology(
     if graphiti_service is None:
         return ErrorResponse(error='Graphiti service not initialized')
 
-    if graphiti_service.ontology_client is None:
+    if not await graphiti_service._ensure_ontology_client():
         return ErrorResponse(error='No ontology graph configured for this server')
 
     try:
@@ -1404,7 +1404,7 @@ async def explore_ontology(
     if graphiti_service is None:
         return ErrorResponse(error='Graphiti service not initialized')
 
-    if graphiti_service.ontology_client is None:
+    if not await graphiti_service._ensure_ontology_client():
         return ErrorResponse(error='No ontology graph configured for this server')
 
     if not node_name and not node_uuid:
@@ -1762,7 +1762,7 @@ async def get_ontology_structure() -> dict[str, Any]:
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
 
-    if graphiti_service.ontology_client is None:
+    if not await graphiti_service._ensure_ontology_client():
         return {'error': 'No ontology graph configured for this connector.'}
 
     try:
