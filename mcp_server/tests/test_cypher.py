@@ -1221,6 +1221,22 @@ class TestClassifyExecutionError:
         assert '<>' in err.suggestion
         assert '!=' in err.suggestion
 
+    def test_classify_sql_window_function(self):
+        # FalkorDB's parser rejects `<agg>(...) OVER (PARTITION BY ...)` with
+        # `Invalid input 'V'` (the V from OVER). openCypher does not have SQL
+        # window functions; the equivalent is a chained WITH that aggregates
+        # by group, then re-joins.
+        msg = (
+            "errMsg: Invalid input 'V': expected OR, ORDER BY or OPTIONAL MATCH "
+            "line: 32, column: 31, offset: 2604 "
+            "errCtx: sum(weighted_incidents) OVER (PARTITION BY operator) "
+            "AS total_weighted errCtxOffset: 30"
+        )
+        err = classify_execution_error(msg)
+        assert err.reason == 'sql_window_function'
+        assert 'OVER' in err.suggestion
+        assert 'WITH' in err.suggestion
+
     def test_classify_not_in_list_form(self):
         # FalkorDB does NOT support `x NOT IN [list]` even with parens around
         # the list — only `NOT (x IN [list])`. The parser fails on the comma

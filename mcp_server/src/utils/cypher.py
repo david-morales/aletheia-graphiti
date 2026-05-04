@@ -588,6 +588,30 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         example_fix='WHERE n.status <> "None"',
     ),
     ExecutionErrorPattern(
+        name='sql_window_function',
+        # SQL window functions like `<agg>(...) OVER (PARTITION BY ...)` are
+        # not openCypher. FalkorDB rejects with `Invalid input 'V'` (from the
+        # V in OVER) and the errCtx contains `OVER (`. Match the combination
+        # so unrelated `Invalid input 'V'` errors don't false-positive.
+        matcher=re.compile(
+            r"Invalid input 'V'.*errCtx:[^\n]*\bOVER\s*\(",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        suggestion=(
+            'openCypher does not have SQL window functions. '
+            '`<agg>(x) OVER (PARTITION BY key)` is not supported. '
+            'Use a chained WITH that aggregates by the partition key, then '
+            'a second WITH (or RETURN) to combine: '
+            'first `WITH key, sum(x) AS group_total`, then carry that into '
+            'the next clause alongside the per-row data you need.'
+        ),
+        doc_hint='openCypher: no window functions; group with chained WITH clauses.',
+        example_fix=(
+            'WITH op, sum(weight) AS group_total '
+            'WITH op, group_total RETURN op, group_total ORDER BY group_total DESC'
+        ),
+    ),
+    ExecutionErrorPattern(
         name='not_in_list_form',
         # FalkorDB rejects `x NOT IN [a, b, c]` — must be `NOT (x IN [a, b, c])`.
         # Error fingerprint: `Invalid input ','` plus `expected ... ']'` plus
