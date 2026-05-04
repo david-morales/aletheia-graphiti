@@ -1,7 +1,7 @@
 """Tests for main client resilience: retry on transient FalkorDB failure during init."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
