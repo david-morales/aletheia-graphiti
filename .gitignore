@@ -169,3 +169,6 @@ cache.db*
 
 # Git worktrees (project-local)
 .worktrees/
+
+# Local plan/design drafts (not source-of-truth project documents)
+docs/plans/
