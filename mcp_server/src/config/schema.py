@@ -199,6 +199,7 @@ class EmbedderProvidersConfig(BaseModel):
 
     openai: OpenAIProviderConfig | None = None
     azure_openai: AzureOpenAIProviderConfig | None = None
+    bedrock: BedrockProviderConfig | None = None
     gemini: GeminiProviderConfig | None = None
     voyage: VoyageProviderConfig | None = None
 

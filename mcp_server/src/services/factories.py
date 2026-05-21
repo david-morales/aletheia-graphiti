@@ -79,6 +79,15 @@ except ImportError:
     BedrockLLMClient = None  # type: ignore[assignment,misc]
     HAS_BEDROCK = False
 
+try:
+    from graphiti_core.embedder.bedrock import BedrockEmbedder, BedrockEmbedderConfig
+
+    HAS_BEDROCK_EMBEDDER = True
+except ImportError:
+    BedrockEmbedder = None  # type: ignore[assignment,misc]
+    BedrockEmbedderConfig = None  # type: ignore[assignment,misc]
+    HAS_BEDROCK_EMBEDDER = False
+
 
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
@@ -390,6 +399,27 @@ class EmbedderFactory:
                     embedding_dim=config.dimensions or 1024,
                 )
                 return VoyageAIEmbedder(config=voyage_config)
+
+            case 'bedrock':
+                if BedrockEmbedder is None:
+                    raise ValueError(
+                        'Bedrock embedder not available. Install with: '
+                        'pip install graphiti-core[bedrock]'
+                    )
+                if not config.providers.bedrock:
+                    raise ValueError('Bedrock provider configuration not found')
+
+                logger.info('Creating Bedrock embedder')
+                bedrock_cfg = config.providers.bedrock
+                if bedrock_cfg.region:
+                    os.environ.setdefault('AWS_REGION', bedrock_cfg.region)
+
+                return BedrockEmbedder(
+                    config=BedrockEmbedderConfig(
+                        embedding_model=config.model,
+                        embedding_dim=config.dimensions,
+                    ),
+                )
 
             case _:
                 raise ValueError(f'Unsupported Embedder provider: {provider}')
