@@ -157,12 +157,27 @@ class VoyageProviderConfig(BaseModel):
     model: str = 'voyage-3'
 
 
+class BedrockProviderConfig(BaseModel):
+    """AWS Bedrock provider configuration.
+
+    No api_key field — Bedrock uses the standard boto3 credential chain
+    (env vars AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY > IAM role/IRSA >
+    ~/.aws/credentials). The `region` field maps to ChatBedrockConverse's
+    region_name; when None, the underlying client reads AWS_DEFAULT_REGION
+    or AWS_REGION (default us-east-1).
+    """
+
+    region: str | None = None
+    max_retries: int = 3
+
+
 class LLMProvidersConfig(BaseModel):
     """LLM providers configuration."""
 
     openai: OpenAIProviderConfig | None = None
     azure_openai: AzureOpenAIProviderConfig | None = None
     anthropic: AnthropicProviderConfig | None = None
+    bedrock: BedrockProviderConfig | None = None
     gemini: GeminiProviderConfig | None = None
     groq: GroqProviderConfig | None = None
 
