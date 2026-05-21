@@ -213,8 +213,11 @@ pip install graphiti-core[groq]
 # Install with Google Gemini support
 pip install graphiti-core[google-genai]
 
+# Install with Amazon Bedrock support (via langchain-aws)
+pip install graphiti-core[bedrock]
+
 # Install with multiple providers
-pip install graphiti-core[anthropic,groq,google-genai]
+pip install graphiti-core[anthropic,bedrock,groq,google-genai]
 
 # Install with FalkorDB and LLM providers
 pip install graphiti-core[falkordb,anthropic,google-genai]
