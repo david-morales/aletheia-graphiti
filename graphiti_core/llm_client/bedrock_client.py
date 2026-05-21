@@ -38,6 +38,13 @@ from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 
 logger = logging.getLogger(__name__)
 
+# Conservative default for Bedrock invocation — half of Graphiti's
+# DEFAULT_MAX_TOKENS (16384). Several Bedrock model families (older Titan,
+# some Nova variants) advertise smaller output windows than the 16K Graphiti
+# uses as a generic ceiling, and going above the model's actual limit raises
+# at the AWS Converse API. Callers can always override via LLMConfig.max_tokens.
+_BEDROCK_FALLBACK_MAX_TOKENS = 8192
+
 
 class BedrockLLMClient(LLMClient):
     """Graphiti LLMClient that delegates to LangChain's ChatBedrockConverse.
@@ -66,7 +73,7 @@ class BedrockLLMClient(LLMClient):
             model_id=self.model,
             region_name=region,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 8192,
+            max_tokens=self.max_tokens or _BEDROCK_FALLBACK_MAX_TOKENS,
         )
 
         # Forward explicit AWS creds when set in the environment; otherwise
@@ -89,6 +96,17 @@ class BedrockLLMClient(LLMClient):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         model_size: ModelSize = ModelSize.medium,
     ) -> dict[str, typing.Any]:
+        """Bedrock-side generation: forward messages to ChatBedrockConverse and parse JSON.
+
+        ``response_model`` and ``model_size`` are accepted to satisfy the
+        :class:`LLMClient` ABC but are not consumed here. The base class
+        :meth:`LLMClient.generate_response` performs JSON-schema injection
+        before calling this method, and ``model_size`` routing is not yet
+        implemented for Bedrock (single ``model_id`` per client instance).
+
+        Returns the parsed JSON object. Raises ``json.JSONDecodeError`` if
+        the model output is not valid JSON.
+        """
         from langchain_core.messages import HumanMessage, SystemMessage
 
         lc_messages: list[typing.Any] = []
@@ -109,3 +127,7 @@ class BedrockLLMClient(LLMClient):
                 for block in content
             )
         return json.loads(content)
+
+    def _get_provider_type(self) -> str:
+        """Override base-class heuristic to emit a clean provider name for tracing."""
+        return 'bedrock'
