@@ -1,5 +1,7 @@
 """Factory classes for creating LLM, Embedder, and Database clients."""
 
+import os
+
 from config.schema import (
     DatabaseConfig,
     EmbedderConfig,
@@ -68,6 +70,14 @@ try:
     HAS_GROQ = True
 except ImportError:
     HAS_GROQ = False
+
+try:
+    from graphiti_core.llm_client.bedrock_client import BedrockLLMClient
+
+    HAS_BEDROCK = True
+except ImportError:
+    BedrockLLMClient = None  # type: ignore[assignment,misc]
+    HAS_BEDROCK = False
 
 
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
@@ -206,6 +216,33 @@ class LLMClientFactory:
                     max_tokens=config.max_tokens,
                 )
                 return AnthropicClient(config=llm_config)
+
+            case 'bedrock':
+                if not HAS_BEDROCK:
+                    raise ValueError(
+                        'Bedrock client not available. Install with: '
+                        'pip install graphiti-core[bedrock]'
+                    )
+                if not config.providers.bedrock:
+                    raise ValueError('Bedrock provider configuration not found')
+
+                # No api_key — boto3 chain handles auth. Region falls through to
+                # AWS_DEFAULT_REGION/AWS_REGION env vars when not set in config.
+                logger.info('Creating Bedrock LLM client')
+                bedrock_cfg = config.providers.bedrock
+                if bedrock_cfg.region:
+                    # Plumb region via env so BedrockLLMClient picks it up
+                    # (the client reads AWS_DEFAULT_REGION/AWS_REGION at __init__).
+                    os.environ.setdefault('AWS_REGION', bedrock_cfg.region)
+
+                return BedrockLLMClient(
+                    config=GraphitiLLMConfig(
+                        api_key='not-required',
+                        model=config.model,
+                        temperature=config.temperature,
+                        max_tokens=config.max_tokens,
+                    ),
+                )
 
             case 'gemini':
                 if not HAS_GEMINI:
