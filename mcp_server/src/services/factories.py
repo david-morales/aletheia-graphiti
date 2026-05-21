@@ -1,5 +1,7 @@
 """Factory classes for creating LLM, Embedder, and Database clients."""
 
+import os
+
 from config.schema import (
     DatabaseConfig,
     EmbedderConfig,
@@ -217,8 +219,8 @@ class LLMClientFactory:
 
             case 'bedrock':
                 if not HAS_BEDROCK:
-                    raise ImportError(
-                        'BedrockLLMClient is not available. Install with: '
+                    raise ValueError(
+                        'Bedrock client not available. Install with: '
                         'pip install graphiti-core[bedrock]'
                     )
                 if not config.providers.bedrock:
@@ -231,15 +233,13 @@ class LLMClientFactory:
                 if bedrock_cfg.region:
                     # Plumb region via env so BedrockLLMClient picks it up
                     # (the client reads AWS_DEFAULT_REGION/AWS_REGION at __init__).
-                    import os as _os
-
-                    _os.environ.setdefault('AWS_REGION', bedrock_cfg.region)
+                    os.environ.setdefault('AWS_REGION', bedrock_cfg.region)
 
                 return BedrockLLMClient(
                     config=GraphitiLLMConfig(
                         api_key='not-required',
                         model=config.model,
-                        temperature=config.temperature or 0.0,
+                        temperature=config.temperature,
                         max_tokens=config.max_tokens,
                     ),
                 )
