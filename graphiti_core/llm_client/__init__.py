@@ -14,10 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from .client import LLMClient
-from .config import LLMConfig
-from .errors import RateLimitError
-from .openai_client import OpenAIClient
+from .client import LLMClient  # noqa: F401
+from .config import LLMConfig  # noqa: F401
+from .errors import RateLimitError  # noqa: F401
+from .openai_client import OpenAIClient  # noqa: F401
 
 # AnthropicClient is re-exported only when the `anthropic` package is
 # installed. The underlying module raises ImportError at import time when
@@ -25,8 +25,26 @@ from .openai_client import OpenAIClient
 # to keep `from graphiti_core.llm_client import ...` working for the rest
 # of the symbols in environments that don't install the anthropic extra.
 try:
-    from .anthropic_client import AnthropicClient
+    from .anthropic_client import AnthropicClient  # noqa: F401
 
-    __all__ = ['LLMClient', 'OpenAIClient', 'AnthropicClient', 'LLMConfig', 'RateLimitError']
+    _anthropic_available = True
 except ImportError:
-    __all__ = ['LLMClient', 'OpenAIClient', 'LLMConfig', 'RateLimitError']
+    _anthropic_available = False
+
+# BedrockLLMClient is re-exported only when the `langchain-aws` package is
+# installed (via the `bedrock` optional extra). Same lazy-dependency pattern
+# as AnthropicClient.
+try:
+    from .bedrock_client import BedrockLLMClient  # noqa: F401
+
+    _bedrock_available = True
+except ImportError:
+    _bedrock_available = False
+
+_base = ['LLMClient', 'OpenAIClient', 'LLMConfig', 'RateLimitError']
+if _anthropic_available:
+    _base.append('AnthropicClient')
+if _bedrock_available:
+    _base.append('BedrockLLMClient')
+
+__all__ = _base
