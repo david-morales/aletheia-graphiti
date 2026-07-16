@@ -1498,6 +1498,12 @@ def _combine_relationship_entries(
         for e in node_derived
     }
     for rec in edge_records:
+        # Builders store class hierarchy as RELATES_TO edges named
+        # SUBCLASS_OF. Hierarchy travels via inherits_from, not as a
+        # relationship entry — exclude these to avoid duplicating the
+        # inheritance links in relationship listings.
+        if rec.get('name') == 'SUBCLASS_OF':
+            continue
         entry = _edge_relationship_entry(rec)
         key = (entry['name'], entry['source_entity'], entry['target_entity'])
         if key in seen:

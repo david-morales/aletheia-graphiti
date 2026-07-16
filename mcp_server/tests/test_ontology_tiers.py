@@ -259,6 +259,18 @@ def ocurre_en_edge() -> dict:
     }
 
 
+def subclass_of_edge() -> dict:
+    # Builders store class hierarchy as RELATES_TO edges named SUBCLASS_OF.
+    # Hierarchy is served via inherits_from — these edges must never surface
+    # as relationship entries.
+    return {
+        'source': 'Persona',
+        'name': 'SUBCLASS_OF',
+        'fact': 'Persona SUBCLASS_OF Base: Persona inherits from Base.',
+        'target': 'Base',
+    }
+
+
 # ---------------------------------------------------------------------------
 # Service factory — follows test_ontology_resilience.py conventions
 # ---------------------------------------------------------------------------
@@ -673,6 +685,37 @@ class TestEdgeDerivedRelationships:
         assert result['relationships']['outgoing'] == [
             {'name': 'OCURRE_EN', 'target': 'Lugar', 'summary': OCURRE_EN_FACT}
         ]
+
+    @pytest.mark.asyncio
+    async def test_subclass_of_edges_excluded_from_relationships(self):
+        """SUBCLASS_OF edges duplicate the inherits_from hierarchy — they must
+        appear in NEITHER documentation relationship_classes NOR explore
+        relationships/neighbors, while ES_-style edges still do."""
+        from graphiti_mcp_server import explore_ontology, get_ontology_documentation
+
+        rows = [persona_row(), detencion_row(), lugar_row(), base_row()]
+        edges = [es_detenido_edge(), ocurre_en_edge(), subclass_of_edge()]
+
+        svc = make_service(rows, edges)
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_documentation()
+
+        assert 'error' not in result
+        assert {r['name'] for r in result['relationship_classes']} == {
+            'ES_DETENIDO',
+            'OCURRE_EN',
+        }
+
+        svc = make_service(rows, edges)
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await explore_ontology(node_name='Persona')
+
+        assert 'error' not in result
+        assert [r['name'] for r in result['relationships']['outgoing']] == ['ES_DETENIDO']
+        assert result['relationships']['incoming'] == []
+        # Base is only reachable via the SUBCLASS_OF edge — it must not
+        # surface as a neighbor; the ES_-style chain still does.
+        assert [n['name'] for n in result['neighbors']] == ['Detencion', 'Lugar']
 
     @pytest.mark.asyncio
     async def test_mixed_reified_and_edge_relationships_node_wins(self):
