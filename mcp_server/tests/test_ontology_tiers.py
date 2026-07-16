@@ -176,18 +176,113 @@ def feeds_row() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Object-property-style ontology fixtures — relationships live as RELATES_TO
+# EDGES between OntologyClass nodes; there are ZERO relationship_class nodes.
+# Edge rows are what the RELATES_TO Cypher returns: {source, name, fact, target}.
+# ---------------------------------------------------------------------------
+
+PERSONA_SUMMARY = 'A person appearing in a report. Identified by their document number.'
+DETENCION_SUMMARY = 'An arrest event recorded by officers. Carries date, place, and grounds.'
+LUGAR_SUMMARY = 'A place referenced by an event. Geocodable to an address.'
+
+ES_DETENIDO_PROSE = (
+    'Relationship: A person was arrested — links Persona to Detencion.'
+)
+ES_DETENIDO_FACT = f'Persona ES_DETENIDO Detencion: {ES_DETENIDO_PROSE}'
+# A fact WITHOUT the "<source> <name> <target>: " prefix — served verbatim.
+OCURRE_EN_FACT = 'Where the arrest took place.'
+
+
+def persona_row() -> dict:
+    return {
+        'uuid': 'persona-uuid',
+        'name': 'Persona',
+        'ontology_type': 'class',
+        'summary': PERSONA_SUMMARY,
+        'alt_labels': [],
+        'inherits_from': [],
+        'examples': [],
+        'source_entity': None,
+        'target_entity': None,
+        'properties': None,
+        'identity': None,
+    }
+
+
+def detencion_row() -> dict:
+    return {
+        'uuid': 'detencion-uuid',
+        'name': 'Detencion',
+        'ontology_type': 'class',
+        'summary': DETENCION_SUMMARY,
+        'alt_labels': [],
+        'inherits_from': [],
+        'examples': [],
+        'source_entity': None,
+        'target_entity': None,
+        'properties': None,
+        'identity': None,
+    }
+
+
+def lugar_row() -> dict:
+    return {
+        'uuid': 'lugar-uuid',
+        'name': 'Lugar',
+        'ontology_type': 'class',
+        'summary': LUGAR_SUMMARY,
+        'alt_labels': [],
+        'inherits_from': [],
+        'examples': [],
+        'source_entity': None,
+        'target_entity': None,
+        'properties': None,
+        'identity': None,
+    }
+
+
+def es_detenido_edge() -> dict:
+    return {
+        'source': 'Persona',
+        'name': 'ES_DETENIDO',
+        'fact': ES_DETENIDO_FACT,
+        'target': 'Detencion',
+    }
+
+
+def ocurre_en_edge() -> dict:
+    return {
+        'source': 'Detencion',
+        'name': 'OCURRE_EN',
+        'fact': OCURRE_EN_FACT,
+        'target': 'Lugar',
+    }
+
+
+# ---------------------------------------------------------------------------
 # Service factory — follows test_ontology_resilience.py conventions
 # ---------------------------------------------------------------------------
 
-def make_service(rows: list[dict]):
-    """Fake GraphitiService whose ontology driver returns the given rows."""
+def make_service(rows: list[dict], edges: list[dict] | None = None):
+    """Fake GraphitiService whose ontology driver returns the given rows.
+
+    `rows` answers the OntologyClass node query; `edges` (default none)
+    answers the RELATES_TO edge query used by object-property ontologies.
+    """
     svc = MagicMock()
     svc.config = GraphitiConfig()
     svc.config.graphiti.ontology_graph = 'test_ontology'
     svc._ensure_ontology_client = AsyncMock(return_value=True)
 
+    edge_rows = edges or []
+
+    async def dispatch_query(query, **kwargs):
+        if 'RELATES_TO' in query:
+            return (edge_rows, None, None)
+        return (rows, None, None)
+
     client = MagicMock()
-    client.driver.execute_query = AsyncMock(return_value=(rows, None, None))
+    client.driver.execute_query = AsyncMock(side_effect=dispatch_query)
     # Semantic name-resolution fallback finds nothing unless a test overrides.
     client.search_ = AsyncMock(return_value=MagicMock(nodes=[]))
     svc.ontology_client = client
@@ -491,6 +586,126 @@ class TestExploreOntologyClassContext:
 
         assert 'error' in result
         assert 'node_name or node_uuid' in result['error']
+
+
+# ---------------------------------------------------------------------------
+# Object-property ontologies — relationships derived from RELATES_TO edges
+# ---------------------------------------------------------------------------
+
+class TestEdgeDerivedRelationships:
+    """Ontology families that model relationships as owl:ObjectProperty store
+    them as RELATES_TO edges between OntologyClass nodes, with ZERO
+    relationship_class nodes. The read tiers must derive relationship entries
+    from those edges."""
+
+    @pytest.mark.asyncio
+    async def test_documentation_derives_relationships_from_edges(self):
+        from graphiti_mcp_server import get_ontology_documentation
+
+        svc = make_service(
+            rows=[persona_row(), detencion_row(), lugar_row()],
+            edges=[es_detenido_edge(), ocurre_en_edge()],
+        )
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_documentation()
+
+        assert 'error' not in result
+        assert {e['name'] for e in result['entity_classes']} == {
+            'Persona',
+            'Detencion',
+            'Lugar',
+        }
+
+        relationships = {r['name']: r for r in result['relationship_classes']}
+        assert set(relationships) == {'ES_DETENIDO', 'OCURRE_EN'}
+
+        es_detenido = relationships['ES_DETENIDO']
+        assert es_detenido['source_entity'] == 'Persona'
+        assert es_detenido['target_entity'] == 'Detencion'
+        # The "<source> <name> <target>: " prefix is stripped from the fact.
+        assert es_detenido['summary'] == ES_DETENIDO_PROSE
+        # Shape consistency with node-derived entries.
+        assert es_detenido['properties'] == []
+        assert es_detenido['identity'] is False
+        assert es_detenido['alt_labels'] == []
+        assert es_detenido['inherits_from'] == []
+        assert es_detenido['examples'] == []
+
+        # A fact without the prefix is served verbatim.
+        assert relationships['OCURRE_EN']['summary'] == OCURRE_EN_FACT
+
+    @pytest.mark.asyncio
+    async def test_explore_uses_edge_derived_relationships(self):
+        from graphiti_mcp_server import explore_ontology
+
+        rows = [persona_row(), detencion_row(), lugar_row()]
+        edges = [es_detenido_edge(), ocurre_en_edge()]
+
+        # Outgoing + neighbors from edges; depth 2 adds the name-only hop.
+        svc = make_service(rows, edges)
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await explore_ontology(node_name='Persona')
+
+        assert 'error' not in result
+        assert result['relationships']['outgoing'] == [
+            {'name': 'ES_DETENIDO', 'target': 'Detencion', 'summary': ES_DETENIDO_PROSE}
+        ]
+        assert result['relationships']['incoming'] == []
+        assert result['neighbors'] == [
+            {
+                'name': 'Detencion',
+                'summary_line': 'An arrest event recorded by officers.',
+                'via': 'ES_DETENIDO',
+            },
+            {'name': 'Lugar', 'via': 'OCURRE_EN'},
+        ]
+
+        # Incoming side.
+        svc = make_service(rows, edges)
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await explore_ontology(node_name='Detencion')
+
+        assert 'error' not in result
+        assert result['relationships']['incoming'] == [
+            {'name': 'ES_DETENIDO', 'source': 'Persona', 'summary': ES_DETENIDO_PROSE}
+        ]
+        assert result['relationships']['outgoing'] == [
+            {'name': 'OCURRE_EN', 'target': 'Lugar', 'summary': OCURRE_EN_FACT}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_mixed_reified_and_edge_relationships_node_wins(self):
+        """Same (name, source, target) as both a reified relationship_class
+        node and a RELATES_TO edge → the node-derived entry wins (richer)."""
+        from graphiti_mcp_server import explore_ontology, get_ontology_documentation
+
+        rows = [widget_row(), gadget_row(), links_to_row()]
+        duplicate_edge = {
+            'source': 'Widget',
+            'name': 'LINKS_TO',
+            'fact': 'Widget LINKS_TO Gadget: short edge fact.',
+            'target': 'Gadget',
+        }
+
+        svc = make_service(rows, [duplicate_edge])
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_documentation()
+
+        assert 'error' not in result
+        links = [r for r in result['relationship_classes'] if r['name'] == 'LINKS_TO']
+        assert len(links) == 1
+        assert links[0]['summary'] == LINKS_TO_SUMMARY  # node-derived prose
+
+        svc = make_service(rows, [duplicate_edge])
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await explore_ontology(node_name='Widget')
+
+        assert 'error' not in result
+        assert result['relationships']['outgoing'] == [
+            {'name': 'LINKS_TO', 'target': 'Gadget', 'summary': LINKS_TO_SUMMARY}
+        ]
+        assert [n['name'] for n in result['neighbors']] == ['Gadget']
 
 
 # ---------------------------------------------------------------------------

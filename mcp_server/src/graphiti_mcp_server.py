@@ -1426,6 +1426,15 @@ _ONTOLOGY_CLASS_CONTEXT_QUERY = (
     'n.identity AS identity'
 )
 
+# Ontology families that model relationships as owl:ObjectProperty store them
+# as RELATES_TO EDGES between OntologyClass nodes (no relationship_class nodes
+# at all). The edges carry `name` (e.g. ES_DETENIDO) and `fact`
+# (e.g. "Persona ES_DETENIDO Detencion: <prose>").
+_ONTOLOGY_RELATES_TO_QUERY = (
+    'MATCH (a:OntologyClass)-[r:RELATES_TO]->(b:OntologyClass) '
+    'RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target'
+)
+
 
 def _parse_properties(raw: str | None) -> list[dict[str, Any]]:
     """Parse the OntologyClass 'properties' JSON attribute; [] on absent/bad."""
@@ -1446,6 +1455,56 @@ def _first_sentence(text: str) -> str:
         if idx > 0:
             return text[: idx + 1].strip()
     return text
+
+
+def _edge_relationship_entry(rec: dict[str, Any]) -> dict[str, Any]:
+    """Relationship entry derived from a RELATES_TO edge row.
+
+    The summary is the edge `fact` with its leading
+    "<source> <name> <target>: " prefix stripped when present. Caveat:
+    edge facts may be shorter than the full ontology relationship comment —
+    full-fidelity relationship prose is a builder-side follow-up.
+    """
+    source = rec.get('source') or ''
+    name = rec.get('name') or ''
+    target = rec.get('target') or ''
+    fact = rec.get('fact') or ''
+    prefix = f'{source} {name} {target}: '
+    summary = fact[len(prefix):] if fact.startswith(prefix) else fact
+    return {
+        'name': name,
+        'ontology_type': 'relationship_class',
+        'summary': summary,
+        'alt_labels': [],
+        'inherits_from': [],
+        'examples': [],
+        'identity': False,
+        'properties': [],
+        'source_entity': source,
+        'target_entity': target,
+    }
+
+
+def _combine_relationship_entries(
+    node_derived: list[dict[str, Any]],
+    edge_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Union node-derived relationship entries with edge-derived (RELATES_TO)
+    entries, deduped by (name, source_entity, target_entity). Node-derived
+    entries win — reified-class ontologies keep their richer prose."""
+    combined = list(node_derived)
+    seen = {
+        (e.get('name'), e.get('source_entity'), e.get('target_entity'))
+        for e in node_derived
+    }
+    for rec in edge_records:
+        entry = _edge_relationship_entry(rec)
+        key = (entry['name'], entry['source_entity'], entry['target_entity'])
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(entry)
+    return combined
 
 
 def _ontology_full_entry(rec: dict[str, Any]) -> dict[str, Any]:
@@ -1483,6 +1542,11 @@ async def explore_ontology(
     Ontology access tiers: use get_ontology_structure for the whole-ontology
     map, search_ontology to find a class semantically, and
     get_ontology_documentation for the complete reference (large).
+
+    Relationships come from reified relationship_class nodes and from
+    RELATES_TO edges (object-property ontologies). Caveat: edge-derived
+    relationship summaries come from the stored edge fact and may be shorter
+    than the full ontology relationship comment.
 
     Args:
         node_name: Find the ontology class by name (e.g., "AirworthinessDirective"). Provide this or node_uuid.
@@ -1546,9 +1610,16 @@ async def explore_ontology(
         center = _ontology_full_entry(center_row)
 
         # Relationships touching the center (full summaries — their meanings).
-        rel_rows = [
+        # Two sources, deduped by (name, source, target) with node-derived
+        # winning: reified relationship_class nodes AND RELATES_TO edges
+        # (object-property ontologies store relationships only as edges).
+        node_rel_rows = [
             r for r in rows if (r.get('ontology_type') or '') == 'relationship_class'
         ]
+        edge_records, _, _ = await ontology_client.driver.execute_query(
+            _ONTOLOGY_RELATES_TO_QUERY
+        )
+        rel_rows = _combine_relationship_entries(node_rel_rows, edge_records)
         outgoing = [
             {
                 'name': r.get('name'),
@@ -1938,6 +2009,12 @@ async def get_ontology_documentation() -> dict[str, Any]:
     `properties` (list of {name, label, range, comment, required}), and the
     `identity` flag. Relationship entries also carry source/target
     constraints.
+
+    Relationship entries come from reified relationship_class nodes AND from
+    RELATES_TO edges (ontologies that model relationships as object
+    properties store them only as edges). Caveat: edge-derived summaries
+    come from the stored edge fact and may be shorter than the full ontology
+    relationship comment.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
@@ -1961,6 +2038,14 @@ async def get_ontology_documentation() -> dict[str, Any]:
             else:
                 # class, abstract_class, or any other entity-level type
                 entity_classes.append(entry)
+
+        # Object-property ontologies store relationships as RELATES_TO edges
+        # between OntologyClass nodes instead of reified relationship_class
+        # nodes. Union both sources; node-derived entries win on duplicates.
+        edge_records, _, _ = await driver.execute_query(_ONTOLOGY_RELATES_TO_QUERY)
+        relationship_classes = _combine_relationship_entries(
+            relationship_classes, edge_records
+        )
 
         return {
             'ontology_graph': ontology_graph_name,
