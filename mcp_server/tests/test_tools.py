@@ -908,22 +908,62 @@ class TestExploreOntology:
 
     @pytest.mark.asyncio
     async def test_name_resolution_and_explore(self):
+        """v1.0.3 class-context payload: center + relationships + hierarchy + neighbors.
+
+        Exact-name resolution happens against the OntologyClass rows; the
+        semantic search_ fallback must NOT be needed for an exact name.
+        (Full payload coverage lives in test_ontology_tiers.py.)
+        """
         svc, queue, cfg, client = make_mock_services()
-        ontology_client = AsyncMock()
-        svc.ontology_client = ontology_client
+        svc.config.graphiti.ontology_graph = 'test_ontology'
         svc._ensure_ontology_client = AsyncMock(return_value=True)
-        cfg.graphiti.ontology_graph = 'test_ontology'
 
-        # First call: name resolution
-        resolved_node = make_mock_node(uuid='onto-uuid', name='Aircraft', labels=['OntologyClass'])
-        resolve_results = make_mock_search_results(nodes=[resolved_node])
+        rows = [
+            {
+                'uuid': 'onto-uuid',
+                'name': 'Aircraft',
+                'ontology_type': 'class',
+                'summary': 'A powered flying machine. Registered with an authority.',
+                'alt_labels': [],
+                'inherits_from': [],
+                'examples': [],
+                'source_entity': None,
+                'target_entity': None,
+                'properties': None,
+                'identity': None,
+            },
+            {
+                'uuid': 'airline-uuid',
+                'name': 'Airline',
+                'ontology_type': 'class',
+                'summary': 'An operator of aircraft. Holds an operating certificate.',
+                'alt_labels': [],
+                'inherits_from': [],
+                'examples': [],
+                'source_entity': None,
+                'target_entity': None,
+                'properties': None,
+                'identity': None,
+            },
+            {
+                'uuid': 'rel-uuid',
+                'name': 'OPERATED_BY',
+                'ontology_type': 'relationship_class',
+                'summary': 'Links an aircraft to its operator.',
+                'alt_labels': [],
+                'inherits_from': [],
+                'examples': [],
+                'source_entity': 'Aircraft',
+                'target_entity': 'Airline',
+                'properties': None,
+                'identity': None,
+            },
+        ]
 
-        # Second call: explore neighborhood
-        prop_node = make_mock_node(uuid='prop-uuid', name='registration', labels=['Attribute'])
-        rel_edge = make_mock_edge(uuid='rel-uuid', name='HAS_PROPERTY')
-        explore_results = make_mock_search_results(nodes=[prop_node], edges=[rel_edge])
-
-        ontology_client.search_ = AsyncMock(side_effect=[resolve_results, explore_results])
+        ontology_client = MagicMock()
+        ontology_client.driver.execute_query = AsyncMock(return_value=(rows, None, None))
+        ontology_client.search_ = AsyncMock(return_value=make_mock_search_results())
+        svc.ontology_client = ontology_client
 
         with (
             patch('graphiti_mcp_server.graphiti_service', svc),
@@ -932,9 +972,17 @@ class TestExploreOntology:
             result = await explore_ontology(node_name='Aircraft')
 
         assert 'error' not in result
-        assert result['center_node']['uuid'] == 'onto-uuid'
-        assert len(result['nodes']) == 1
-        assert len(result['edges']) == 1
+        assert result['center']['name'] == 'Aircraft'
+        assert result['relationships']['outgoing'] == [
+            {
+                'name': 'OPERATED_BY',
+                'target': 'Airline',
+                'summary': 'Links an aircraft to its operator.',
+            }
+        ]
+        assert [n['name'] for n in result['neighbors']] == ['Airline']
+        # Exact name matched in the rows — no semantic resolution needed.
+        ontology_client.search_.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_service_not_initialized(self):

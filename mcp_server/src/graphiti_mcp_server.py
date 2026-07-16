@@ -5,6 +5,7 @@ Graphiti MCP Server - Exposes Graphiti functionality through the Model Context P
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -1340,6 +1341,12 @@ async def search_ontology(
     Use this to understand what types of entities and relationships exist in the knowledge graph,
     what properties they have, and how they relate to each other.
 
+    Ontology access tiers: this tool is semantic RECALL — it finds candidate
+    classes by meaning when you don't know the exact name. For the
+    whole-ontology surface map use get_ontology_structure; to study ONE class
+    in full context use explore_ontology; for the complete reference (full
+    prose + property definitions, large) use get_ontology_documentation.
+
     Args:
         query: Natural language search query (e.g., "AirworthinessDirective", "what properties does Aircraft have").
         search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
@@ -1400,22 +1407,92 @@ async def search_ontology(
         return ErrorResponse(error=f'Ontology search error: {e}')
 
 
+# Shared projection for the full-detail ontology tiers
+# (get_ontology_documentation and explore_ontology). Includes the Task-1
+# attributes `properties` (JSON string) and `identity` (bool) — both may be
+# null/absent on graphs built before v1.0.3.
+_ONTOLOGY_CLASS_CONTEXT_QUERY = (
+    'MATCH (n:OntologyClass) '
+    'RETURN n.uuid AS uuid, '
+    'n.name AS name, '
+    'n.ontology_type AS ontology_type, '
+    'n.inherits_from AS inherits_from, '
+    'n.summary AS summary, '
+    'n.alt_labels AS alt_labels, '
+    'n.source_entity AS source_entity, '
+    'n.target_entity AS target_entity, '
+    'n.examples AS examples, '
+    'n.properties AS properties, '
+    'n.identity AS identity'
+)
+
+
+def _parse_properties(raw: str | None) -> list[dict[str, Any]]:
+    """Parse the OntologyClass 'properties' JSON attribute; [] on absent/bad."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _first_sentence(text: str) -> str:
+    """First sentence (or line) of a summary — the one-line preview form."""
+    text = (text or '').strip()
+    for sep in ('. ', '.\n', '\n'):
+        idx = text.find(sep)
+        if idx > 0:
+            return text[: idx + 1].strip()
+    return text
+
+
+def _ontology_full_entry(rec: dict[str, Any]) -> dict[str, Any]:
+    """Full-detail entry for one OntologyClass row: structure-tool fields plus
+    full summary, parsed properties, and identity flag."""
+    ontology_type = rec.get('ontology_type', '') or ''
+    entry = {
+        'name': rec.get('name', '') or '',
+        'ontology_type': ontology_type,
+        'summary': rec.get('summary', '') or '',  # full text, never truncated
+        'alt_labels': rec.get('alt_labels') or [],
+        'inherits_from': rec.get('inherits_from') or [],
+        'examples': rec.get('examples') or [],
+        'identity': bool(rec.get('identity') or False),
+        'properties': _parse_properties(rec.get('properties')),
+    }
+    if ontology_type == 'relationship_class':
+        entry['source_entity'] = rec.get('source_entity', '') or ''
+        entry['target_entity'] = rec.get('target_entity', '') or ''
+    return entry
+
+
 async def explore_ontology(
     node_name: str | None = None,
     node_uuid: str | None = None,
     depth: Literal[1, 2, 3, 4] = 2,
     limit: int = 20,
-) -> ExploreResponse | ErrorResponse:
-    """Explore a specific class in the companion ontology graph.
+) -> dict[str, Any] | ErrorResponse:
+    """Gather the full context of ONE ontology class.
 
-    Shows properties, relationships, and parent classes for a given ontology type.
-    Use this to understand the structure of a specific entity or relationship type.
+    Returns its complete documentation, properties, and typed surroundings:
+    relationships with their meanings, parents/children/siblings in the class
+    hierarchy, and the classes it connects to.
+
+    Ontology access tiers: use get_ontology_structure for the whole-ontology
+    map, search_ontology to find a class semantically, and
+    get_ontology_documentation for the complete reference (large).
 
     Args:
         node_name: Find the ontology class by name (e.g., "AirworthinessDirective"). Provide this or node_uuid.
-        node_uuid: Expand directly from this node UUID. Provide this or node_name.
-        depth: How many hops to traverse (1-4, default 2).
-        limit: Maximum results to return (default 20).
+        node_uuid: Resolve the class by its node UUID. Provide this or node_name.
+        depth: 1 = direct neighbors only; >=2 adds a name-only second hop (default 2).
+        limit: Maximum entries per surrounding list (default 20).
+
+    Returns:
+        {center, relationships: {outgoing, incoming},
+         hierarchy: {parents, children, siblings}, neighbors}
     """
     global graphiti_service
 
@@ -1431,119 +1508,127 @@ async def explore_ontology(
 
     try:
         ontology_client = graphiti_service.ontology_client
-        ontology_group_id = config.graphiti.ontology_graph
+        ontology_group_id = graphiti_service.config.graphiti.ontology_graph
 
-        # Resolve node UUID from name if needed
-        resolved_uuid = node_uuid
-        center_node_result = None
+        # ONE query: every ontology class, full projection, held in memory
+        # (ontology graphs are small).
+        rows, _, _ = await ontology_client.driver.execute_query(_ONTOLOGY_CLASS_CONTEXT_QUERY)
+        by_name: dict[str, dict[str, Any]] = {
+            r.get('name'): r for r in rows if r.get('name')
+        }
 
-        if node_name and not node_uuid:
-            resolve_results = await ontology_client.search_(
-                query=node_name,
-                config=NODE_HYBRID_SEARCH_RRF,
-                group_ids=[ontology_group_id],
-            )
-            if not resolve_results.nodes:
-                return ExploreResponse(
-                    message=f'No ontology class found matching "{node_name}"',
-                    center_node=None,
-                    nodes=[],
-                    edges=[],
-                    communities=[],
+        # Resolve the center row: uuid, exact name, then semantic fallback.
+        center_row: dict[str, Any] | None = None
+        if node_uuid:
+            center_row = next((r for r in rows if r.get('uuid') == node_uuid), None)
+        if center_row is None and node_name:
+            center_row = by_name.get(node_name)
+            if center_row is None:
+                lowered = {n.lower(): r for n, r in by_name.items()}
+                center_row = lowered.get(node_name.lower())
+            if center_row is None:
+                # Fuzzy name: resolve via ontology semantic search.
+                resolve_results = await ontology_client.search_(
+                    query=node_name,
+                    config=NODE_HYBRID_SEARCH_RRF,
+                    group_ids=[ontology_group_id],
                 )
-            best_match = resolve_results.nodes[0]
-            resolved_uuid = best_match.uuid
-            center_node_result = {
-                'uuid': best_match.uuid,
-                'name': best_match.name,
-                'labels': best_match.labels or [],
-                'created_at': best_match.created_at.isoformat() if best_match.created_at else None,
-                'summary': best_match.summary,
-                'group_id': best_match.group_id,
-                'attributes': {
-                    k: v
-                    for k, v in (best_match.attributes or {}).items()
-                    if 'embedding' not in k.lower()
-                },
-            }
+                for match in resolve_results.nodes or []:
+                    if match.name in by_name:
+                        center_row = by_name[match.name]
+                        break
+        if center_row is None:
+            return ErrorResponse(
+                error=f'No ontology class found matching "{node_name or node_uuid}"'
+            )
 
-        # Build explore config
-        explore_config = SearchConfig(
-            edge_config=EdgeSearchConfig(
-                search_methods=[
-                    EdgeSearchMethod.bm25,
-                    EdgeSearchMethod.cosine_similarity,
-                    EdgeSearchMethod.bfs,
-                ],
-                reranker=EdgeReranker.node_distance,
-                bfs_max_depth=min(depth, 4),
-            ),
-            node_config=NodeSearchConfig(
-                search_methods=[
-                    NodeSearchMethod.bm25,
-                    NodeSearchMethod.cosine_similarity,
-                    NodeSearchMethod.bfs,
-                ],
-                reranker=NodeReranker.node_distance,
-                bfs_max_depth=min(depth, 4),
-            ),
-            limit=limit,
-        )
+        center_name = center_row.get('name') or ''
+        center = _ontology_full_entry(center_row)
 
-        results = await ontology_client.search_(
-            query=node_name or '',
-            config=explore_config,
-            group_ids=[ontology_group_id],
-            center_node_uuid=resolved_uuid,
-            bfs_origin_node_uuids=[resolved_uuid] if resolved_uuid else None,
-        )
-
-        node_results = [
+        # Relationships touching the center (full summaries — their meanings).
+        rel_rows = [
+            r for r in rows if (r.get('ontology_type') or '') == 'relationship_class'
+        ]
+        outgoing = [
             {
-                'uuid': n.uuid,
-                'name': n.name,
-                'labels': n.labels or [],
-                'created_at': n.created_at.isoformat() if n.created_at else None,
-                'summary': n.summary,
-                'group_id': n.group_id,
-                'attributes': {
-                    k: v
-                    for k, v in (n.attributes or {}).items()
-                    if 'embedding' not in k.lower()
-                },
+                'name': r.get('name'),
+                'target': r.get('target_entity'),
+                'summary': r.get('summary') or '',
             }
-            for n in (results.nodes or [])
+            for r in rel_rows
+            if r.get('source_entity') == center_name
+        ]
+        incoming = [
+            {
+                'name': r.get('name'),
+                'source': r.get('source_entity'),
+                'summary': r.get('summary') or '',
+            }
+            for r in rel_rows
+            if r.get('target_entity') == center_name
         ]
 
-        edge_results = [format_edge_result(e) for e in (results.edges or [])]
-        community_results = [format_community_result(c) for c in (results.communities or [])]
+        # Class hierarchy: parents, children, siblings (one-line previews).
+        parents = [
+            {'name': p, 'summary_line': _first_sentence(by_name[p].get('summary') or '')}
+            for p in (center_row.get('inherits_from') or [])
+            if p in by_name
+        ]
+        children = [
+            {
+                'name': r.get('name'),
+                'summary_line': _first_sentence(r.get('summary') or ''),
+            }
+            for r in rows
+            if center_name in (r.get('inherits_from') or [])
+        ][:limit]
+        center_parents = set(center_row.get('inherits_from') or [])
+        siblings = [
+            {
+                'name': r.get('name'),
+                'summary_line': _first_sentence(r.get('summary') or ''),
+            }
+            for r in rows
+            if r.get('name') != center_name
+            and center_parents & set(r.get('inherits_from') or [])
+        ][:limit]
 
-        # If we only have a UUID, try to find center node in results
-        if node_uuid and not center_node_result:
-            for n in results.nodes or []:
-                if n.uuid == node_uuid:
-                    center_node_result = {
-                        'uuid': n.uuid,
-                        'name': n.name,
-                        'labels': n.labels or [],
-                        'created_at': n.created_at.isoformat() if n.created_at else None,
-                        'summary': n.summary,
-                        'group_id': n.group_id,
-                        'attributes': {
-                            k: v
-                            for k, v in (n.attributes or {}).items()
-                            if 'embedding' not in k.lower()
-                        },
-                    }
-                    break
+        # Connected classes: direct neighbors with previews, plus (depth>=2)
+        # a name-only second hop.
+        seen: set[str] = {center_name}
+        neighbors: list[dict[str, Any]] = []
+        for rel in outgoing + incoming:
+            other = rel.get('target') or rel.get('source')
+            if not other or other in seen or other not in by_name:
+                continue
+            seen.add(other)
+            neighbors.append(
+                {
+                    'name': other,
+                    'summary_line': _first_sentence(by_name[other].get('summary') or ''),
+                    'via': rel['name'],
+                }
+            )
+        if depth >= 2:
+            for n in list(neighbors):
+                for r in rel_rows:
+                    if len(neighbors) >= limit:
+                        break
+                    if (
+                        r.get('source_entity') == n['name']
+                        and r.get('target_entity') not in seen
+                        and r.get('target_entity') in by_name
+                    ):
+                        seen.add(r['target_entity'])
+                        neighbors.append({'name': r['target_entity'], 'via': r.get('name')})
+        neighbors = neighbors[:limit]
 
-        return ExploreResponse(
-            message=f'Ontology: explored "{node_name or node_uuid}": {len(node_results)} nodes, {len(edge_results)} edges',
-            center_node=center_node_result,
-            nodes=node_results,
-            edges=edge_results,
-            communities=community_results,
-        )
+        return {
+            'center': center,
+            'relationships': {'outgoing': outgoing, 'incoming': incoming},
+            'hierarchy': {'parents': parents, 'children': children, 'siblings': siblings},
+            'neighbors': neighbors,
+        }
 
     except Exception as e:
         logger.error(f'Error in explore_ontology: {e}')
@@ -1775,6 +1860,12 @@ async def get_ontology_structure() -> dict[str, Any]:
     Used by downstream services (e.g., aletheia-extraction) to map raw data
     fields to ontology-typed entities and relationships before ingestion.
 
+    Ontology access tiers: this tool is the SURFACE map — one compact entry
+    per class, cheap to read whole. For full documentation prose and
+    per-class property definitions use get_ontology_documentation (large);
+    to study ONE class in full context use explore_ontology; to find classes
+    by meaning use search_ontology (semantic recall).
+
     See docs/extraction-integration.md for the integration contract:
     response shape, adapter recipe (where applicable), and error modes.
     """
@@ -1832,6 +1923,54 @@ async def get_ontology_structure() -> dict[str, Any]:
     except Exception as e:
         logger.error(f'Error in get_ontology_structure: {e}')
         return {'error': f'Failed to retrieve ontology structure: {e}'}
+
+
+async def get_ontology_documentation() -> dict[str, Any]:
+    """Complete ontology reference: every class with full documentation prose
+    and per-class property definitions.
+
+    LARGE — intended for UIs, exports, and batch consumers. For agent use
+    prefer get_ontology_structure (the map), search_ontology (semantic
+    recall), or explore_ontology (one class in full context).
+
+    Returns {ontology_graph, entity_classes, relationship_classes}. Each
+    entry carries the structure-tool fields plus the FULL `summary`, parsed
+    `properties` (list of {name, label, range, comment, required}), and the
+    `identity` flag. Relationship entries also carry source/target
+    constraints.
+    """
+    if graphiti_service is None:
+        return {'error': 'Service not initialized. Please wait for startup to complete.'}
+
+    if not await graphiti_service._ensure_ontology_client():
+        return {'error': 'No ontology graph configured for this connector.'}
+    assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
+
+    try:
+        driver = graphiti_service.ontology_client.driver
+        ontology_graph_name = graphiti_service.config.graphiti.ontology_graph or ''
+
+        class_records, _, _ = await driver.execute_query(_ONTOLOGY_CLASS_CONTEXT_QUERY)
+
+        entity_classes = []
+        relationship_classes = []
+        for rec in class_records:
+            entry = _ontology_full_entry(rec)
+            if entry['ontology_type'] == 'relationship_class':
+                relationship_classes.append(entry)
+            else:
+                # class, abstract_class, or any other entity-level type
+                entity_classes.append(entry)
+
+        return {
+            'ontology_graph': ontology_graph_name,
+            'entity_classes': entity_classes,
+            'relationship_classes': relationship_classes,
+        }
+
+    except Exception as e:
+        logger.error(f'Error in get_ontology_documentation: {e}')
+        return {'error': f'Failed to retrieve ontology documentation: {e}'}
 
 
 async def run_cypher(query: str) -> dict[str, Any]:
@@ -1926,7 +2065,7 @@ async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
-    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'get_ontology_structure', 'run_cypher', 'profile_graph'):
+    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'get_ontology_structure', 'get_ontology_documentation', 'run_cypher', 'profile_graph'):
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
 
@@ -1936,6 +2075,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
     mcp.add_tool(get_schema, description=build_get_schema_description(profile))
     mcp.add_tool(get_ontology_structure)
+    mcp.add_tool(get_ontology_documentation)
     mcp.add_tool(run_cypher, description=build_run_cypher_description(profile))
     mcp.add_tool(profile_graph)
 
