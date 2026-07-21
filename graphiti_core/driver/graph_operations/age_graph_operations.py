@@ -307,9 +307,10 @@ class AGEGraphOperations(GraphOperationsInterface):
             'attributes': json.dumps(getattr(edge, 'attributes', {}) or {}),
         }
         await driver.execute_query(
-            f'MATCH (a:Entity {{uuid: {_cy(edge.source_node_uuid)}}}), '
-            f'(b:Entity {{uuid: {_cy(edge.target_node_uuid)}}}) '
-            f'MERGE (a)-[r:RELATES_TO {{uuid: {_cy(edge.uuid)}}}]->(b) SET r += {_map(props)}'
+            f'MATCH (a), (b) WHERE a.uuid = {_cy(edge.source_node_uuid)} '
+            f'AND b.uuid = {_cy(edge.target_node_uuid)} '
+            f'MERGE (a)-[r:{_edge_label(getattr(edge, "name", ""))} {{uuid: {_cy(edge.uuid)}}}]->(b) '
+            f'SET r += {_map(props)}'
         )
         content = (getattr(edge, 'name', '') or '') + '\n' + (getattr(edge, 'fact', '') or '')
         await driver.execute_sql(
@@ -346,7 +347,7 @@ class AGEGraphOperations(GraphOperationsInterface):
 
     async def edge_get_by_uuid(self, _cls: Any, driver: Any, uuid: str) -> Any:
         records, _, _ = await driver.execute_query(
-            f'MATCH ()-[r:RELATES_TO {{uuid: {_cy(uuid)}}}]->() RETURN properties(r) AS props'
+            f'MATCH ()-[r]->() WHERE r.uuid = {_cy(uuid)} RETURN properties(r) AS props'
         )
         if not records:
             from graphiti_core.errors import EdgeNotFoundError
@@ -359,7 +360,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             return []
         in_list = ', '.join(_cy(u) for u in uuids)
         records, _, _ = await driver.execute_query(
-            f'MATCH ()-[r:RELATES_TO]->() WHERE r.uuid IN [{in_list}] RETURN properties(r) AS props'
+            f'MATCH ()-[r]->() WHERE r.uuid IN [{in_list}] RETURN properties(r) AS props'
         )
         return [self._hydrate_edge(_cls, r['props']) for r in records]
 
@@ -367,14 +368,14 @@ class AGEGraphOperations(GraphOperationsInterface):
         self, _cls: Any, driver: Any, source_node_uuid: str, target_node_uuid: str
     ) -> list[Any]:
         records, _, _ = await driver.execute_query(
-            f'MATCH (a:Entity {{uuid: {_cy(source_node_uuid)}}})-[r:RELATES_TO]->'
-            f'(b:Entity {{uuid: {_cy(target_node_uuid)}}}) RETURN properties(r) AS props'
+            f'MATCH (a)-[r]->(b) WHERE a.uuid = {_cy(source_node_uuid)} '
+            f'AND b.uuid = {_cy(target_node_uuid)} RETURN properties(r) AS props'
         )
         return [self._hydrate_edge(_cls, r['props']) for r in records]
 
     async def edge_get_by_node_uuid(self, _cls: Any, driver: Any, node_uuid: str) -> list[Any]:
         records, _, _ = await driver.execute_query(
-            f'MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) '
+            f'MATCH (a)-[r]->(b) '
             f'WHERE a.uuid = {_cy(node_uuid)} OR b.uuid = {_cy(node_uuid)} '
             f'RETURN properties(r) AS props'
         )
@@ -506,9 +507,10 @@ class AGEGraphOperations(GraphOperationsInterface):
             'attributes': json.dumps(attributes, default=str),
         }
         await driver.execute_query(
-            f'MATCH (a:Entity {{uuid: {_cy(d["source_node_uuid"])}}}), '
-            f'(b:Entity {{uuid: {_cy(d["target_node_uuid"])}}}) '
-            f'MERGE (a)-[r:RELATES_TO {{uuid: {_cy(d["uuid"])}}}]->(b) SET r += {_map(props)}'
+            f'MATCH (a), (b) WHERE a.uuid = {_cy(d["source_node_uuid"])} '
+            f'AND b.uuid = {_cy(d["target_node_uuid"])} '
+            f'MERGE (a)-[r:{_edge_label(d.get("name"))} {{uuid: {_cy(d["uuid"])}}}]->(b) '
+            f'SET r += {_map(props)}'
         )
         content = (d.get('name') or '') + '\n' + (d.get('fact') or '')
         await driver.execute_sql(

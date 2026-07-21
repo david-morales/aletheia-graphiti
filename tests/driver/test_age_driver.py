@@ -272,3 +272,47 @@ async def test_node_save_uses_leaf_label_and_roundtrips(age_driver):
     got = await ops.node_get_by_uuid(EntityNode, age_driver, detencion.uuid)
     assert got.name == 'Detencion de KHADIJA DAOUD en 42'
     assert 'Detencion' in got.labels and 'RolInvolucramiento' in got.labels
+
+
+@pytest.mark.asyncio
+async def test_edge_save_uses_typed_label_with_fallback(age_driver):
+    from datetime import datetime, timezone
+
+    from graphiti_core.edges import EntityEdge
+    from graphiti_core.nodes import EntityNode
+
+    ops = age_driver.graph_operations_interface
+    now = datetime.now(timezone.utc)
+    p = EntityNode(name='P', group_id='g', labels=['Entity', 'Persona'], created_at=now)
+    d = EntityNode(name='D', group_id='g', labels=['Entity', 'Detencion'], created_at=now)
+    p.name_embedding = None
+    d.name_embedding = None
+    await ops.node_save(p, age_driver)
+    await ops.node_save(d, age_driver)
+
+    typed = EntityEdge(
+        source_node_uuid=p.uuid, target_node_uuid=d.uuid,
+        name='ES_DETENIDO', fact='P es detenido', group_id='g', created_at=now,
+    )
+    typed.fact_embedding = None
+    await ops.edge_save(typed, age_driver)
+
+    messy = EntityEdge(
+        source_node_uuid=p.uuid, target_node_uuid=d.uuid,
+        name='was detained for (theft)', fact='narrative predicate', group_id='g', created_at=now,
+    )
+    messy.fact_embedding = None
+    await ops.edge_save(messy, age_driver)
+
+    # Typed edge gets its own AGE label; traversal across distinct vertex labels works.
+    recs, _, _ = await age_driver.execute_query(
+        'MATCH (:Persona)-[r:ES_DETENIDO]->(:Detencion) RETURN count(r) AS n'
+    )
+    assert recs == [{'n': 1}]
+    # Messy predicate falls back to RELATES_TO but keeps its name property.
+    recs, _, _ = await age_driver.execute_query('MATCH ()-[r:RELATES_TO]->() RETURN count(r) AS n')
+    assert recs == [{'n': 1}]
+    got = await ops.edge_get_by_uuid(EntityEdge, age_driver, messy.uuid)
+    assert got.name == 'was detained for (theft)'
+    both = await ops.edge_get_between_nodes(EntityEdge, age_driver, p.uuid, d.uuid)
+    assert {e.uuid for e in both} == {typed.uuid, messy.uuid}
