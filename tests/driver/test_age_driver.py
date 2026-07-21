@@ -57,3 +57,35 @@ async def test_build_indices_idempotent_and_clear_data_empties(age_driver):
     await age_driver.graph_operations_interface.clear_data(age_driver, group_ids=None)
     records, _, _ = await age_driver.execute_query('MATCH (n) RETURN count(n) AS n')
     assert records == [{'n': 0}]
+
+
+@pytest.mark.asyncio
+async def test_node_save_and_get_roundtrip(age_driver):
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import EntityNode
+
+    ops = age_driver.graph_operations_interface
+    node = EntityNode(
+        name='KHADIJA DAOUD',
+        group_id='g',
+        labels=['Entity', 'Persona'],
+        created_at=datetime.now(timezone.utc),
+        summary='persona detenida',
+        attributes={'nacionalidad': 'MA'},
+    )
+    node.name_embedding = [0.1] * age_driver.embedding_dim
+
+    await ops.node_save(node, age_driver)
+
+    got = await ops.node_get_by_uuid(EntityNode, age_driver, node.uuid)
+    assert got.uuid == node.uuid
+    assert got.name == 'KHADIJA DAOUD'
+    assert 'Persona' in got.labels
+    assert got.attributes.get('nacionalidad') == 'MA'
+
+    # embeddings load lazily from the pgvector shadow table
+    got.name_embedding = None
+    await ops.node_load_embeddings(got, age_driver)
+    assert got.name_embedding is not None
+    assert len(got.name_embedding) == age_driver.embedding_dim
