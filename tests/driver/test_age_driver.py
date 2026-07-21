@@ -31,3 +31,14 @@ async def test_extensions_available():
         assert str(val) == '1'
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_driver_connects_and_runs_cypher(age_driver):
+    """AGEDriver connects, declares provider AGE, and runs a Cypher aggregation."""
+    from graphiti_core.driver.driver import GraphProvider
+
+    assert age_driver.provider == GraphProvider.AGE
+    records, header, _ = await age_driver.execute_query('MATCH (n) RETURN count(n) AS n')
+    assert records == [{'n': 0}]
+    assert header == ['n']
