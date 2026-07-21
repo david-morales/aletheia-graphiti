@@ -15,6 +15,7 @@ Write strategy (avoids AGE's cypher() parameter friction):
 """
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -54,6 +55,34 @@ def _cy(value: Any) -> str:
 def _map(props: dict[str, Any]) -> str:
     """Build a Cypher map literal from a dict with identifier-safe keys."""
     return '{' + ', '.join(f'{k}: {_cy(v)}' for k, v in props.items()) + '}'
+
+
+_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _node_label(labels: Any) -> str:
+    """AGE vertex label = the most-specific (leaf) ontology class.
+
+    Graphiti stores a label list like ['Entity', 'RolInvolucramiento', 'Detencion'];
+    the last identifier-safe, non-'Entity' label is the leaf. Falls back to 'Entity'
+    (Graphiti's base label, and the narrative-extraction default). The full list is
+    still persisted in the `labels` property for abstract-tier filtering.
+    """
+    for lbl in reversed(list(labels or [])):
+        if lbl and lbl != 'Entity' and _IDENT_RE.match(str(lbl)):
+            return str(lbl)
+    return 'Entity'
+
+
+def _edge_label(name: Any) -> str:
+    """AGE edge label = the relationship type when identifier-safe, else RELATES_TO.
+
+    Deterministic-projection edges use exact ontology edge types (ES_DETENIDO,
+    EN_PARTE, INVOLUCRA_ARMA, …) → typed labels. Narrative-extracted edges carry
+    free-text predicates that are not valid labels → RELATES_TO fallback. The
+    original name is always preserved in the `name` property.
+    """
+    return str(name) if name and _IDENT_RE.match(str(name)) else 'RELATES_TO'
 
 
 def _vec(embedding: Any) -> str | None:
@@ -110,7 +139,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'attributes': json.dumps(getattr(node, 'attributes', {}) or {}),
         }
         await driver.execute_query(
-            f'MERGE (n:Entity {{uuid: {_cy(node.uuid)}}}) SET n += {_map(props)}'
+            f'MERGE (n:{_node_label(node.labels)} {{uuid: {_cy(node.uuid)}}}) SET n += {_map(props)}'
         )
         content = (node.name or '') + '\n' + (getattr(node, 'summary', '') or '')
         await driver.execute_sql(
@@ -138,7 +167,7 @@ class AGEGraphOperations(GraphOperationsInterface):
 
     async def node_get_by_uuid(self, _cls: Any, driver: Any, uuid: str) -> Any:
         records, _, _ = await driver.execute_query(
-            f'MATCH (n:Entity {{uuid: {_cy(uuid)}}}) RETURN properties(n) AS props'
+            f'MATCH (n) WHERE n.uuid = {_cy(uuid)} RETURN properties(n) AS props'
         )
         if not records:
             from graphiti_core.errors import NodeNotFoundError
@@ -151,7 +180,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             return []
         in_list = ', '.join(_cy(u) for u in uuids)
         records, _, _ = await driver.execute_query(
-            f'MATCH (n:Entity) WHERE n.uuid IN [{in_list}] RETURN properties(n) AS props'
+            f'MATCH (n) WHERE n.uuid IN [{in_list}] RETURN properties(n) AS props'
         )
         return [self._hydrate_entity(_cls, r['props']) for r in records]
 
@@ -397,7 +426,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             return []
         in_list = ', '.join(_cy(u) for u in uuids)
         records, _, _ = await driver.execute_query(
-            f'MATCH (e:Episodic)-[:MENTIONS]->(n:Entity) WHERE e.uuid IN [{in_list}] '
+            f'MATCH (e:Episodic)-[:MENTIONS]->(n) WHERE e.uuid IN [{in_list}] '
             f'RETURN DISTINCT properties(n) AS props'
         )
         return [self._hydrate_entity(EntityNode, r['props']) for r in records]
@@ -434,7 +463,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'attributes': json.dumps(attributes, default=str),
         }
         await driver.execute_query(
-            f'MERGE (n:Entity {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}'
+            f'MERGE (n:{_node_label(d.get("labels"))} {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}'
         )
         await self._upsert_node_shadow(driver, d)
 

@@ -238,3 +238,37 @@ async def test_add_episode_then_hybrid_search_live(age_driver):
     assert results, 'hybrid search returned nothing after ingest'
     joined = ' '.join((getattr(r, 'fact', '') or '') for r in results).upper()
     assert 'KHADIJA' in joined
+
+
+@pytest.mark.asyncio
+async def test_node_save_uses_leaf_label_and_roundtrips(age_driver):
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import EntityNode
+
+    ops = age_driver.graph_operations_interface
+    now = datetime.now(timezone.utc)
+    persona = EntityNode(
+        name='KHADIJA DAOUD', group_id='g', labels=['Entity', 'Persona'], created_at=now
+    )
+    detencion = EntityNode(
+        name='Detencion de KHADIJA DAOUD en 42',
+        group_id='g',
+        labels=['Entity', 'RolInvolucramiento', 'Detencion'],
+        created_at=now,
+    )
+    persona.name_embedding = None
+    detencion.name_embedding = None
+    await ops.node_save(persona, age_driver)
+    await ops.node_save(detencion, age_driver)
+
+    # AGE vertex label is the leaf ontology class → idiomatic MATCH works.
+    recs, _, _ = await age_driver.execute_query('MATCH (p:Persona) RETURN count(p) AS n')
+    assert recs == [{'n': 1}]
+    recs, _, _ = await age_driver.execute_query('MATCH (d:Detencion) RETURN count(d) AS n')
+    assert recs == [{'n': 1}]
+
+    # Label-agnostic get-by-uuid still hydrates the full label list.
+    got = await ops.node_get_by_uuid(EntityNode, age_driver, detencion.uuid)
+    assert got.name == 'Detencion de KHADIJA DAOUD en 42'
+    assert 'Detencion' in got.labels and 'RolInvolucramiento' in got.labels
