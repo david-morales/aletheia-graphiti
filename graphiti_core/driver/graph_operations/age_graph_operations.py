@@ -257,3 +257,147 @@ class AGEGraphOperations(GraphOperationsInterface):
             episodes = [e for e in episodes if e.source == source]
         episodes.sort(key=lambda e: e.valid_at)
         return episodes[-last_n:] if last_n else episodes
+
+    # -------------------------------------------------------------- entity edges
+    async def edge_save(self, edge: Any, driver: Any) -> None:
+        def _iso(v: Any) -> Any:
+            return v.isoformat() if isinstance(v, datetime) else v
+
+        props = {
+            'uuid': edge.uuid,
+            'group_id': edge.group_id,
+            'source_node_uuid': edge.source_node_uuid,
+            'target_node_uuid': edge.target_node_uuid,
+            'name': getattr(edge, 'name', '') or '',
+            'fact': getattr(edge, 'fact', '') or '',
+            'episodes': list(getattr(edge, 'episodes', []) or []),
+            'created_at': edge.created_at.isoformat(),
+            'valid_at': _iso(getattr(edge, 'valid_at', None)),
+            'invalid_at': _iso(getattr(edge, 'invalid_at', None)),
+            'expired_at': _iso(getattr(edge, 'expired_at', None)),
+            'attributes': json.dumps(getattr(edge, 'attributes', {}) or {}),
+        }
+        await driver.execute_query(
+            f'MATCH (a:Entity {{uuid: {_cy(edge.source_node_uuid)}}}), '
+            f'(b:Entity {{uuid: {_cy(edge.target_node_uuid)}}}) '
+            f'MERGE (a)-[r:RELATES_TO {{uuid: {_cy(edge.uuid)}}}]->(b) SET r += {_map(props)}'
+        )
+        content = (getattr(edge, 'name', '') or '') + '\n' + (getattr(edge, 'fact', '') or '')
+        await driver.execute_sql(
+            f"""INSERT INTO {driver._edge_tbl}
+                (uuid, group_id, source_node_uuid, target_node_uuid, content, fact_embedding)
+                VALUES ($1, $2, $3, $4, $5, $6::vector)
+                ON CONFLICT (uuid) DO UPDATE SET
+                    group_id = EXCLUDED.group_id,
+                    source_node_uuid = EXCLUDED.source_node_uuid,
+                    target_node_uuid = EXCLUDED.target_node_uuid,
+                    content = EXCLUDED.content,
+                    fact_embedding = EXCLUDED.fact_embedding""",
+            edge.uuid, edge.group_id, edge.source_node_uuid, edge.target_node_uuid,
+            content, _vec(getattr(edge, 'fact_embedding', None)),
+        )
+
+    def _hydrate_edge(self, cls: Any, props: dict[str, Any]) -> Any:
+        raw_attrs = props.get('attributes')
+        attributes = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
+        return cls(
+            uuid=props['uuid'],
+            group_id=props['group_id'],
+            source_node_uuid=props['source_node_uuid'],
+            target_node_uuid=props['target_node_uuid'],
+            name=props.get('name') or '',
+            fact=props.get('fact') or '',
+            episodes=props.get('episodes') or [],
+            created_at=_parse_dt(props.get('created_at')),
+            valid_at=_parse_dt(props.get('valid_at')),
+            invalid_at=_parse_dt(props.get('invalid_at')),
+            expired_at=_parse_dt(props.get('expired_at')),
+            attributes=attributes,
+        )
+
+    async def edge_get_by_uuid(self, _cls: Any, driver: Any, uuid: str) -> Any:
+        records, _, _ = await driver.execute_query(
+            f'MATCH ()-[r:RELATES_TO {{uuid: {_cy(uuid)}}}]->() RETURN properties(r) AS props'
+        )
+        if not records:
+            from graphiti_core.errors import EdgeNotFoundError
+
+            raise EdgeNotFoundError(uuid)
+        return self._hydrate_edge(_cls, records[0]['props'])
+
+    async def edge_get_by_uuids(self, _cls: Any, driver: Any, uuids: list[str]) -> list[Any]:
+        if not uuids:
+            return []
+        in_list = ', '.join(_cy(u) for u in uuids)
+        records, _, _ = await driver.execute_query(
+            f'MATCH ()-[r:RELATES_TO]->() WHERE r.uuid IN [{in_list}] RETURN properties(r) AS props'
+        )
+        return [self._hydrate_edge(_cls, r['props']) for r in records]
+
+    async def edge_get_between_nodes(
+        self, _cls: Any, driver: Any, source_node_uuid: str, target_node_uuid: str
+    ) -> list[Any]:
+        records, _, _ = await driver.execute_query(
+            f'MATCH (a:Entity {{uuid: {_cy(source_node_uuid)}}})-[r:RELATES_TO]->'
+            f'(b:Entity {{uuid: {_cy(target_node_uuid)}}}) RETURN properties(r) AS props'
+        )
+        return [self._hydrate_edge(_cls, r['props']) for r in records]
+
+    async def edge_get_by_node_uuid(self, _cls: Any, driver: Any, node_uuid: str) -> list[Any]:
+        records, _, _ = await driver.execute_query(
+            f'MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) '
+            f'WHERE a.uuid = {_cy(node_uuid)} OR b.uuid = {_cy(node_uuid)} '
+            f'RETURN properties(r) AS props'
+        )
+        return [self._hydrate_edge(_cls, r['props']) for r in records]
+
+    async def edge_load_embeddings(self, edge: Any, driver: Any) -> None:
+        rows = await driver.execute_sql(
+            f'SELECT fact_embedding FROM {driver._edge_tbl} WHERE uuid = $1', edge.uuid
+        )
+        if rows:
+            edge.fact_embedding = _parse_vec(rows[0]['fact_embedding'])
+
+    async def edge_load_embeddings_bulk(
+        self, driver: Any, edges: list[Any], batch_size: int = 100
+    ) -> dict[str, list[float]]:
+        uuids = [e.uuid for e in edges]
+        if not uuids:
+            return {}
+        rows = await driver.execute_sql(
+            f'SELECT uuid, fact_embedding FROM {driver._edge_tbl} WHERE uuid = ANY($1::text[])',
+            uuids,
+        )
+        by_uuid = {r['uuid']: _parse_vec(r['fact_embedding']) for r in rows}
+        for e in edges:
+            if by_uuid.get(e.uuid) is not None:
+                e.fact_embedding = by_uuid[e.uuid]
+        return {k: v for k, v in by_uuid.items() if v is not None}
+
+    # ------------------------------------------------------------ episodic edges
+    async def episodic_edge_save(self, edge: Any, driver: Any) -> None:
+        props = {
+            'uuid': edge.uuid,
+            'group_id': edge.group_id,
+            'source_node_uuid': edge.source_node_uuid,
+            'target_node_uuid': edge.target_node_uuid,
+            'created_at': edge.created_at.isoformat(),
+        }
+        await driver.execute_query(
+            f'MATCH (e:Episodic {{uuid: {_cy(edge.source_node_uuid)}}}), '
+            f'(n:Entity {{uuid: {_cy(edge.target_node_uuid)}}}) '
+            f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(edge.uuid)}}}]->(n) SET r += {_map(props)}'
+        )
+
+    async def get_mentioned_nodes(self, driver: Any, episodes: list[Any]) -> list[Any]:
+        from graphiti_core.nodes import EntityNode
+
+        uuids = [e.uuid for e in episodes]
+        if not uuids:
+            return []
+        in_list = ', '.join(_cy(u) for u in uuids)
+        records, _, _ = await driver.execute_query(
+            f'MATCH (e:Episodic)-[:MENTIONS]->(n:Entity) WHERE e.uuid IN [{in_list}] '
+            f'RETURN DISTINCT properties(n) AS props'
+        )
+        return [self._hydrate_entity(EntityNode, r['props']) for r in records]

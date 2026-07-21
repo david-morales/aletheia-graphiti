@@ -89,3 +89,41 @@ async def test_node_save_and_get_roundtrip(age_driver):
     await ops.node_load_embeddings(got, age_driver)
     assert got.name_embedding is not None
     assert len(got.name_embedding) == age_driver.embedding_dim
+
+
+@pytest.mark.asyncio
+async def test_edge_save_and_get_between_nodes(age_driver):
+    from datetime import datetime, timezone
+
+    from graphiti_core.edges import EntityEdge
+    from graphiti_core.nodes import EntityNode
+
+    ops = age_driver.graph_operations_interface
+    now = datetime.now(timezone.utc)
+    dim = age_driver.embedding_dim
+    a = EntityNode(name='A', group_id='g', labels=['Entity'], created_at=now)
+    b = EntityNode(name='B', group_id='g', labels=['Entity'], created_at=now)
+    a.name_embedding = [0.0] * dim
+    b.name_embedding = [0.0] * dim
+    await ops.node_save(a, age_driver)
+    await ops.node_save(b, age_driver)
+
+    edge = EntityEdge(
+        source_node_uuid=a.uuid,
+        target_node_uuid=b.uuid,
+        name='RELATES_TO',
+        fact='A relates to B',
+        group_id='g',
+        created_at=now,
+    )
+    edge.fact_embedding = [0.2] * dim
+    await ops.edge_save(edge, age_driver)
+
+    got = await ops.edge_get_between_nodes(EntityEdge, age_driver, a.uuid, b.uuid)
+    assert len(got) == 1
+    assert got[0].uuid == edge.uuid
+    assert got[0].fact == 'A relates to B'
+
+    got[0].fact_embedding = None
+    await ops.edge_load_embeddings(got[0], age_driver)
+    assert got[0].fact_embedding is not None and len(got[0].fact_embedding) == dim
