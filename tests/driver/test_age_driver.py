@@ -127,3 +127,35 @@ async def test_edge_save_and_get_between_nodes(age_driver):
     got[0].fact_embedding = None
     await ops.edge_load_embeddings(got[0], age_driver)
     assert got[0].fact_embedding is not None and len(got[0].fact_embedding) == dim
+
+
+@pytest.mark.asyncio
+async def test_node_similarity_search_orders_by_cosine(age_driver):
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import EntityNode
+    from graphiti_core.search.search_filters import SearchFilters
+
+    ops = age_driver.graph_operations_interface
+    search = age_driver.search_interface
+    now = datetime.now(timezone.utc)
+    d = age_driver.embedding_dim
+
+    near = EntityNode(name='near', group_id='g', labels=['Entity'], created_at=now)
+    far = EntityNode(name='far', group_id='g', labels=['Entity'], created_at=now)
+    near.name_embedding = [1.0] + [0.0] * (d - 1)
+    far.name_embedding = [0.0] * (d - 1) + [1.0]
+    await ops.node_save(near, age_driver)
+    await ops.node_save(far, age_driver)
+
+    results = await search.node_similarity_search(
+        age_driver,
+        search_vector=[1.0] + [0.0] * (d - 1),
+        search_filter=SearchFilters(),
+        group_ids=['g'],
+        limit=10,
+        min_score=0.5,
+    )
+    assert results, 'expected at least the near node'
+    assert results[0].uuid == near.uuid
+    assert far.uuid not in [r.uuid for r in results]  # cosine 0 < min_score 0.5
