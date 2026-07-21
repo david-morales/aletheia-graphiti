@@ -159,3 +159,25 @@ async def test_node_similarity_search_orders_by_cosine(age_driver):
     assert results, 'expected at least the near node'
     assert results[0].uuid == near.uuid
     assert far.uuid not in [r.uuid for r in results]  # cosine 0 < min_score 0.5
+
+
+@pytest.mark.asyncio
+async def test_node_fulltext_search_matches_terms(age_driver):
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import EntityNode
+    from graphiti_core.search.search_filters import SearchFilters
+
+    ops = age_driver.graph_operations_interface
+    search = age_driver.search_interface
+    now = datetime.now(timezone.utc)
+    d = age_driver.embedding_dim
+    for nm, summ in [('KHADIJA DAOUD', 'detenida por hurto'), ('JUAN PEREZ', 'testigo de accidente')]:
+        n = EntityNode(name=nm, group_id='g', labels=['Entity'], created_at=now, summary=summ)
+        n.name_embedding = [0.0] * d
+        await ops.node_save(n, age_driver)
+
+    hits = await search.node_fulltext_search(
+        age_driver, 'KHADIJA', SearchFilters(), group_ids=['g'], limit=10
+    )
+    assert [h.name for h in hits][:1] == ['KHADIJA DAOUD']

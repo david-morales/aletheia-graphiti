@@ -112,3 +112,55 @@ class AGESearch(SearchInterface):
             r['uuid'] for r in rows if r['score'] is not None and float(r['score']) >= min_score
         ]
         return await self._hydrate_edges_in_order(driver, ranked)
+
+    # ----------------------------------------------------------- keyword search
+    async def node_fulltext_search(
+        self,
+        driver: Any,
+        query: str,
+        search_filter: Any,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        if not query or not query.strip():
+            return []
+        args: list[Any] = [query]
+        group_clause = ''
+        if group_ids:
+            group_clause = 'AND group_id = ANY($2::text[])'
+            args.append(group_ids)
+        rows = await driver.execute_sql(
+            f"""SELECT uuid, ts_rank_cd(tsv, plainto_tsquery('simple', $1)) AS rank
+                FROM {driver._node_tbl}
+                WHERE tsv @@ plainto_tsquery('simple', $1) {group_clause}
+                ORDER BY rank DESC
+                LIMIT {int(limit)}""",
+            *args,
+        )
+        return await self._hydrate_nodes_in_order(driver, [r['uuid'] for r in rows])
+
+    async def edge_fulltext_search(
+        self,
+        driver: Any,
+        query: str,
+        search_filter: Any,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+        edge_types: list[str] | None = None,
+    ) -> list[Any]:
+        if not query or not query.strip():
+            return []
+        args: list[Any] = [query]
+        group_clause = ''
+        if group_ids:
+            group_clause = 'AND group_id = ANY($2::text[])'
+            args.append(group_ids)
+        rows = await driver.execute_sql(
+            f"""SELECT uuid, ts_rank_cd(tsv, plainto_tsquery('simple', $1)) AS rank
+                FROM {driver._edge_tbl}
+                WHERE tsv @@ plainto_tsquery('simple', $1) {group_clause}
+                ORDER BY rank DESC
+                LIMIT {int(limit)}""",
+            *args,
+        )
+        return await self._hydrate_edges_in_order(driver, [r['uuid'] for r in rows])
