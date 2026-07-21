@@ -181,3 +181,60 @@ async def test_node_fulltext_search_matches_terms(age_driver):
         age_driver, 'KHADIJA', SearchFilters(), group_ids=['g'], limit=10
     )
     assert [h.name for h in hits][:1] == ['KHADIJA DAOUD']
+
+
+@pytest.mark.skipif(
+    os.environ.get('AGE_RUN_LIVE_LLM') != '1',
+    reason='Live gate: set AGE_RUN_LIVE_LLM=1 with ANTHROPIC_API_KEY + OPENAI_API_KEY to run.',
+)
+@pytest.mark.asyncio
+async def test_add_episode_then_hybrid_search_live(age_driver):
+    """Phase 0 GATE (live): real Graphiti add_episode + hybrid search on AGE+pgvector.
+
+    Proves the full pipeline round-trips: structured + narrative extraction into the
+    AGE graph, then hybrid retrieval. Uses Anthropic for the LLM + OpenAI for
+    embeddings (route matches the aletheia deploy config). Skipped by default.
+    """
+    from datetime import datetime, timezone
+
+    from graphiti_core import Graphiti
+    from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+    from graphiti_core.llm_client.anthropic_client import AnthropicClient
+    from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.nodes import EpisodeType
+
+    llm = AnthropicClient(
+        config=LLMConfig(
+            api_key=os.environ['ANTHROPIC_API_KEY'],
+            model='claude-haiku-4-5-20251001',
+            small_model='claude-haiku-4-5-20251001',
+        )
+    )
+    emb = OpenAIEmbedder(
+        config=OpenAIEmbedderConfig(
+            api_key=os.environ['OPENAI_API_KEY'],
+            embedding_model='text-embedding-3-small',
+            embedding_dim=age_driver.embedding_dim,
+        )
+    )
+    g = Graphiti(graph_driver=age_driver, llm_client=llm, embedder=emb)
+
+    await g.add_episode(
+        name='parte-1',
+        episode_body=(
+            'KHADIJA DAOUD fue detenida por hurto en Madrid. '
+            'Menciono a un tal "El Rubio", con quien contacto por el telefono 612345678.'
+        ),
+        source_description='parte de intervencion',
+        reference_time=datetime.now(timezone.utc),
+        source=EpisodeType.text,
+        group_id='live',
+    )
+
+    recs, _, _ = await age_driver.execute_query('MATCH (n:Entity) RETURN count(n) AS n')
+    assert recs[0]['n'] >= 2  # structured entity + at least one narrative-derived entity
+
+    results = await g.search('KHADIJA DAOUD', group_ids=['live'])
+    assert results, 'hybrid search returned nothing after ingest'
+    joined = ' '.join((getattr(r, 'fact', '') or '') for r in results).upper()
+    assert 'KHADIJA' in joined

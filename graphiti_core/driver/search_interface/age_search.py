@@ -73,6 +73,21 @@ class AGESearch(SearchInterface):
         ]
         return await self._hydrate_nodes_in_order(driver, ranked)
 
+    async def node_summary_similarity_search(
+        self,
+        driver: Any,
+        search_vector: list[float],
+        search_filter: Any,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+        min_score: float = 0.7,
+    ) -> list[Any]:
+        # Spike simplification: summaries are not embedded in the shadow table
+        # (only name embeddings are indexed), so summary-similarity contributes
+        # no candidates. Node dedup/resolution still works via name fulltext +
+        # name similarity. Indexing summary embeddings is a later refinement.
+        return []
+
     async def edge_similarity_search(
         self,
         driver: Any,

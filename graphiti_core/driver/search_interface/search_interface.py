@@ -134,6 +134,26 @@ class SearchInterface(BaseModel):
         """
         raise NotImplementedError
 
+    async def node_summary_similarity_search(
+        self,
+        driver: Any,
+        search_vector: list[float],
+        search_filter: Any,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+        min_score: float = 0.7,
+    ) -> list[Any]:
+        """
+        Perform vector similarity search over node summary embeddings.
+
+        Same contract as node_similarity_search but against the node's summary
+        embedding rather than its name embedding.
+
+        Returns:
+            list[EntityNode]: List of matching EntityNode objects
+        """
+        raise NotImplementedError
+
     async def episode_fulltext_search(
         self,
         driver: Any,

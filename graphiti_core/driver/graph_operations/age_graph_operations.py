@@ -401,3 +401,139 @@ class AGEGraphOperations(GraphOperationsInterface):
             f'RETURN DISTINCT properties(n) AS props'
         )
         return [self._hydrate_entity(EntityNode, r['props']) for r in records]
+
+    # ----------------------------------------------------------------- bulk save
+    # add_episode persists via the bulk path, which passes plain dicts (attributes
+    # flattened, embeddings included) rather than node/edge objects. These
+    # field-writers persist a single dict; the bulk methods loop over them
+    # (per-item; batched COPY is a later perf refinement).
+    @staticmethod
+    def _iso(v: Any) -> Any:
+        return v.isoformat() if isinstance(v, datetime) else v
+
+    async def _upsert_node_shadow(self, driver: Any, d: dict[str, Any]) -> None:
+        content = (d.get('name') or '') + '\n' + (d.get('summary') or '')
+        await driver.execute_sql(
+            f"""INSERT INTO {driver._node_tbl} (uuid, group_id, content, name_embedding)
+                VALUES ($1, $2, $3, $4::vector)
+                ON CONFLICT (uuid) DO UPDATE SET
+                    group_id = EXCLUDED.group_id, content = EXCLUDED.content,
+                    name_embedding = EXCLUDED.name_embedding""",
+            d['uuid'], d['group_id'], content, _vec(d.get('name_embedding')),
+        )
+
+    async def _write_entity_from_fields(self, driver: Any, d: dict[str, Any]) -> None:
+        attributes = {k: v for k, v in d.items() if k not in _KNOWN_NODE_KEYS}
+        props = {
+            'uuid': d['uuid'],
+            'name': d.get('name') or '',
+            'group_id': d['group_id'],
+            'summary': d.get('summary') or '',
+            'created_at': self._iso(d.get('created_at')),
+            'labels': list(d.get('labels') or []),
+            'attributes': json.dumps(attributes, default=str),
+        }
+        await driver.execute_query(
+            f'MERGE (n:Entity {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}'
+        )
+        await self._upsert_node_shadow(driver, d)
+
+    async def _write_episode_from_fields(self, driver: Any, d: dict[str, Any]) -> None:
+        source = d.get('source')
+        props = {
+            'uuid': d['uuid'],
+            'name': d.get('name') or '',
+            'group_id': d['group_id'],
+            'source': source.value if hasattr(source, 'value') else str(source),
+            'source_description': d.get('source_description') or '',
+            'content': d.get('content') or '',
+            'entity_edges': list(d.get('entity_edges') or []),
+            'created_at': self._iso(d.get('created_at')),
+            'valid_at': self._iso(d.get('valid_at')),
+        }
+        await driver.execute_query(
+            f'MERGE (e:Episodic {{uuid: {_cy(d["uuid"])}}}) SET e += {_map(props)}'
+        )
+
+    _KNOWN_EDGE_KEYS = {
+        'uuid', 'source_node_uuid', 'target_node_uuid', 'name', 'fact', 'group_id',
+        'episodes', 'created_at', 'expired_at', 'valid_at', 'invalid_at', 'fact_embedding',
+    }
+
+    async def _write_entity_edge_from_fields(self, driver: Any, d: dict[str, Any]) -> None:
+        attributes = {k: v for k, v in d.items() if k not in self._KNOWN_EDGE_KEYS}
+        props = {
+            'uuid': d['uuid'],
+            'group_id': d['group_id'],
+            'source_node_uuid': d['source_node_uuid'],
+            'target_node_uuid': d['target_node_uuid'],
+            'name': d.get('name') or '',
+            'fact': d.get('fact') or '',
+            'episodes': list(d.get('episodes') or []),
+            'created_at': self._iso(d.get('created_at')),
+            'valid_at': self._iso(d.get('valid_at')),
+            'invalid_at': self._iso(d.get('invalid_at')),
+            'expired_at': self._iso(d.get('expired_at')),
+            'attributes': json.dumps(attributes, default=str),
+        }
+        await driver.execute_query(
+            f'MATCH (a:Entity {{uuid: {_cy(d["source_node_uuid"])}}}), '
+            f'(b:Entity {{uuid: {_cy(d["target_node_uuid"])}}}) '
+            f'MERGE (a)-[r:RELATES_TO {{uuid: {_cy(d["uuid"])}}}]->(b) SET r += {_map(props)}'
+        )
+        content = (d.get('name') or '') + '\n' + (d.get('fact') or '')
+        await driver.execute_sql(
+            f"""INSERT INTO {driver._edge_tbl}
+                (uuid, group_id, source_node_uuid, target_node_uuid, content, fact_embedding)
+                VALUES ($1, $2, $3, $4, $5, $6::vector)
+                ON CONFLICT (uuid) DO UPDATE SET
+                    group_id = EXCLUDED.group_id,
+                    source_node_uuid = EXCLUDED.source_node_uuid,
+                    target_node_uuid = EXCLUDED.target_node_uuid,
+                    content = EXCLUDED.content, fact_embedding = EXCLUDED.fact_embedding""",
+            d['uuid'], d['group_id'], d['source_node_uuid'], d['target_node_uuid'],
+            content, _vec(d.get('fact_embedding')),
+        )
+
+    async def _write_episodic_edge_from_fields(self, driver: Any, d: dict[str, Any]) -> None:
+        props = {
+            'uuid': d['uuid'],
+            'group_id': d['group_id'],
+            'source_node_uuid': d['source_node_uuid'],
+            'target_node_uuid': d['target_node_uuid'],
+            'created_at': self._iso(d.get('created_at')),
+        }
+        await driver.execute_query(
+            f'MATCH (e:Episodic {{uuid: {_cy(d["source_node_uuid"])}}}), '
+            f'(n:Entity {{uuid: {_cy(d["target_node_uuid"])}}}) '
+            f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(d["uuid"])}}}]->(n) SET r += {_map(props)}'
+        )
+
+    async def node_save_bulk(
+        self, _cls: Any, driver: Any, transaction: Any, nodes: list[Any], batch_size: int = 100
+    ) -> None:
+        for d in nodes:
+            await self._write_entity_from_fields(driver, d)
+
+    async def episodic_node_save_bulk(
+        self, _cls: Any, driver: Any, transaction: Any, nodes: list[Any], batch_size: int = 100
+    ) -> None:
+        for d in nodes:
+            await self._write_episode_from_fields(driver, d)
+
+    async def edge_save_bulk(
+        self, _cls: Any, driver: Any, transaction: Any, edges: list[Any], batch_size: int = 100
+    ) -> None:
+        for d in edges:
+            await self._write_entity_edge_from_fields(driver, d)
+
+    async def episodic_edge_save_bulk(
+        self,
+        _cls: Any,
+        driver: Any,
+        transaction: Any,
+        episodic_edges: list[Any],
+        batch_size: int = 100,
+    ) -> None:
+        for d in episodic_edges:
+            await self._write_episodic_edge_from_fields(driver, d)
