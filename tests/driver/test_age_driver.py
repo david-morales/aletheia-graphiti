@@ -42,3 +42,18 @@ async def test_driver_connects_and_runs_cypher(age_driver):
     records, header, _ = await age_driver.execute_query('MATCH (n) RETURN count(n) AS n')
     assert records == [{'n': 0}]
     assert header == ['n']
+
+
+@pytest.mark.asyncio
+async def test_build_indices_idempotent_and_clear_data_empties(age_driver):
+    """build_indices is idempotent (fixture already ran it once); clear_data empties the graph."""
+    # second call must not error (shadow tables + indexes use IF NOT EXISTS)
+    await age_driver.build_indices_and_constraints()
+
+    await age_driver.execute_query("CREATE (n:Entity {uuid: 'x', group_id: 'g'})")
+    records, _, _ = await age_driver.execute_query('MATCH (n) RETURN count(n) AS n')
+    assert records == [{'n': 1}]
+
+    await age_driver.graph_operations_interface.clear_data(age_driver, group_ids=None)
+    records, _, _ = await age_driver.execute_query('MATCH (n) RETURN count(n) AS n')
+    assert records == [{'n': 0}]

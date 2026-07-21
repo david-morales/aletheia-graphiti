@@ -88,6 +88,29 @@ class AGEDriver(GraphDriver):
             )
         return self._pool
 
+    async def execute_sql(self, sql: str, *args: Any) -> list:
+        """Run plain SQL against the pool (used by the interface implementations
+        for pgvector/tsvector shadow-table access). Returns fetched rows."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetch(sql, *args)
+
+    # Shadow tables (pgvector + tsvector) keyed by node/edge uuid. AGE has no
+    # native vector or fulltext, so search runs against these, kept in sync by
+    # the graph_operations save methods. One pair per graph, in `public`.
+    @property
+    def _node_tbl(self) -> str:
+        return f'"{self._database}__node_search"'
+
+    @property
+    def _edge_tbl(self) -> str:
+        return f'"{self._database}__edge_search"'
+
+    @property
+    def _ix(self) -> str:
+        # index-name prefix; graph names use only safe identifier chars
+        return self._database
+
     # ---- agtype / RETURN-clause helpers (Phase 0: simple queries only) ----
 
     @staticmethod
@@ -172,21 +195,70 @@ class AGEDriver(GraphDriver):
         return bool(count)
 
     async def build_indices_and_constraints(self, delete_existing: bool = False):
+        dim = self.embedding_dim
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            if delete_existing and await self._graph_exists(conn):
-                await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+            if delete_existing:
+                if await self._graph_exists(conn):
+                    await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+                await conn.execute(f'DROP TABLE IF EXISTS {self._node_tbl} CASCADE')
+                await conn.execute(f'DROP TABLE IF EXISTS {self._edge_tbl} CASCADE')
             if not await self._graph_exists(conn):
                 await conn.execute('SELECT create_graph($1::name)', self._database)
-        # Task 3 adds the pgvector/tsvector shadow tables + indexes here.
+            await conn.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self._node_tbl} (
+                    uuid text PRIMARY KEY,
+                    group_id text NOT NULL,
+                    content text,
+                    name_embedding vector({dim}),
+                    tsv tsvector GENERATED ALWAYS AS
+                        (to_tsvector('simple', coalesce(content, ''))) STORED
+                )"""
+            )
+            await conn.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self._edge_tbl} (
+                    uuid text PRIMARY KEY,
+                    group_id text NOT NULL,
+                    source_node_uuid text,
+                    target_node_uuid text,
+                    content text,
+                    fact_embedding vector({dim}),
+                    tsv tsvector GENERATED ALWAYS AS
+                        (to_tsvector('simple', coalesce(content, ''))) STORED
+                )"""
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS {self._ix}_node_emb ON {self._node_tbl} '
+                f'USING hnsw (name_embedding vector_cosine_ops)'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS {self._ix}_node_tsv ON {self._node_tbl} USING gin (tsv)'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS {self._ix}_node_gid ON {self._node_tbl} (group_id)'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS {self._ix}_edge_emb ON {self._edge_tbl} '
+                f'USING hnsw (fact_embedding vector_cosine_ops)'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS {self._ix}_edge_tsv ON {self._edge_tbl} USING gin (tsv)'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS {self._ix}_edge_gid ON {self._edge_tbl} (group_id)'
+            )
 
     async def delete_all_indexes(self) -> None:
-        # Shadow-table indexes are created in Task 3; nothing to drop yet.
-        return None
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            for suffix in ('node_emb', 'node_tsv', 'node_gid', 'edge_emb', 'edge_tsv', 'edge_gid'):
+                await conn.execute(f'DROP INDEX IF EXISTS {self._ix}_{suffix}')
 
     async def drop_graph(self) -> None:
-        """Drop this driver's AGE graph (test teardown helper)."""
+        """Drop this driver's AGE graph + shadow tables (test teardown helper)."""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             if await self._graph_exists(conn):
                 await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+            await conn.execute(f'DROP TABLE IF EXISTS {self._node_tbl} CASCADE')
+            await conn.execute(f'DROP TABLE IF EXISTS {self._edge_tbl} CASCADE')
