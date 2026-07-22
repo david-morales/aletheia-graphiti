@@ -92,6 +92,43 @@ async def test_node_save_and_get_roundtrip(age_driver):
 
 
 @pytest.mark.asyncio
+async def test_node_attributes_are_queryable_map_not_json_string(age_driver):
+    """Regression: entity attributes must persist as a queryable agtype MAP so
+    `n.attributes.<field>` works in Cypher. They were previously json.dumps()'d to
+    an opaque string, so property access returned null and analysts were forced
+    into string-parsing that AGE's minimal string functions cannot do."""
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import EntityNode
+
+    ops = age_driver.graph_operations_interface
+    node = EntityNode(
+        name='ABDERRAHIM ABDELKADER',
+        group_id='g',
+        labels=['Entity', 'Actor', 'Persona'],
+        created_at=datetime.now(timezone.utc),
+        summary='',
+        attributes={'nacimiento_fecha': '2000-08-05', 'documento': 'DNI 86741644L'},
+    )
+    node.name_embedding = [0.1] * age_driver.embedding_dim
+    await ops.node_save(node, age_driver)
+
+    # the field is addressable as a map member (not a string blob), and date math
+    # over it is trivial — exactly the query an analyst age-bucketing would write.
+    recs, _, _ = await age_driver.execute_query(
+        f"MATCH (n) WHERE n.uuid = '{node.uuid}' "
+        'RETURN n.attributes.nacimiento_fecha AS f, '
+        'toInteger(substring(n.attributes.nacimiento_fecha, 0, 4)) AS yr'
+    )
+    assert recs[0]['f'] == '2000-08-05'
+    assert recs[0]['yr'] == 2000
+
+    # and it still round-trips through Graphiti hydration as a Python dict
+    got = await ops.node_get_by_uuid(EntityNode, age_driver, node.uuid)
+    assert got.attributes.get('documento') == 'DNI 86741644L'
+
+
+@pytest.mark.asyncio
 async def test_edge_save_and_get_between_nodes(age_driver):
     from datetime import datetime, timezone
 

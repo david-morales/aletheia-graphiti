@@ -39,6 +39,8 @@ def _cy(value: Any) -> str:
         return str(value)
     if isinstance(value, datetime):
         value = value.isoformat()
+    if isinstance(value, dict):
+        return _map(value)
     if isinstance(value, (list, tuple)):
         return '[' + ', '.join(_cy(v) for v in value) + ']'
     s = str(value)
@@ -52,12 +54,20 @@ def _cy(value: Any) -> str:
     return "'" + s + "'"
 
 
-def _map(props: dict[str, Any]) -> str:
-    """Build a Cypher map literal from a dict with identifier-safe keys."""
-    return '{' + ', '.join(f'{k}: {_cy(v)}' for k, v in props.items()) + '}'
-
-
 _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _map(props: dict[str, Any]) -> str:
+    """Build an agtype map literal from a dict — nested maps and lists round-trip
+    through `_cy`, so a value that is itself a dict becomes a queryable nested map
+    (e.g. `n.attributes.<field>`) rather than an opaque JSON string. Keys that are
+    not identifier-safe are double-quoted."""
+    parts = []
+    for k, v in props.items():
+        ks = str(k)
+        key = ks if _IDENT_RE.match(ks) else '"' + ks.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        parts.append(f'{key}: {_cy(v)}')
+    return '{' + ', '.join(parts) + '}'
 
 
 def _node_label(labels: Any) -> str:
@@ -136,7 +146,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'summary': getattr(node, 'summary', '') or '',
             'created_at': node.created_at.isoformat(),
             'labels': list(node.labels or []),
-            'attributes': json.dumps(getattr(node, 'attributes', {}) or {}),
+            'attributes': getattr(node, 'attributes', {}) or {},
         }
         await driver.execute_query(
             f'MERGE (n:{_node_label(node.labels)} {{uuid: {_cy(node.uuid)}}}) SET n += {_map(props)}'
@@ -304,7 +314,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'valid_at': _iso(getattr(edge, 'valid_at', None)),
             'invalid_at': _iso(getattr(edge, 'invalid_at', None)),
             'expired_at': _iso(getattr(edge, 'expired_at', None)),
-            'attributes': json.dumps(getattr(edge, 'attributes', {}) or {}),
+            'attributes': getattr(edge, 'attributes', {}) or {},
         }
         await driver.execute_query(
             f'MATCH (a), (b) WHERE a.uuid = {_cy(edge.source_node_uuid)} '
@@ -461,7 +471,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'summary': d.get('summary') or '',
             'created_at': self._iso(d.get('created_at')),
             'labels': list(d.get('labels') or []),
-            'attributes': json.dumps(attributes, default=str),
+            'attributes': attributes,
         }
         await driver.execute_query(
             f'MERGE (n:{_node_label(d.get("labels"))} {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}'
@@ -504,7 +514,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'valid_at': self._iso(d.get('valid_at')),
             'invalid_at': self._iso(d.get('invalid_at')),
             'expired_at': self._iso(d.get('expired_at')),
-            'attributes': json.dumps(attributes, default=str),
+            'attributes': attributes,
         }
         await driver.execute_query(
             f'MATCH (a), (b) WHERE a.uuid = {_cy(d["source_node_uuid"])} '
