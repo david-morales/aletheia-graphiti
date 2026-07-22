@@ -1,0 +1,22 @@
+# Postgres 16 + Apache AGE + pgvector for the AGE driver spike (Phase 0).
+# Binds to host port 5433 to stay clear of any local Postgres AND of FalkorDB
+# (6379/3001), which must never be touched.
+services:
+  age:
+    build:
+      context: .
+      dockerfile: Dockerfile.age
+    container_name: graphiti-age-spike
+    environment:
+      POSTGRES_USER: age
+      POSTGRES_PASSWORD: age
+      POSTGRES_DB: age_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./age-init.sql:/docker-entrypoint-initdb.d/age-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U age -d age_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

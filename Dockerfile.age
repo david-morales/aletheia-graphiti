@@ -1,0 +1,21 @@
+# PostgreSQL 18 + Apache AGE + pgvector, for the Graphiti AGE driver spike.
+# AGE is built from source (matching PG18); pgvector comes from the PGDG apt repo
+# that the official postgres image already configures.
+FROM postgres:18-bookworm
+
+ARG AGE_TAG=PG18/v1.8.0-rc0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git ca-certificates flex bison \
+      postgresql-server-dev-18 postgresql-18-pgvector \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${AGE_TAG}" https://github.com/apache/age.git /tmp/age \
+  && cd /tmp/age \
+  && make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
+  && make install PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
+  && rm -rf /tmp/age
+
+# Preload AGE so its types/functions are available; extensions are created by
+# the init script on first database initialization.
+CMD ["postgres", "-c", "shared_preload_libraries=age"]

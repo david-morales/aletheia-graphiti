@@ -872,6 +872,11 @@ async def node_summary_similarity_search(
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[EntityNode]:
     """Search nodes by summary embedding similarity."""
+    if driver.search_interface:
+        return await driver.search_interface.node_summary_similarity_search(
+            driver, search_vector, search_filter, group_ids, limit, min_score
+        )
+
     filter_queries, filter_params = node_search_filter_query_constructor(
         search_filter, driver.provider
     )
