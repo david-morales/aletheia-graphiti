@@ -75,12 +75,12 @@ flavours/                    # NEW package
                  #   execute_graph_query = driver._get_graph(_database).ro_query
                  #     -> normalized (records: list[dict], header: list[str]).
   age.py         # AgeFlavour(BaseFlavour): dialect_id="age-opencypher";
-                 #   dialect_reference = the AGE/openCypher teaching text (from PoC gotchas);
-                 #   check_dialect rejects [:A|B|C] disjunction + a variable named `id`
-                 #     (reject-with-hint, NOT auto-rewrite — renaming a var is semantically risky);
+                 #   dialect_reference = the AGE/openCypher teaching text (from PoC gotchas / scaffold age.py);
+                 #   check_dialect rejects ONLY a variable named `id` (reject-with-hint — renaming a var
+                 #     is semantically risky);
                  #   auto_fix = SAFE subset: LIMIT (via shared pipeline) + [:A|B|C] -> WHERE type(r) IN [...];
                  #   attribute_keys over the nested `attributes` agtype map;
-                 #   classify_execution_error maps AGE errors (`.id` on graphid, [:A|B|C] syntax, etc.);
+                 #   classify_execution_error maps AGE errors post-hoc as a net (`.id` on graphid, `|` syntax);
                  #   execute_graph_query = whitelist-guarded driver.execute_query -> (records, header).
 utils/cypher.py          # GENERIC pipeline. validate_and_sanitize(query, flavour) calls
                          #   flavour.check_dialect (2a) + flavour.auto_fix (2b); everything else unchanged.
@@ -118,10 +118,12 @@ class Flavour(Protocol):
   conflict-free).
 - **FalkorDbFlavour** — the existing machinery, relocated. `execute_graph_query` uses the
   DB-enforced `ro_query`.
-- **AgeFlavour** — mirrors the scaffold's `age.py`: safe auto-fix subset, `id`-reject-with-hint,
-  nested-map `attribute_keys`, AGE error classification; `execute_graph_query` uses the shared
-  whitelist guard + `execute_query` (AGE has no `ro_query` — accepted limitation carried from
-  the PoC).
+- **AgeFlavour** — reuses the scaffold `age.py` **dialect data** (`_AGE_DIALECT` text + the
+  `graphid`/`|` error-hint patterns) with the fork's **method shapes**: `check_dialect` rejects
+  only the `id`-variable (reject-with-hint); `auto_fix` = safe subset (LIMIT + `[:A|B|C]`→`WHERE
+  type(r) IN [...]`); `classify_execution_error` maps the `graphid` and `|` errors post-hoc as a
+  net; nested-map `attribute_keys`; `execute_graph_query` uses the shared whitelist guard +
+  `execute_query` (AGE has no `ro_query` — accepted limitation carried from the PoC).
 
 ### 3.3 Config + driver wiring
 
