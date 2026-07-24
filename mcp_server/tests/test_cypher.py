@@ -14,16 +14,23 @@ from utils.cypher import (
     DEFAULT_LIMIT,
     CypherError,
     SanitizedQuery,
-    _check_falkordb_dialect,
     _check_whitelist,
-    _fix_falkordb_dialect,
     _fix_llm_syntax,
     _inject_safety,
-    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
 )
+from flavours.falkordb import (
+    FalkorDbFlavour,
+    check_falkordb_dialect as _check_falkordb_dialect,
+    classify_falkordb_execution_error as classify_execution_error,
+    fix_falkordb_dialect as _fix_falkordb_dialect,
+)
+
+# FalkorDB flavour for validate_and_sanitize(query, flavour, ..., _FLAVOUR) calls (these tests
+# exercise FalkorDB dialect behavior through the now-flavour-driven pipeline).
+_FLAVOUR = FalkorDbFlavour()
 
 
 class TestDataModels:
@@ -562,52 +569,49 @@ class TestStage4SafetyInjection:
 
 class TestPipelineOrchestration:
     def test_clean_query_passes(self):
-        result = validate_and_sanitize('MATCH (n:Occurrence) RETURN n.name LIMIT 10')
+        result = validate_and_sanitize('MATCH (n:Occurrence) RETURN n.name LIMIT 10', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert result.auto_fixes == []
         assert result.effective_limit == 10
 
     def test_fixable_query_returns_fixes(self):
         result = validate_and_sanitize(
-            "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o"
-        )
+            "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o", _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert any('date' in f.lower() for f in result.auto_fixes)
         assert result.effective_limit == DEFAULT_LIMIT
 
     def test_write_query_rejected(self):
-        result = validate_and_sanitize('CREATE (n:Test {name: "test"})')
+        result = validate_and_sanitize('CREATE (n:Test {name: "test"})', _FLAVOUR)
         assert isinstance(result, CypherError)
         assert result.stage == 'security'
 
     def test_apoc_rejected_before_date_fix(self):
         result = validate_and_sanitize(
-            "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"
-        )
+            "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path", _FLAVOUR)
         assert isinstance(result, CypherError)
         assert result.reason == 'apoc_unsupported'
 
     def test_smart_quotes_fixed_then_dialect_fixed(self):
         result = validate_and_sanitize(
-            'MATCH (o) WHERE o.name = \u201cBoeing\u201d AND o.date > date(\u20182024-01-01\u2019) RETURN o'
-        )
+            'MATCH (o) WHERE o.name = \u201cBoeing\u201d AND o.date > date(\u20182024-01-01\u2019) RETURN o', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert len(result.auto_fixes) >= 2
 
     def test_limit_injected_on_clean_query(self):
-        result = validate_and_sanitize('MATCH (n) RETURN n')
+        result = validate_and_sanitize('MATCH (n) RETURN n', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert 'LIMIT' in result.query
         assert any('LIMIT' in f for f in result.auto_fixes)
 
     def test_existing_limit_preserved(self):
-        result = validate_and_sanitize('MATCH (n) RETURN n LIMIT 50')
+        result = validate_and_sanitize('MATCH (n) RETURN n LIMIT 50', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert 'LIMIT 50' in result.query
         assert not any('LIMIT' in f for f in result.auto_fixes)
 
     def test_code_block_plus_missing_return_plus_limit(self):
-        result = validate_and_sanitize('```cypher\nMATCH (n:Occurrence)\n```')
+        result = validate_and_sanitize('```cypher\nMATCH (n:Occurrence)\n```', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert 'RETURN' in result.query
         assert 'LIMIT' in result.query
@@ -845,6 +849,7 @@ class TestRunCypher:
         mock_client.driver = mock_driver
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
@@ -860,6 +865,7 @@ class TestRunCypher:
         from graphiti_mcp_server import run_cypher
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
 
@@ -887,6 +893,7 @@ class TestRunCypher:
         mock_client.driver = mock_driver
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
@@ -914,6 +921,7 @@ class TestRunCypher:
         mock_client.driver = mock_driver
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
@@ -975,6 +983,7 @@ def _make_mock_schema_service():
     mock_client.driver = make_mock_driver()
 
     mock_svc = AsyncMock()
+    mock_svc.flavour = _FLAVOUR
     mock_svc.get_client = AsyncMock(return_value=mock_client)
     mock_svc._schema_cache = None
     mock_svc._schema_dirty = True
@@ -1449,7 +1458,7 @@ class TestNonCodeSpanPreservation:
             "// Calcular edad aproximada (asumiendo año actual 2026)\n"
             "MATCH (p:Persona {name: 'KHADIJA DAOUD'}) RETURN p"
         )
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         # Only the LIMIT injection should have fired
         real_fixes = [f for f in result.auto_fixes if 'LIMIT' not in f]

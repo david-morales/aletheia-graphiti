@@ -21,9 +21,14 @@ if str(src_path) not in sys.path:
 from utils.cypher import (
     SanitizedQuery,
     CypherError,
-    classify_execution_error,
     validate_and_sanitize,
 )
+from flavours.falkordb import (
+    FalkorDbFlavour,
+    classify_falkordb_execution_error as classify_execution_error,
+)
+
+_FLAVOUR = FalkorDbFlavour()
 
 pytestmark = pytest.mark.integration
 
@@ -44,7 +49,7 @@ class TestRegressionIncidentQueries:
             'OPTIONAL MATCH parte-[:TIPIFICADO_COMO]->(tipo:TipoDelito) '
             'RETURN p.name LIMIT 1'
         )
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery), f'Pipeline rejected: {result}'
         # Bare-variable auto-fix was applied
         assert any('bare variable' in f.lower() for f in result.auto_fixes)
@@ -59,7 +64,7 @@ class TestRegressionIncidentQueries:
             'WHERE x > 1 '
             'RETURN p, x'
         )
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, CypherError)
         assert result.reason == 'unwind_where_missing_with'
 
@@ -69,7 +74,7 @@ class TestRemovedRejectsNowPass:
 
     def test_pattern_comprehension_executes(self, graph):
         query = 'MATCH (n:Persona) RETURN n.name, [(n)-[r]->(m) | type(r)] AS rels LIMIT 1'
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         res = graph.ro_query(result.query)
         assert res.result_set is not None
@@ -80,14 +85,14 @@ class TestRemovedRejectsNowPass:
             'CALL { WITH n MATCH (n)-[r]->(m) RETURN count(r) AS c } '
             'RETURN n.name, c LIMIT 1'
         )
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         res = graph.ro_query(result.query)
         assert res.result_set is not None
 
     def test_map_projection_executes(self, graph):
         query = 'MATCH (n:Persona) RETURN n { .name, .uuid } LIMIT 1'
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         res = graph.ro_query(result.query)
         assert res.result_set is not None
@@ -128,7 +133,7 @@ class TestExecutionErrorClassification:
         # FalkorDB rejects at execution time; classifier converts the
         # cryptic message into an actionable envelope.
         query = 'MATCH (n:Persona) RETURN round(avg(size(n.name)), 2) AS avg_len LIMIT 1'
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery), f'Pipeline unexpectedly rejected: {result}'
         try:
             graph.ro_query(result.query)

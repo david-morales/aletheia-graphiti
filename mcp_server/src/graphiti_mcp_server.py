@@ -81,11 +81,11 @@ from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
     CypherError,
-    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
 )
+from flavours import build_flavour
 from utils.formatting import format_community_result, format_edge_result
 
 # Load .env file from mcp_server directory
@@ -241,6 +241,7 @@ class GraphitiService:
 
     def __init__(self, config: GraphitiConfig, semaphore_limit: int = 10):
         self.config = config
+        self.flavour = build_flavour(config.database.provider)
         self.semaphore_limit = semaphore_limit
         self.semaphore = asyncio.Semaphore(semaphore_limit)
         self.client: Graphiti | None = None
@@ -2088,8 +2089,9 @@ async def run_cypher(query: str) -> dict[str, Any]:
             suggestion='Try again in a few seconds.',
         ))
 
-    # Validate and sanitize
-    result = validate_and_sanitize(query)
+    # Validate and sanitize (flavour drives the dialect reject + auto-fix)
+    flavour = graphiti_service.flavour
+    result = validate_and_sanitize(query, flavour)
     if isinstance(result, CypherError):
         return format_error(query, result)
 
@@ -2100,23 +2102,11 @@ async def run_cypher(query: str) -> dict[str, Any]:
         client = await graphiti_service.get_client()
         driver = client.driver
 
-        # Access FalkorDB graph directly for ro_query (read-only enforcement).
-        # The public execute_query() uses graph.query() (read-write), so we
-        # must use the internal _get_graph/_database — same pattern as graphiti_core.
-        graph = driver._get_graph(driver._database)
-
+        # Read-only execution is a flavour concern: FalkorDB uses DB-enforced ro_query;
+        # AGE/base rely on the pipeline whitelist + execute_query. Returns (records, header).
         start_time = time.time()
-        query_result = await graph.ro_query(sanitized.query)
+        records, header = await flavour.execute_graph_query(driver, sanitized.query)
         execution_ms = round((time.time() - start_time) * 1000, 1)
-
-        # Convert QueryResult to records + header
-        header = [h[1] for h in query_result.header] if query_result.header else []
-        records = []
-        for row in (query_result.result_set or []):
-            record = {}
-            for i, field_name in enumerate(header):
-                record[field_name] = row[i] if i < len(row) else None
-            records.append(record)
 
         _cache = getattr(graphiti_service, '_schema_cache', None) if graphiti_service else None
         schema = _cache if isinstance(_cache, dict) else None
@@ -2124,7 +2114,7 @@ async def run_cypher(query: str) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
-        error = classify_execution_error(str(e))
+        error = flavour.classify_execution_error(str(e))
         result = format_error(sanitized.query, error)
         result['auto_fixes'] = sanitized.auto_fixes
         return result
