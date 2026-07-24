@@ -500,5 +500,26 @@ class DatabaseDriverFactory:
                     'database': falkor_config.database,
                 }
 
+            case 'age':
+                # Use AGE config if provided, otherwise use defaults
+                if config.providers.age:
+                    age_config = config.providers.age
+                else:
+                    from config.schema import AgeProviderConfig
+
+                    age_config = AgeProviderConfig()
+
+                # Check for environment variable overrides (for CI/CD compatibility)
+                import os
+
+                return {
+                    'driver': 'age',
+                    'dsn': os.environ.get('AGE_DSN', age_config.dsn),
+                    'graph_name': os.environ.get('AGE_GRAPH_NAME', age_config.graph_name),
+                    'embedding_dim': int(
+                        os.environ.get('AGE_EMBEDDING_DIM', age_config.embedding_dim)
+                    ),
+                }
+
             case _:
                 raise ValueError(f'Unsupported Database provider: {provider}')

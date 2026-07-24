@@ -392,6 +392,22 @@ class GraphitiService:
                         embedder=embedder_client,
                         max_coroutines=self.semaphore_limit,
                     )
+                elif self.config.database.provider.lower() == 'age':
+                    # For AGE (PostgreSQL + Apache AGE), create an AGEDriver instance directly.
+                    from graphiti_core.driver.age_driver import AGEDriver
+
+                    age_driver = AGEDriver(
+                        dsn=db_config['dsn'],
+                        graph_name=db_config['graph_name'],
+                        embedding_dim=db_config['embedding_dim'],
+                    )
+
+                    self.client = Graphiti(
+                        graph_driver=age_driver,
+                        llm_client=llm_client,
+                        embedder=embedder_client,
+                        max_coroutines=self.semaphore_limit,
+                    )
                 else:
                     # For Neo4j (default), use the original approach
                     self.client = Graphiti(
@@ -2241,7 +2257,7 @@ async def initialize_server() -> ServerConfig:
     )
     parser.add_argument(
         '--database-provider',
-        choices=['neo4j', 'falkordb'],
+        choices=['neo4j', 'falkordb', 'age'],
         help='Database provider to use',
     )
 
