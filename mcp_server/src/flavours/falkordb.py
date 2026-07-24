@@ -42,7 +42,7 @@ _EXISTS_SUBQUERY_RE = re.compile(r'\bEXISTS\s*\{', re.IGNORECASE)
 #  - String literals containing the stop-words (e.g.
 #    `UNWIND ['WITH','MATCH'] AS k WHERE k IS NOT NULL`) are false negatives
 #    because the regex word-boundaries match inside quotes.  Such queries
-#    fall through to FalkorDB and surface via classify_execution_error().
+#    fall through to FalkorDB and surface via classify_falkordb_execution_error().
 # A proper fix for these cases requires AST parsing.
 _UNWIND_WHERE_NO_WITH_RE = re.compile(
     r'\bUNWIND\b(?:(?!\b(?:WITH|MATCH|OPTIONAL|RETURN)\b).)+?\bAS\s+\w+\s+WHERE\b',
@@ -105,7 +105,7 @@ def _transliterate_non_ascii_identifiers(query: str) -> str:
 # Known limitations of this regex-only approach (AST parsing would cover them):
 #  - Comma-separated patterns in one MATCH don't get second-position vars
 #    wrapped (e.g. `MATCH (a)-[:R]->(b), c-[:R]->(d)` leaves `c` alone —
-#    the classify_execution_error layer still returns a useful error).
+#    the classify_falkordb_execution_error layer still returns a useful error).
 #  - Whitespace (tabs, multiple spaces) between MATCH and the variable is
 #    normalized to a single space.
 #  - Text inside string literals matching the pattern will also be rewritten;
@@ -310,7 +310,7 @@ _EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
     ),
     ExecutionErrorPattern(
         name='non_ascii_identifier',
-        matcher=re.compile(r"Invalid input '.*?[^\x00-\x7F]|Invalid input '�'"),
+        matcher=re.compile(r"Invalid input '.*?[^\x00-\x7F]|Invalid input '\ufffd'"),
         suggestion=(
             'FalkorDB identifiers (variable names, aliases) must be ASCII-only. '
             'Replace accented characters: año → anno, señal → sennal, etc.'
@@ -456,8 +456,9 @@ def classify_falkordb_execution_error(msg: str) -> CypherError:
 
 
 # ---------------------------------------------------------------------------
-# FalkorDB Cypher dialect reference (single source; surfaced via get_schema /
-# server instructions). Curated from https://github.com/FalkorDB/skills.
+# FalkorDB Cypher dialect reference. Curated from https://github.com/FalkorDB/skills.
+# Task 7 wires get_schema to surface this via flavour.dialect_reference; until that lands,
+# get_schema() also holds an identical copy of this text.
 # ---------------------------------------------------------------------------
 
 _FALKORDB_DIALECT = (
