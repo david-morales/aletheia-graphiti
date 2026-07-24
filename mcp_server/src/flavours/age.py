@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
-from utils.cypher import CypherError, _strip_non_code_spans
+from utils.cypher import CypherError
 
 _AGE_DIALECT = (
     "Backend: Apache AGE (openCypher over PostgreSQL) — this is NOT FalkorDB or Neo4j. "
@@ -30,9 +30,32 @@ _AGE_DIALECT = (
     "filter: `MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C']`. Always include a LIMIT."
 )
 
-# A standalone `id` token used as a variable (NOT n.id property access, NOT id() function).
-# Applied to the string/comment-masked view so mentions inside literals never trip it.
-_ID_VAR_RE = re.compile(r"(?<![\w.])id(?![\w.(])", re.IGNORECASE)
+# String literals + comments, matched for LENGTH-PRESERVING masking so structural regexes
+# (clause keywords, bracket patterns) never trip on text inside quotes/comments while byte
+# positions stay aligned with the raw query for splicing.
+_LITERAL_OR_COMMENT_RE = re.compile(
+    r'"(?:[^"\\]|\\.)*"'      # double-quoted string
+    r"|'(?:[^'\\]|\\.)*'"     # single-quoted string
+    r"|//[^\n]*"              # line comment
+    r"|/\*[\s\S]*?\*/"        # block comment
+)
+
+
+def _mask_literals(query: str) -> str:
+    """Same-length copy of query with string-literal / comment chars replaced by 'x'.
+
+    Structural analysis (finding disjunctions, clause keywords, WHERE-condition ends) runs on
+    the masked view so a keyword or bracket INSIDE a string literal can never misfire; byte
+    positions are preserved, so edits are spliced from the RAW query at masked-derived offsets.
+    """
+    return _LITERAL_OR_COMMENT_RE.sub(lambda m: "x" * (m.end() - m.start()), query)
+
+
+# `id` as a node/relationship PATTERN variable — `(id` / `[id` not followed by `.`(property)
+# or `(`(function). Brace maps `{id:` are intentionally NOT matched (map key, not a variable).
+_ID_PATTERN_VAR_RE = re.compile(r"[\(\[]\s*id\b(?!\s*[.(])", re.IGNORECASE)
+# `id` as an alias — `AS id` (an aliased column is a variable named id).
+_ID_ALIAS_RE = re.compile(r"\bAS\s+id\b", re.IGNORECASE)
 
 # Relationship-type disjunction inside a [...] pattern: [:A|B|C] or [r:A|B|C].
 _REL_DISJUNCTION_RE = re.compile(
@@ -48,13 +71,17 @@ _CLAUSE_KW_RE = re.compile(
 )
 
 
-def _unique_rel_var(query: str) -> str:
-    """A relationship variable name guaranteed not to collide with one already in the query."""
+def _unique_rel_var(masked: str) -> str:
+    """A relationship variable name guaranteed not to collide with one already in the query.
+
+    Scans the MASKED view so a token that appears only inside a string literal is not treated
+    as a collision.
+    """
     for name in ("r", "rt", "rel", "_r0", "_r1", "_r2"):
-        if not re.search(rf"\b{name}\b", query, re.IGNORECASE):
+        if not re.search(rf"\b{name}\b", masked, re.IGNORECASE):
             return name
     i = 0
-    while re.search(rf"\b_r{i}\b", query, re.IGNORECASE):
+    while re.search(rf"\b_r{i}\b", masked, re.IGNORECASE):
         i += 1
     return f"_r{i}"
 
@@ -65,45 +92,43 @@ def _rewrite_rel_disjunction(query: str) -> tuple[str, bool]:
     Fires ONLY on the unambiguous single-disjunction case (bails when there are 0 or >1,
     leaving the query for the execution-error hint). Uses a collision-free relationship
     variable, and attaches ``WHERE type(<var>) IN [...]`` to the clause that CONTAINS the
-    disjunction — found by scanning forward from the disjunction to the next clause keyword,
-    not from the start of the query (so a preceding WHERE/WITH cannot capture the filter).
-    An existing WHERE for that clause is AND-ed with its condition parenthesized (so a
-    top-level OR is not silently defeated).
+    disjunction — the next clause keyword is found by scanning forward FROM the disjunction
+    (so a preceding WHERE/WITH cannot capture the filter). An existing WHERE for that clause is
+    AND-ed with its condition parenthesized (so a top-level OR is not silently defeated). All
+    position-finding runs on a length-preserving masked view; the result is spliced from the
+    RAW query at those offsets, so string-literal contents never affect the structural edit.
     """
-    matches = list(_REL_DISJUNCTION_RE.finditer(query))
+    masked = _mask_literals(query)
+    matches = list(_REL_DISJUNCTION_RE.finditer(masked))
     if len(matches) != 1:
         return query, False
     m = matches[0]
-    var = m.group("var") if m.group("var") else _unique_rel_var(query)
+    disj_start, disj_end = m.start(), m.end()
+    var = m.group("var") if m.group("var") else _unique_rel_var(masked)
     types = [t.strip().strip("`") for t in m.group("types").split("|")]
     type_list = ", ".join(f"'{t}'" for t in types)
     filter_clause = f"type({var}) IN [{type_list}]"
+    edge = f"[{var}]"
 
-    # Replace the pattern with a generic edge carrying the variable.
-    replacement = f"[{var}]"
-    rewritten = query[: m.start()] + replacement + query[m.end():]
-    scan_from = m.start() + len(replacement)
-
-    nk = _CLAUSE_KW_RE.search(rewritten, scan_from)
+    nk = _CLAUSE_KW_RE.search(masked, disj_end)
     if nk and nk.group(1).upper() == "WHERE":
         # This clause has a WHERE — AND our filter in, parenthesizing the existing condition
         # (which ends at the next clause keyword) so precedence with a top-level OR is safe.
         where_end = nk.end()
-        after = _CLAUSE_KW_RE.search(rewritten, where_end)
-        cond_end = after.start() if after else len(rewritten)
-        existing = rewritten[where_end:cond_end].strip()
+        after = _CLAUSE_KW_RE.search(masked, where_end)
+        cond_end = after.start() if after else len(query)
+        existing = query[where_end:cond_end].strip()
         new_query = (
-            rewritten[:where_end]
-            + f" {filter_clause} AND ({existing}) "
-            + rewritten[cond_end:]
+            query[:disj_start] + edge + query[disj_end:where_end]
+            + f" {filter_clause} AND ({existing}) " + query[cond_end:]
         )
     elif nk:
         # No WHERE for this clause; insert one before the next clause keyword.
         i = nk.start()
-        new_query = rewritten[:i] + f"WHERE {filter_clause} " + rewritten[i:]
+        new_query = query[:disj_start] + edge + query[disj_end:i] + f"WHERE {filter_clause} " + query[i:]
     else:
         # No following clause keyword — append.
-        new_query = f"{rewritten} WHERE {filter_clause}"
+        new_query = query[:disj_start] + edge + query[disj_end:] + f" WHERE {filter_clause}"
     return new_query, True
 
 
@@ -115,12 +140,14 @@ class AgeFlavour(BaseFlavour):
     dialect_reference = _AGE_DIALECT
 
     def check_dialect(self, query: str) -> CypherError | None:
-        # Only a variable named `id` is rejected (renaming a variable is semantically risky, so
-        # we reject-with-hint rather than auto-rewrite). [:A|B|C] is handled by auto_fix.
-        # Match on the string/comment-masked view so `id` inside a literal or comment never
-        # trips this; _ID_VAR_RE excludes property access (n.id) and the id() function.
-        code_only = _strip_non_code_spans(query)
-        if _ID_VAR_RE.search(code_only):
+        # Reject `id` used as a VARIABLE — a pattern variable ((id / [id) or an alias (AS id).
+        # Renaming a variable is semantically risky, so we reject-with-hint rather than
+        # auto-rewrite. We stay PRECISE (only high-confidence variable positions): property
+        # access (n.id), the id() function, and map keys ({id: ...}) are allowed, and ambiguous
+        # bare references fall through to the execution-error hint net. Matching runs on the
+        # masked view so `id` inside a string literal / comment never trips this.
+        masked = _mask_literals(query)
+        if _ID_PATTERN_VAR_RE.search(masked) or _ID_ALIAS_RE.search(masked):
             return CypherError(
                 stage="age_dialect",
                 reason="reserved_id_variable",

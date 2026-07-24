@@ -122,3 +122,31 @@ def test_check_dialect_rejects_id_alias():
     # A column aliased to `id` is still a variable named id — reject.
     err = AgeFlavour().check_dialect("MATCH (n) RETURN n.name AS id")
     assert err is not None and err.reason == "reserved_id_variable"
+
+
+# --- Regression tests for RE-REVIEW findings (string-masking + map keys) ---
+
+def test_auto_fix_rereview_keyword_inside_string_literal_not_split():
+    # A clause keyword ('with') inside a string literal must not split the WHERE condition.
+    q, _ = AgeFlavour().auto_fix(
+        "MATCH (a)-[:A|B]->(b) WHERE b.description CONTAINS 'person with a knife' RETURN b"
+    )
+    assert "|" not in q.replace("'person with a knife'", "")  # the disjunction | is gone
+    assert "type(r) IN ['A', 'B'] AND (b.description CONTAINS 'person with a knife')" in q
+    assert q.count("(") == q.count(")")   # parens balanced (the string keyword didn't corrupt)
+    assert "'person with a knife'" in q   # the string literal is intact
+
+
+def test_auto_fix_rereview_bracket_text_in_string_not_counted_as_disjunction():
+    # A bracket-shaped decoy inside a string must not make a single disjunction look like >1.
+    q, fixes = AgeFlavour().auto_fix(
+        "MATCH (a)-[:A|B]->(b) WHERE b.raw CONTAINS '[:X|Y]' RETURN b"
+    )
+    assert fixes != []                       # the REAL disjunction was rewritten
+    assert "type(r) IN ['A', 'B']" in q
+    assert "'[:X|Y]'" in q                    # the string literal is preserved verbatim
+
+
+def test_check_dialect_rereview_allows_id_map_key():
+    # A map literal key named `id` ({id: 5}) is not a variable — must be allowed.
+    assert AgeFlavour().check_dialect("MATCH (n {id: 5}) RETURN n") is None
