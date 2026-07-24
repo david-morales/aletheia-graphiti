@@ -62,3 +62,63 @@ def test_classify_execution_error_graphid():
 def test_classify_execution_error_pipe_syntax():
     err = AgeFlavour().classify_execution_error('syntax error at or near "|"')
     assert "type(r) IN" in err.suggestion
+
+
+# --- Regression tests for focused-review findings (C1/C2/C3/I1/I2) ---
+
+def test_auto_fix_C1_attaches_filter_to_the_disjunction_clause_not_a_preceding_where():
+    # C1: a preceding MATCH...WHERE must NOT capture the type filter; it attaches to the
+    # clause that actually contains the disjunction (before the following RETURN).
+    q, _ = AgeFlavour().auto_fix(
+        "MATCH (x) WHERE x.name='Ana' MATCH (a)-[:DETIENE|INVESTIGA]->(b) RETURN a,b"
+    )
+    assert "|" not in q
+    assert "WHERE x.name='Ana'" in q                 # the preceding WHERE is left intact
+    assert "type(r) IN ['DETIENE', 'INVESTIGA']" in q
+    # the type filter sits after the rewritten [r] edge and before RETURN
+    assert q.index("type(r)") > q.index("[r]")
+    assert q.index("type(r)") < q.index("RETURN")
+
+
+def test_auto_fix_C2_parenthesizes_existing_or_where():
+    # C2: AND-ing into an existing top-level OR must parenthesize it, or the filter is defeated.
+    q, _ = AgeFlavour().auto_fix(
+        "MATCH (a)-[:A|B]->(b) WHERE b.name='Ana' OR b.age>30 RETURN b"
+    )
+    assert "|" not in q
+    assert "type(r) IN ['A', 'B'] AND (b.name='Ana' OR b.age>30)" in q
+
+
+def test_auto_fix_C3_bails_on_multiple_disjunctions():
+    # C3: >1 disjunction is ambiguous to rewrite safely — leave unchanged for the hint net.
+    src = "MATCH (a)-[:A|B]->(b) MATCH (c)-[:C|D]->(d) RETURN b,d"
+    q, fixes = AgeFlavour().auto_fix(src)
+    assert q == src
+    assert fixes == []
+
+
+def test_auto_fix_C3_uses_collision_free_variable():
+    # C3: introduced rel var must not clobber an existing variable named `r`.
+    q, _ = AgeFlavour().auto_fix("MATCH (r:Persona)-[:A|B]->(b) RETURN r,b")
+    assert "|" not in q
+    assert "(r:Persona)" in q          # the pre-existing node var `r` is untouched
+    assert "type(rt)" in q             # a fresh, non-colliding rel var was introduced
+
+
+def test_check_dialect_I1_ignores_id_inside_string_literal():
+    # I1: `(id: 5)` inside a string literal must not trigger the id-variable reject.
+    assert AgeFlavour().check_dialect(
+        "MATCH (n) WHERE n.text CONTAINS '(id: 5)' RETURN n.name"
+    ) is None
+
+
+def test_check_dialect_I2_allows_id_function_call():
+    # I2: AGE's own id() function is legitimate — do not reject it.
+    assert AgeFlavour().check_dialect("MATCH (n) RETURN id(n)") is None
+    assert AgeFlavour().check_dialect("MATCH (n) RETURN count(id(n))") is None
+
+
+def test_check_dialect_rejects_id_alias():
+    # A column aliased to `id` is still a variable named id — reject.
+    err = AgeFlavour().check_dialect("MATCH (n) RETURN n.name AS id")
+    assert err is not None and err.reason == "reserved_id_variable"
