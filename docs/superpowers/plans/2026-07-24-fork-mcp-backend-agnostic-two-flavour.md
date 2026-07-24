@@ -687,11 +687,20 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 Add the AGE provider so the server can boot against Postgres+AGE. No dialect yet (that's Task 6).
 
 **Files:**
+- Modify: `pyproject.toml` (graphiti-core root — add an `age` optional-dependency extra)
+- Modify: `mcp_server/pyproject.toml` (depend on `graphiti-core[falkordb,age]`)
 - Modify: `mcp_server/src/config/schema.py` (`AgeProviderConfig`, `DatabaseProvidersConfig.age`)
 - Modify: `mcp_server/src/services/factories.py` (`DatabaseDriverFactory` age case)
 - Modify: `mcp_server/src/graphiti_mcp_server.py` (init AGE driver branch; CLI choice)
 - Test: `mcp_server/tests/test_configuration.py` (age config), `tests/test_flavours.py`
   (build_flavour("age"))
+
+**IMPORTANT (dependency gap):** the fork's `graphiti-core` root `pyproject.toml` declares NO
+`age` extra and NO `asyncpg` — the `AGEDriver` (`graphiti_core/driver/age_driver.py`) does
+`import asyncpg`, which is currently ABSENT from the `mcp_server` uv env (`uv run python -c
+"import asyncpg"` → ModuleNotFoundError). The PoC hand-installed asyncpg; this task declares it
+properly. Do Step 0 BEFORE the driver branch so `from graphiti_core.driver.age_driver import
+AGEDriver` resolves (also unblocks Task 8's ontology-gate test).
 
 **Interfaces:**
 - Consumes: `graphiti_core.driver.age_driver.AGEDriver(dsn, graph_name="graphiti",
@@ -699,6 +708,22 @@ Add the AGE provider so the server can boot against Postgres+AGE. No dialect yet
 - Produces: `AgeProviderConfig(dsn: str = "", graph_name: str = "graphiti",
   embedding_dim: int = 1024)`; `DatabaseDriverFactory.create_config` returns
   `{"driver": "age", "dsn": ..., "graph_name": ..., "embedding_dim": ...}` for provider `age`.
+
+- [ ] **Step 0: Declare the AGE driver's `asyncpg` dependency**
+
+In the graphiti-core root `pyproject.toml` `[project.optional-dependencies]` (next to
+`falkordb = [...]`), add:
+```toml
+age = ["asyncpg>=0.30.0"]
+```
+In `mcp_server/pyproject.toml` `dependencies`, change `"graphiti-core[falkordb]"` →
+`"graphiti-core[falkordb,age]"`. Then resolve the env:
+```bash
+cd mcp_server && uv sync
+uv run python -c "from graphiti_core.driver.age_driver import AGEDriver; print('AGEDriver OK')"
+```
+Expected: `AGEDriver OK` (asyncpg now present). If graphiti-core is path-editable and the extra
+isn't picked up, `uv sync --reinstall-package graphiti-core`.
 
 - [ ] **Step 1: Write the failing config test** in `tests/test_configuration.py`
 
@@ -809,8 +834,8 @@ Expected: PASS (2 passed).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add mcp_server/src/config/schema.py mcp_server/src/services/factories.py mcp_server/src/graphiti_mcp_server.py mcp_server/tests/test_configuration.py
-git commit -m "feat(mcp): add AGE database provider (config + driver factory + init branch + CLI)
+git add pyproject.toml mcp_server/pyproject.toml mcp_server/uv.lock mcp_server/src/config/schema.py mcp_server/src/services/factories.py mcp_server/src/graphiti_mcp_server.py mcp_server/tests/test_configuration.py
+git commit -m "feat(mcp): add AGE database provider (asyncpg dep + config + driver factory + init branch + CLI)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
