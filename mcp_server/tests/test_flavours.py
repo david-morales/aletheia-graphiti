@@ -111,3 +111,8 @@ def test_graphiti_service_selects_flavour_from_provider():
     cfg.database.provider = "falkordb"
     svc = GraphitiService(config=cfg)   # light ctor: sets self.config + self.flavour, no I/O
     assert isinstance(svc.flavour, FalkorDbFlavour)
+
+
+def test_build_flavour_age():
+    from flavours.age import AgeFlavour
+    assert type(build_flavour("age")) is AgeFlavour
