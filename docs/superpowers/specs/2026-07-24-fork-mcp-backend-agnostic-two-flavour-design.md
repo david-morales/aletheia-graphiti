@@ -156,12 +156,18 @@ class Flavour(Protocol):
   `format_error` (carrying `auto_fixes`). Returns typed **`CypherResult`** (ADR-019 R2). Its
   docstring/description become flavour-aware (no hardcoded "FalkorDB").
 - **`get_schema`** — canonical ADR-019 R5: top-level `dialect` = `flavour.dialect_id`,
-  `dialect_reference` = `flavour.dialect_reference`; per-label `attribute_keys` via
-  `flavour.attribute_keys(...)` **plus** a `properties` alias with the same value (one-release
-  back-compat safeguard for the documented `aletheia-extraction` contract). Fork extras
-  (`tool_capabilities`, `analysis_notes`, `graph_name`, `type`) stay additive. Typed canonical
-  model (ADR-019 R2). The label/rel probe queries (`labels`/`keys`/`type`) are generic
-  openCypher and run on AGE unchanged; only attribute-key extraction is flavour-specific.
+  `dialect_reference` = `flavour.dialect_reference`; new per-label `attribute_keys` via
+  `flavour.attribute_keys(...)` (canonical, domain-only — reserved bookkeeping/embeddings
+  excluded). **`properties` is kept UNCHANGED** (full top-level key list) — NOT an alias of
+  `attribute_keys`: it feeds `cypher_quality`'s `_validate_properties` schema_match (which must
+  still know `name`/`uuid`/etc.) and the documented `aletheia-extraction` contract. So the two
+  fields are deliberately different (`properties` ⊇ `attribute_keys`). The historical
+  `cypher_reference` field is retained as a back-compat alias of `dialect_reference` (one
+  release; now sourced from the flavour, no longer FalkorDB-hardcoded) for consumers not yet on
+  `dialect_reference`. Fork extras (`tool_capabilities`, `analysis_notes`, `graph_name`, `type`)
+  stay additive. Typed canonical model (ADR-019 R2). The label/rel probe queries
+  (`labels`/`keys`/`type`) are generic openCypher and run on AGE unchanged; only attribute-key
+  extraction is flavour-specific.
 - **Ontology** — open the `_get_ontology_graphiti` gate (L259, currently raises for
   non-FalkorDB) for AGE: build an AGE ontology client at `graph_name=<graph>_ontology`; the four
   ontology tools (`search_ontology`, `explore_ontology`, `get_ontology_structure`,
@@ -208,7 +214,7 @@ envelope through its flavour.
 | ① | Flavour abstraction = **extract a `flavours/` package**; move FalkorDB dialect code into its flavour; thread `flavour` through `validate_and_sanitize`. |
 | ② | **Keep Neo4j** on the generic `BaseFlavour`; config/factory untouched (P2 sync stays clean). |
 | ③ | **Open the AGE ontology gate in P1** (full four-tool parity). Read-only execution is a Flavour method: FalkorDB `ro_query`; AGE whitelist + `execute_query`. |
-| ④ | **Full canonical `get_schema`** with the `properties` alias safeguard (emit both `attribute_keys` and `properties`=same value for one release). |
+| ④ | **Full canonical `get_schema`**: add `dialect`/`dialect_reference` + per-label `attribute_keys` (canonical, domain-only). Keep `properties` UNCHANGED (full keys — feeds schema_match + extraction; NOT an alias of attribute_keys). Keep `cypher_reference` as a one-release back-compat alias of `dialect_reference`, now flavour-sourced. |
 | ⑤ | **Type only the contract-changing tools** in P1 (`run_cypher` → `CypherResult`, `get_schema` → canonical model); migrate the rest opportunistically per ADR-019 enforcement. |
 
 AGE auto-fix specifics: the ONLY AGE auto-fix is the shared pipeline's LIMIT injection. Both

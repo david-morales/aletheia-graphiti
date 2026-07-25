@@ -1771,7 +1771,12 @@ async def get_schema() -> dict[str, Any]:
                 if label not in internal_labels:
                     label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
-        # 2. Properties per label (sample 50)
+        # 2. Properties + attribute_keys per label (sample 50)
+        #    `properties` = full top-level keys — feeds cypher_quality's schema_match and the
+        #    documented aletheia-extraction contract (kept unchanged). `attribute_keys` = the
+        #    canonical ADR-019 R5 domain-queryable keys, flavour-specific (FalkorDB: top-level
+        #    minus reserved bookkeeping; AGE: keys of the nested `attributes` agtype map).
+        flavour = graphiti_service.flavour
         node_labels: dict[str, dict] = {}
         for label in label_counts:
             prop_records, _, _ = await driver.execute_query(
@@ -1780,6 +1785,7 @@ async def get_schema() -> dict[str, Any]:
             props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
             node_labels[label] = {
                 'count': label_counts[label],
+                'attribute_keys': await flavour.attribute_keys(driver, label),
                 'properties': sorted(props),
                 'sampled': True,
             }
@@ -1816,6 +1822,8 @@ async def get_schema() -> dict[str, Any]:
             'type': 'schema',
             'graph_name': group_id,
             'domain': group_id.replace('_', ' ').title(),
+            'dialect': flavour.dialect_id,
+            'dialect_reference': flavour.dialect_reference,
             'node_labels': node_labels,
             'relationship_types': relationship_types,
         }
@@ -1901,38 +1909,11 @@ async def get_schema() -> dict[str, Any]:
             },
         }
 
-        # FalkorDB Cypher quick reference — helps LLMs generate correct queries.
-        # Curated from https://github.com/FalkorDB/skills
-        schema['cypher_reference'] = (
-            "## Cypher Quick Reference (FalkorDB)\n\n"
-            "### Property & Label Escaping\n"
-            "- Multi-word labels: MATCH (n:`My Label`) RETURN n\n"
-            "- Multi-word properties: WHERE n.`my property` = 'value'\n"
-            "- Always use backticks for identifiers with spaces or special chars\n\n"
-            "### Variable-Length Paths (no APOC)\n"
-            "- MATCH (a)-[*1..3]->(b) RETURN a, b\n"
-            "- MATCH path = (a)-[*..5]->(b) RETURN nodes(path), relationships(path)\n\n"
-            "### Aggregation Patterns\n"
-            "- GROUP BY is implicit: MATCH (n) RETURN n.type, count(n)\n"
-            "- Mid-query: MATCH (n)-[:REL]->(m) WITH m, count(n) AS cnt "
-            "WHERE cnt > 1 RETURN m.name, cnt\n\n"
-            "### Date Handling\n"
-            "- No date() function — compare strings: WHERE n.date > '2024-01-01'\n\n"
-            "### String Functions\n"
-            "- toLower() / toUpper() (NOT lower() / upper())\n"
-            "- starts with / ends with / contains\n\n"
-            "### Index-Aware Filtering\n"
-            "- Accelerated: =, <, >, <=, >=, IN, starts with\n"
-            "- NOT accelerated: <> (not-equal), contains, ends with\n"
-            "- Full-text: CALL db.idx.fulltext.queryNodes('idx', 'term')\n\n"
-            "### Known Limitations\n"
-            "- No APOC — use variable-length paths\n"
-            "- No pattern comprehensions — use OPTIONAL MATCH + collect()\n"
-            "- No EXISTS {} subqueries — use EXISTS(pattern) syntax\n"
-            "- No CALL {} subqueries — use WITH + OPTIONAL MATCH\n"
-            "- No map projections — return properties individually\n"
-            "- LIMIT auto-injected (200) if not specified"
-        )
+        # Backward-compatible alias of `dialect_reference` (emitted canonically above) under the
+        # fork's historical field name, for consumers not yet reading `dialect_reference`
+        # (ADR-019 R5 rename; drop in a future release). Now sourced from the flavour — correct
+        # per-backend (AGE gets AGE guidance), no longer FalkorDB-hardcoded.
+        schema['cypher_reference'] = flavour.dialect_reference
 
         # Cache the result
         graphiti_service._schema_cache = schema
