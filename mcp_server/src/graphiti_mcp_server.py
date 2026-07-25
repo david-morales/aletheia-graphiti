@@ -776,6 +776,7 @@ async def search(
         return ErrorResponse(error='Graphiti service not initialized')
 
     try:
+        start_time = time.time()
         client = await graphiti_service.get_client()
 
         effective_group_ids = (
@@ -870,6 +871,7 @@ async def search(
             nodes=node_results,
             edges=edge_results,
             communities=community_results,
+            execution_ms=round((time.time() - start_time) * 1000, 1),
         )
 
     except ValueError as e:
@@ -1393,6 +1395,7 @@ async def search_ontology(
     assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     try:
+        start_time = time.time()
         search_config = resolve_search_config(search_mode, reranker, limit)
 
         ontology_group_id = config.graphiti.ontology_graph
@@ -1428,6 +1431,7 @@ async def search_ontology(
             nodes=node_results,
             edges=edge_results,
             communities=community_results,
+            execution_ms=round((time.time() - start_time) * 1000, 1),
         )
 
     except ValueError as e:

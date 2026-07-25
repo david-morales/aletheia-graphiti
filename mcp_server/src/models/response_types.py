@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 
 class ErrorResponse(TypedDict):
@@ -74,6 +74,7 @@ class SearchResponse(TypedDict):
     nodes: list[NodeResult]
     edges: list[EdgeResult]
     communities: list[CommunityResult]
+    execution_ms: NotRequired[float]
 
 
 class ExploreResponse(TypedDict):
