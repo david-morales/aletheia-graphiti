@@ -648,12 +648,19 @@ def format_result(
 
 
 def format_error(query: str, error: CypherError) -> dict[str, Any]:
-    """Format a CypherError into the standard envelope structure."""
+    """Format a CypherError into the standard error envelope.
+
+    ADR-015 R4: the top-level ``error`` is a STRING (so the workbench's existing error handling
+    and the alias layer keep working); ``hint`` is the actionable rewrite; the full structured
+    detail is additive under ``error_detail``.
+    """
     outcome = 'error' if error.stage == 'execution' else 'rejected'
     return {
         'query': query,
         'type': 'error',
-        'error': {
+        'error': error.explanation,          # ADR-015 R4: top-level STRING
+        'hint': error.suggestion,            # actionable rewrite
+        'error_detail': {                    # structured detail (additive)
             'stage': error.stage,
             'reason': error.reason,
             'found': error.found,

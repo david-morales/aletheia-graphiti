@@ -705,7 +705,11 @@ class TestResultFormatter:
         result = format_error('CREATE (n:Test)', err)
         assert result['type'] == 'error'
         assert result['query'] == 'CREATE (n:Test)'
-        assert result['error']['stage'] == 'security'
+        # ADR-015 R4: top-level `error` is a STRING; structured detail is additive.
+        assert isinstance(result['error'], str)
+        assert result['error'] == 'Write not allowed.'
+        assert result['hint'] == 'Use MATCH instead.'
+        assert result['error_detail']['stage'] == 'security'
         assert result['execution_ms'] == 0
 
 
@@ -873,7 +877,7 @@ class TestRunCypher:
             result = await run_cypher(query='CREATE (n:Test {name: "test"})')
 
         assert result['type'] == 'error'
-        assert result['error']['stage'] == 'security'
+        assert result['error_detail']['stage'] == 'security'
 
     @pytest.mark.asyncio
     async def test_auto_fixes_in_response(self):
@@ -930,7 +934,7 @@ class TestRunCypher:
             result = await run_cypher(query='MATCH (n) RETURN foo(n)')
 
         assert result['type'] == 'error'
-        assert result['error']['stage'] == 'execution'
+        assert result['error_detail']['stage'] == 'execution'
         assert 'auto_fixes' in result
 
     @pytest.mark.asyncio
@@ -941,7 +945,7 @@ class TestRunCypher:
             result = await run_cypher(query='MATCH (n) RETURN n')
 
         assert result['type'] == 'error'
-        assert result['error']['stage'] == 'initialization'
+        assert result['error_detail']['stage'] == 'initialization'
 
 
 # ---------------------------------------------------------------------------

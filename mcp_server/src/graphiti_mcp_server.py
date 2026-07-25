@@ -67,11 +67,13 @@ from tool_descriptions import (
 )
 from models.response_types import (
     CommunityBuildResponse,
+    CypherResultResponse,
     EpisodeAddedResponse,
     EpisodeContextResponse,
     EpisodeSearchResponse,
     ErrorResponse,
     ExploreResponse,
+    SchemaResponse,
     SearchResponse,
     StatusResponse,
     SuccessResponse,
@@ -1746,7 +1748,7 @@ async def health_check(request) -> JSONResponse:
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
-async def get_schema() -> dict[str, Any]:
+async def get_schema() -> SchemaResponse:
     """Retrieve the structural schema of the knowledge graph.
 
     Returns node labels with property keys, relationship types with
@@ -2073,7 +2075,7 @@ async def get_ontology_documentation() -> dict[str, Any]:
         return {'error': f'Failed to retrieve ontology documentation: {e}'}
 
 
-async def run_cypher(query: str) -> dict[str, Any]:
+async def run_cypher(query: str) -> CypherResultResponse:
     """Execute a read-only Cypher query against the knowledge graph.
 
     The query is validated and sanitized before execution.

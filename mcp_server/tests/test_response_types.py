@@ -104,3 +104,30 @@ def test_episode_added_response_empty_lists():
     )
     assert response['node_uuids'] == []
     assert response['edge_uuids'] == []
+
+
+# --- ADR-019 R2: run_cypher + get_schema publish a typed outputSchema ---
+
+def test_query_and_schema_tools_publish_output_schema():
+    import asyncio
+    from mcp.server.fastmcp import FastMCP
+    import graphiti_mcp_server as srv
+
+    m = FastMCP("t")
+    m.add_tool(srv.run_cypher)
+    m.add_tool(srv.get_schema)
+    tools = {t.name: t for t in asyncio.run(m.list_tools())}
+
+    rc = tools["run_cypher"].outputSchema
+    assert rc is not None
+    rc_props = rc["properties"]
+    # rich envelope + ADR-015 R4 error path both surfaced in the schema
+    for key in ("query", "auto_fixes", "type", "row_count", "truncated",
+                "limit_applied", "execution_ms", "cypher_quality", "error", "hint", "error_detail"):
+        assert key in rc_props, f"run_cypher outputSchema missing {key}"
+
+    gs = tools["get_schema"].outputSchema
+    assert gs is not None
+    gs_props = gs["properties"]
+    for key in ("dialect", "dialect_reference", "node_labels", "relationship_types"):
+        assert key in gs_props, f"get_schema outputSchema missing {key}"
