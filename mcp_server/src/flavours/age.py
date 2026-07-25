@@ -80,6 +80,11 @@ class AgeFlavour(BaseFlavour):
     name = "age"
     dialect_id = "age-opencypher"
     dialect_reference = _AGE_DIALECT
+    dialect_summary = (
+        "Apache AGE openCypher (NOT FalkorDB/Neo4j): no APOC/indexOf/split; attributes are a "
+        "queryable map (n.attributes.<field>); never name a variable `id`; no [:A|B|C] "
+        "disjunction (use MATCH (a)-[r]->(b) WHERE type(r) IN [...])."
+    )
 
     def check_dialect(self, query: str) -> CypherError | None:
         # Match on the masked view so a construct inside a string literal / comment never trips

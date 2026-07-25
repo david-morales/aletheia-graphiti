@@ -499,6 +499,11 @@ class FalkorDbFlavour(BaseFlavour):
     name = "falkordb"
     dialect_id = "falkordb-cypher"
     dialect_reference = _FALKORDB_DIALECT
+    dialect_summary = (
+        "FalkorDB openCypher: no APOC (use variable-length paths [*1..3]); no pattern "
+        "comprehensions (use OPTIONAL MATCH + collect()); no date() (compare date strings); "
+        "use toLower()/toUpper() not lower()/upper()."
+    )
 
     def check_dialect(self, query: str) -> CypherError | None:
         return check_falkordb_dialect(query)

@@ -2160,6 +2160,10 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
 
+    # Backend flavour drives the per-backend Cypher dialect surfaced in the run_cypher
+    # description + server instructions (ADR-019 R1/R6).
+    flavour = graphiti_service.flavour if graphiti_service is not None else None
+
     mcp.add_tool(search, description=build_search_description(profile))
     mcp.add_tool(explore_node, description=build_explore_node_description(profile))
     mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
@@ -2167,11 +2171,11 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(get_schema, description=build_get_schema_description(profile))
     mcp.add_tool(get_ontology_structure)
     mcp.add_tool(get_ontology_documentation)
-    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile))
+    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile, flavour))
     mcp.add_tool(profile_graph)
 
     # Update MCP instructions
-    mcp._mcp_server.instructions = build_instructions(profile)
+    mcp._mcp_server.instructions = build_instructions(profile, flavour)
 
     logger.info('Registered tools with dynamic descriptions')
 

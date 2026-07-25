@@ -23,7 +23,8 @@ RESERVED_KEYS: frozenset[str] = frozenset(
 class Flavour(Protocol):
     name: str
     dialect_id: str
-    dialect_reference: str
+    dialect_reference: str   # full dialect teaching text (ADR-019 R5, surfaced via get_schema)
+    dialect_summary: str     # short form for server instructions / tool descriptions (ADR-019 R1/R6)
 
     def check_dialect(self, query: str) -> CypherError | None: ...
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
@@ -40,6 +41,7 @@ class BaseFlavour:
     name = "opencypher"
     dialect_id = "opencypher"
     dialect_reference = ""
+    dialect_summary = ""
 
     def check_dialect(self, query: str) -> CypherError | None:
         return None

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from domain_profile import DomainProfile
 
+if TYPE_CHECKING:
+    from flavours.base import Flavour
 
-def build_instructions(profile: DomainProfile) -> str:
-    """Build the MCP server instructions from a DomainProfile."""
+
+def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
+    """Build the MCP server instructions from a DomainProfile (and the backend flavour)."""
     parts = []
 
     # Domain summary
@@ -83,6 +88,13 @@ def build_instructions(profile: DomainProfile) -> str:
     parts.append('- Use get_schema + run_cypher when you need counts, aggregations, comparisons, or gap detection')
     parts.append('- Use search -> then run_cypher for chained workflows: discover entities semantically,')
     parts.append('  then compute metrics with Cypher using WHERE ... IN [...] to bridge results')
+
+    # Backend Cypher dialect — short form (ADR-019 R1/R6); the full form is get_schema's
+    # dialect_reference. Sourced from the flavour, never hardcoded per-backend.
+    if flavour is not None and flavour.dialect_summary:
+        parts.append('')
+        parts.append(f'**Cypher dialect:** {flavour.dialect_summary}')
+        parts.append('See get_schema `dialect_reference` for the full dialect notes.')
 
     return '\n'.join(parts)
 
@@ -296,8 +308,8 @@ def _build_example_queries(profile: DomainProfile) -> list[str]:
     return examples
 
 
-def build_run_cypher_description(profile: DomainProfile) -> str:
-    """Build the run_cypher tool description from a DomainProfile."""
+def build_run_cypher_description(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
+    """Build the run_cypher tool description from a DomainProfile (and the backend flavour)."""
     parts = [
         f'Execute a read-only Cypher query against the {profile.group_id} graph.',
         '',
@@ -314,13 +326,12 @@ def build_run_cypher_description(profile: DomainProfile) -> str:
         'LLM syntax auto-corrected (smart quotes, code blocks, missing RETURN).',
     ]
 
-    # FalkorDB dialect cheatsheet
-    parts.append('')
-    parts.append('FalkorDB dialect notes:')
-    parts.append('- No APOC procedures -- use variable-length paths [*1..3] instead')
-    parts.append('- No pattern comprehensions -- use OPTIONAL MATCH + collect()')
-    parts.append('- No date() function -- compare date strings directly (e.g. > "2024-01-01")')
-    parts.append('- Use toLower()/toUpper() not lower()/upper()')
+    # Backend dialect notes — short form from the flavour (ADR-019 R6); the full form lives in
+    # get_schema's dialect_reference. No per-backend dialect is hardcoded here.
+    if flavour is not None and flavour.dialect_summary:
+        parts.append('')
+        parts.append(f'Dialect notes: {flavour.dialect_summary}')
+        parts.append('(See get_schema `dialect_reference` for the full notes.)')
 
     # Domain-specific examples
     examples = _build_example_queries(profile)
