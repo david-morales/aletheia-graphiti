@@ -262,20 +262,31 @@ class GraphitiService:
         Returns None if the configured database provider has no ontology support.
         Raises on persistent connection failure after all retries exhausted.
         """
-        if self.config.database.provider.lower() != 'falkordb':
-            logger.warning(
-                f'Ontology graph not supported for {self.config.database.provider} provider'
+        provider = self.config.database.provider.lower()
+        ontology_graph_name = self.config.graphiti.ontology_graph
+
+        if provider == 'falkordb':
+            ontology_driver = FalkorDriver(
+                host=db_config['host'],
+                port=db_config['port'],
+                username=db_config.get('username'),
+                password=db_config['password'],
+                database=ontology_graph_name,
             )
+        elif provider == 'age':
+            # AGE ontology lives in a companion graph (<graph>_ontology) in the same Postgres/AGE
+            # instance — same DSN + embedding_dim, different graph_name.
+            from graphiti_core.driver.age_driver import AGEDriver
+
+            ontology_driver = AGEDriver(
+                dsn=db_config['dsn'],
+                graph_name=ontology_graph_name,
+                embedding_dim=db_config['embedding_dim'],
+            )
+        else:
+            logger.warning(f'Ontology graph not supported for {provider} provider')
             return None
 
-        ontology_graph_name = self.config.graphiti.ontology_graph
-        ontology_driver = FalkorDriver(
-            host=db_config['host'],
-            port=db_config['port'],
-            username=db_config.get('username'),
-            password=db_config['password'],
-            database=ontology_graph_name,
-        )
         client = Graphiti(
             graph_driver=ontology_driver,
             llm_client=None,
