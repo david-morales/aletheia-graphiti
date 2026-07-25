@@ -116,3 +116,32 @@ def test_graphiti_service_selects_flavour_from_provider():
 def test_build_flavour_age():
     from flavours.age import AgeFlavour
     assert type(build_flavour("age")) is AgeFlavour
+
+
+# --- BaseFlavour.execute_graph_query normalizes driver return shapes ---
+
+@pytest.mark.asyncio
+async def test_base_execute_handles_neo4j_eager_result():
+    class _FakeEager:
+        records = [{"a": 1}, {"a": 2}]  # dict-able like neo4j Record
+        keys = ["a"]
+        summary = object()
+
+    class _Neo4jStub:
+        async def execute_query(self, q):
+            return _FakeEager()
+
+    records, header = await BaseFlavour().execute_graph_query(_Neo4jStub(), "MATCH (n) RETURN n.a AS a")
+    assert header == ["a"]
+    assert records == [{"a": 1}, {"a": 2}]
+
+
+@pytest.mark.asyncio
+async def test_base_execute_handles_tuple_shape():
+    class _TupleStub:  # FalkorDB/AGE-style (records, header, summary)
+        async def execute_query(self, q):
+            return ([{"c": 5}], ["c"], None)
+
+    records, header = await BaseFlavour().execute_graph_query(_TupleStub(), "RETURN 5 AS c")
+    assert header == ["c"]
+    assert records == [{"c": 5}]

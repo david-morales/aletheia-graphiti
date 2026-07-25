@@ -1493,12 +1493,14 @@ class TestNonCodeSpanPreservation:
 
 
 class TestRunCypherToolDescription:
-    def test_description_mentions_falkordb_dialect(self):
+    def test_docstring_is_backend_neutral_and_points_to_dialect_reference(self):
+        # ADR-019 R6: the run_cypher docstring must NOT hardcode a single backend's dialect —
+        # per-backend dialect lives in the (flavour-driven) tool description + get_schema's
+        # dialect_reference. The docstring points there instead.
         import re
         from pathlib import Path
         src_path = Path(__file__).parent.parent / 'src' / 'graphiti_mcp_server.py'
         source = src_path.read_text()
-        # Find the run_cypher async function and capture its docstring.
         m = re.search(
             r'async def run_cypher\([^)]*\)[^:]*:\s*"""(.*?)"""',
             source,
@@ -1506,8 +1508,7 @@ class TestRunCypherToolDescription:
         )
         assert m, 'run_cypher docstring not found'
         doc = m.group(1)
-        assert 'FalkorDB' in doc
         assert 'dialect' in doc.lower()
-        assert 'parens' in doc.lower() or 'parenthes' in doc.lower()
-        assert 'UNWIND' in doc
-        assert 'date' in doc.lower()
+        assert 'dialect_reference' in doc            # points to the announced dialect
+        # No hardcoded FalkorDB-only gotchas remain in the docstring.
+        assert 'FalkorDB Cypher dialect' not in doc

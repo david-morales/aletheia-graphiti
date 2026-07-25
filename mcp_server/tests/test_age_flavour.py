@@ -117,3 +117,25 @@ def test_classify_execution_error_graphid():
 def test_classify_execution_error_pipe_syntax():
     err = AgeFlavour().classify_execution_error('syntax error at or near "|"')
     assert "type(r) IN" in err.suggestion
+
+
+# --- AgeFlavour.attribute_keys reads the nested `attributes` agtype map (offline) ---
+
+@pytest.mark.asyncio
+async def test_age_attribute_keys_unions_nested_map_keys():
+    class _StubDriver:
+        async def execute_query(self, query, *a, **k):
+            assert "keys(n.attributes)" in query   # queries the nested map, not top-level keys
+            return ([{"ks": ["documento", "nombre"]}, {"ks": ["documento", "telefono"]}], None, None)
+
+    keys = await AgeFlavour().attribute_keys(_StubDriver(), "Persona")
+    assert keys == ["documento", "nombre", "telefono"]   # unioned across sample + sorted
+
+
+@pytest.mark.asyncio
+async def test_age_attribute_keys_swallows_non_map_label():
+    class _BoomDriver:
+        async def execute_query(self, query, *a, **k):
+            raise RuntimeError("attributes is not a map on this label")
+
+    assert await AgeFlavour().attribute_keys(_BoomDriver(), "Weird") == []

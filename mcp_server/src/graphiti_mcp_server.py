@@ -2087,12 +2087,9 @@ async def run_cypher(query: str) -> CypherResultResponse:
     explicit LIMIT values are respected.  Returns typed JSON (scalar,
     tabular, graph, path) with metadata.
 
-    Cypher dialect: FalkorDB openCypher (a few notable differences from
-    Neo4j).  Your system prompt may include a `FalkorDB Cypher dialect`
-    section — follow it.  Common gotchas: bound variables in patterns
-    must stay in parens (`(var)-[:R]->()`, not `var-[:R]->()`); WHERE
-    attaches only to MATCH/OPTIONAL MATCH/WITH (never directly to
-    UNWIND); dates are strings (`n.date > '2024-01-01'`, no `date()`).
+    Cypher dialect is backend-specific: the registered tool description and
+    get_schema's `dialect_reference` carry this graph's exact dialect notes
+    (FalkorDB openCypher vs Apache AGE openCypher differ) — follow those.
     """
     if graphiti_service is None:
         return format_error(query, CypherError(

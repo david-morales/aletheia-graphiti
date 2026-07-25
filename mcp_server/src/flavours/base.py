@@ -76,11 +76,19 @@ class BaseFlavour:
     async def execute_graph_query(
         self, driver: Any, query: str
     ) -> tuple[list[dict], list[str]]:
-        """Execute via the public driver API; returns (records, header).
+        """Execute via the public driver API; returns (records: list[dict], header: list[str]).
 
-        The whitelist guard in validate_and_sanitize is the read-only enforcement for
-        backends without a DB-enforced read-only mode.
+        The whitelist guard in validate_and_sanitize is the read-only enforcement for backends
+        without a DB-enforced read-only mode. Normalizes across driver return shapes:
+        FalkorDB/AGE return ``(records, header, summary)`` with dict rows; Neo4j returns a neo4j
+        ``EagerResult`` (``records``/``keys``/``summary`` attributes) with Record rows.
         """
-        records, header, _ = await driver.execute_query(query)
+        result = await driver.execute_query(query)
+        if hasattr(result, "records") and hasattr(result, "keys"):
+            # neo4j EagerResult: Record rows + explicit keys.
+            records = [dict(r) for r in result.records]
+            header = list(result.keys)
+            return records, header
+        records, header, _ = result
         header = list(header) if header else (list(records[0].keys()) if records else [])
         return list(records), header

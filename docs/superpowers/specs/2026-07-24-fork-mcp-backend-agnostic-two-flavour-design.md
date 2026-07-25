@@ -260,9 +260,13 @@ the user. A proper parse-based (ANTLR) rewrite remains a possible future enhance
   `AGEDriver`.
 - **ADR-015 R4** error contract preserved; **ADR-019** canonical `get_schema` + typed
   `outputSchema` + announced instructions.
-- **SemVer** — `mcp_server` `1.0.3` → **1.1.0** (minor; additive AGE backend + diagnostics,
-  FalkorDB/Neo4j behavior unchanged). Fork tag `mcp-v1.1.0` at landing. Regression test per fix
-  (Rules #12/#14).
+- **SemVer** — `mcp_server` `1.0.3` → **1.1.0** (minor; additive AGE backend + diagnostics).
+  FalkorDB/Neo4j **success** behavior is unchanged. One deliberate sub-shape change: `run_cypher`'s
+  ERROR envelope moves to ADR-015 R4 (top-level `error` STRING + `hint` + additive `error_detail`),
+  from the fork's prior non-conformant `error`-as-dict — a conformance fix toward the shape the
+  aletheia consumer already expects (the P3 cutover must confirm the consumer reads `error` as a
+  string / `error_detail.stage` if needed). Fork tag `mcp-v1.1.0` at landing. Regression test per
+  fix (Rules #12/#14).
 - **FalkorDB (`:6379` / `:3001`) hands-off** — reads only. The AGE store
   (`graphiti-age-spike :5433`) is a separate store, hands-off too.
 - **Landing** — fork `aletheia` is PROTECTED → land via **GitLab MR-via-API** (project 7573,
