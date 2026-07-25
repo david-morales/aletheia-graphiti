@@ -219,7 +219,15 @@ class TestResolveExactOnly:
 
 
 class TestResolveExtractedNodesPartitioning:
-    """Test that resolve_extracted_nodes correctly partitions identifier vs fuzzy nodes."""
+    """resolve_extracted_nodes routes identifier-name nodes through exact-only
+    resolution and fuzzy nodes through similarity + LLM.
+
+    graphiti-core v0.29.2 (#1224/#1432) collects candidates PER extracted node
+    (``_collect_candidate_nodes -> list[list[EntityNode]]``) and passes the full
+    extracted_nodes list to ``_resolve_with_llm`` (which selects unresolved ones
+    internally via state.unresolved_indices), so the mocks below return a
+    per-node candidate list.
+    """
 
     @pytest.mark.asyncio
     async def test_identifier_nodes_skip_llm(self):
@@ -230,11 +238,11 @@ class TestResolveExtractedNodesPartitioning:
         entity_types = {'Report': Report}
 
         mock_clients = MagicMock()
-        # Mock search to return the existing node as a candidate
+        # Candidates are per-extracted-node: one list for the one extracted node.
         with patch(
             'graphiti_core.utils.maintenance.node_operations._collect_candidate_nodes',
             new_callable=AsyncMock,
-            return_value=[existing_report],
+            return_value=[[existing_report]],
         ):
             with patch(
                 'graphiti_core.utils.maintenance.node_operations._resolve_with_llm',
@@ -266,7 +274,7 @@ class TestResolveExtractedNodesPartitioning:
         with patch(
             'graphiti_core.utils.maintenance.node_operations._collect_candidate_nodes',
             new_callable=AsyncMock,
-            return_value=[existing_report],
+            return_value=[[existing_report]],
         ):
             with patch(
                 'graphiti_core.utils.maintenance.node_operations._resolve_with_llm',
@@ -287,9 +295,11 @@ class TestResolveExtractedNodesPartitioning:
 
     @pytest.mark.asyncio
     async def test_fuzzy_nodes_still_go_to_llm(self):
-        """Non-identifier nodes still go through similarity + LLM pipeline."""
+        """Non-identifier nodes with no deterministic match go to the LLM pipeline."""
         extracted_person = _make_node('John Smith', uuid='new-person', labels=['Entity', 'Person'])
-        existing_person = _make_node('Jon Smith', uuid='existing-person', labels=['Entity', 'Person'])
+        # A candidate that will NOT be a deterministic (exact/fuzzy) match, so the
+        # node stays unresolved and _resolve_with_llm is invoked.
+        existing_person = _make_node('Completely Different', uuid='existing-person', labels=['Entity', 'Person'])
 
         entity_types = {'Person': Person}
 
@@ -297,7 +307,7 @@ class TestResolveExtractedNodesPartitioning:
         with patch(
             'graphiti_core.utils.maintenance.node_operations._collect_candidate_nodes',
             new_callable=AsyncMock,
-            return_value=[existing_person],
+            return_value=[[existing_person]],
         ):
             with patch(
                 'graphiti_core.utils.maintenance.node_operations._resolve_with_llm',
@@ -316,12 +326,13 @@ class TestResolveExtractedNodesPartitioning:
     async def test_no_entity_types_all_fuzzy(self):
         """When entity_types=None, all nodes go through fuzzy pipeline (backward compatible)."""
         extracted = _make_node('Report-001', uuid='new-uuid', labels=['Entity', 'Report'])
+        existing = _make_node('Completely Different', uuid='existing-uuid', labels=['Entity'])
 
         mock_clients = MagicMock()
         with patch(
             'graphiti_core.utils.maintenance.node_operations._collect_candidate_nodes',
             new_callable=AsyncMock,
-            return_value=[],
+            return_value=[[existing]],
         ):
             with patch(
                 'graphiti_core.utils.maintenance.node_operations._resolve_with_llm',
@@ -342,14 +353,16 @@ class TestResolveExtractedNodesPartitioning:
         extracted_report = _make_node('Report-001', uuid='new-report', labels=['Entity', 'Report'])
         extracted_person = _make_node('John Smith', uuid='new-person', labels=['Entity', 'Person'])
         existing_report = _make_node('Report-001', uuid='existing-report', labels=['Entity', 'Report'])
+        existing_person = _make_node('Completely Different', uuid='existing-person', labels=['Entity', 'Person'])
 
         entity_types = {'Report': Report, 'Person': Person}
 
         mock_clients = MagicMock()
+        # Per-node candidates: report matches its existing; person has a non-matching candidate.
         with patch(
             'graphiti_core.utils.maintenance.node_operations._collect_candidate_nodes',
             new_callable=AsyncMock,
-            return_value=[existing_report],
+            return_value=[[existing_report], [existing_person]],
         ):
             with patch(
                 'graphiti_core.utils.maintenance.node_operations._resolve_with_llm',
@@ -361,16 +374,12 @@ class TestResolveExtractedNodesPartitioning:
                     entity_types=entity_types,
                 )
 
-                # LLM should be called for the Person node only
+                # LLM is invoked once for the unresolved (fuzzy) node(s); the
+                # identifier report was resolved exact-only and never sent.
                 mock_llm.assert_called_once()
-                # Verify the fuzzy_nodes list passed to _resolve_with_llm contains only the person
-                call_args = mock_llm.call_args
-                fuzzy_nodes_arg = call_args[1].get('extracted_nodes', call_args[0][1])
-                assert len(fuzzy_nodes_arg) == 1
-                assert fuzzy_nodes_arg[0] is extracted_person
 
-        # Report merged with existing
+        # Report merged with existing via exact-only (no LLM)
         assert resolved[0] is existing_report
         assert uuid_map['new-report'] == 'existing-report'
-        # Person resolved (by fallback since mock LLM doesn't resolve)
+        # Person resolved to itself (mock LLM does not resolve it)
         assert resolved[1] is extracted_person

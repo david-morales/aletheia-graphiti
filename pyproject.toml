@@ -1,7 +1,7 @@
 [project]
 name = "graphiti-core"
 description = "A temporal graph building library"
-version = "0.27.0pre2"
+version = "0.29.2"
 authors = [
     { name = "Paul Paliychuk", email = "paul@getzep.com" },
     { name = "Preston Rasmussen", email = "preston@getzep.com" },
@@ -29,10 +29,14 @@ anthropic = ["anthropic>=0.49.0"]
 bedrock = ["langchain-aws>=0.2.29"]
 groq = ["groq>=0.2.0"]
 google-genai = ["google-genai>=1.62.0"]
+# Deprecated: the upstream Kuzu project is unmaintained; this extra will be removed in a future release.
 kuzu = ["kuzu>=0.11.3"]
 falkordb = ["falkordb>=1.1.2,<2.0.0"]
 age = ["asyncpg>=0.30.0"]
+# redis<8 pin: redis-py 8.x breaks falkordblite's embedded server startup
+falkordblite = ["falkordblite>=0.5.0; python_version>='3.12'", "redis<8; python_version>='3.12'"]
 voyageai = ["voyageai>=0.2.3"]
+gliner2 = ["gliner2>=1.2.0; python_version>='3.11'"]
 neo4j-opensearch = ["boto3>=1.39.16", "opensearch-py>=3.0.0"]
 sentence-transformers = ["sentence-transformers>=3.2.1"]
 neptune = ["langchain-aws>=0.2.29", "opensearch-py>=3.0.0", "boto3>=1.39.16"]
@@ -49,7 +53,7 @@ dev = [
     "langchain-aws>=0.2.29",
     "ipykernel>=6.29.5",
     "jupyterlab>=4.2.4",
-    "langgraph>=0.2.15",
+    "langgraph>=1.0.10",
     "langchain-anthropic>=0.2.4",
     "langsmith>=0.1.108",
     "langchain-openai>=0.2.6",

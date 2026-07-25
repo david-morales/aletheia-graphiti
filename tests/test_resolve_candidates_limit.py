@@ -1,10 +1,16 @@
-"""Test that resolve_extracted_nodes limits candidate context to prevent token overflow.
-Upstream #1276."""
+"""Test that node dedup limits candidate context to prevent token overflow.
 
-from graphiti_core.utils.maintenance.node_operations import MAX_RESOLVE_CANDIDATES
+The fork's MAX_RESOLVE_CANDIDATES (#1276) was superseded by graphiti-core
+v0.29.2's ID-based dedup (#1224/#1432), which limits the candidate set via
+NODE_DEDUP_CANDIDATE_LIMIT during candidate collection. The context-overflow
+guard is preserved; only the constant/mechanism changed.
+"""
+
+from graphiti_core.utils.maintenance.node_operations import NODE_DEDUP_CANDIDATE_LIMIT
 
 
-def test_max_resolve_candidates_constant_exists():
-    """MAX_RESOLVE_CANDIDATES should be defined and reasonable."""
-    assert isinstance(MAX_RESOLVE_CANDIDATES, int)
-    assert MAX_RESOLVE_CANDIDATES == 50
+def test_node_dedup_candidate_limit_constant_exists():
+    """NODE_DEDUP_CANDIDATE_LIMIT should bound the candidate context passed to
+    dedup so the LLM prompt cannot overflow with too many candidates."""
+    assert isinstance(NODE_DEDUP_CANDIDATE_LIMIT, int)
+    assert 0 < NODE_DEDUP_CANDIDATE_LIMIT <= 50

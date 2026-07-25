@@ -1,8 +1,14 @@
 """Test that custom edge attributes are extracted even on the first-episode fast path
-(no related or existing edges). Upstream #1242."""
+(no related or existing edges). Upstream #1242.
+
+graphiti-core v0.29.2 (#1498) evolved this fast path: attribute extraction now
+runs through ``apply_capped_attributes`` (the LLM response is a dict, capped and
+merged) and edge-timestamp extraction runs unconditionally afterwards. These
+tests patch out ``_extract_edge_timestamps`` to isolate the attribute behavior.
+"""
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -19,6 +25,7 @@ class OccurredAtAttributes(BaseModel):
 @pytest.mark.asyncio
 async def test_resolve_extracted_edge_extracts_attributes_on_empty_graph():
     """When no related or existing edges, custom attributes should still be extracted."""
+    from graphiti_core.utils.maintenance import edge_operations as edge_ops
     from graphiti_core.utils.maintenance.edge_operations import resolve_extracted_edge
 
     now = datetime.now(timezone.utc)
@@ -43,24 +50,24 @@ async def test_resolve_extracted_edge_extracts_attributes_on_empty_graph():
     )
 
     mock_llm = AsyncMock()
-    mock_llm.generate_response.return_value = OccurredAtAttributes(
-        location='Location X', severity='high'
-    )
+    # generate_response returns a dict (parsed JSON), which apply_capped_attributes caps + merges.
+    mock_llm.generate_response.return_value = {'location': 'Location X', 'severity': 'high'}
 
     edge_type_candidates = {'OCCURRED_AT': OccurredAtAttributes}
 
-    resolved, duplicates, invalidated = await resolve_extracted_edge(
-        mock_llm,
-        extracted_edge,
-        [],  # no related edges
-        [],  # no existing edges
-        episode,
-        edge_type_candidates=edge_type_candidates,
-    )
+    with patch.object(edge_ops, '_extract_edge_timestamps', new_callable=AsyncMock):
+        resolved, duplicates, invalidated = await resolve_extracted_edge(
+            mock_llm,
+            extracted_edge,
+            [],  # no related edges
+            [],  # no existing edges
+            episode,
+            edge_type_candidates=edge_type_candidates,
+        )
 
-    # Attributes should have been extracted via LLM
+    # Attributes should have been extracted via LLM (once, for attributes).
     mock_llm.generate_response.assert_called_once()
-    assert resolved.attributes == OccurredAtAttributes(location='Location X', severity='high')
+    assert resolved.attributes == {'location': 'Location X', 'severity': 'high'}
     assert duplicates == []
     assert invalidated == []
 
@@ -68,6 +75,7 @@ async def test_resolve_extracted_edge_extracts_attributes_on_empty_graph():
 @pytest.mark.asyncio
 async def test_resolve_extracted_edge_skips_attributes_when_no_model():
     """When no edge_type_candidates match, skip attribute extraction on fast path."""
+    from graphiti_core.utils.maintenance import edge_operations as edge_ops
     from graphiti_core.utils.maintenance.edge_operations import resolve_extracted_edge
 
     now = datetime.now(timezone.utc)
@@ -93,16 +101,17 @@ async def test_resolve_extracted_edge_skips_attributes_when_no_model():
 
     mock_llm = AsyncMock()
 
-    _resolved, duplicates, invalidated = await resolve_extracted_edge(
-        mock_llm,
-        extracted_edge,
-        [],
-        [],
-        episode,
-        edge_type_candidates={'OTHER_TYPE': OccurredAtAttributes},
-    )
+    with patch.object(edge_ops, '_extract_edge_timestamps', new_callable=AsyncMock):
+        _resolved, duplicates, invalidated = await resolve_extracted_edge(
+            mock_llm,
+            extracted_edge,
+            [],
+            [],
+            episode,
+            edge_type_candidates={'OTHER_TYPE': OccurredAtAttributes},
+        )
 
-    # No LLM call — no matching edge type
+    # No attribute LLM call — no matching edge type (timestamp extraction is patched out).
     mock_llm.generate_response.assert_not_called()
     assert duplicates == []
     assert invalidated == []

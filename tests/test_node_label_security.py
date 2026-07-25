@@ -21,11 +21,12 @@ def test_entity_node_rejects_unsafe_labels():
 
 def test_entity_node_assignment_rejects_unsafe_labels():
     node = EntityNode(name='Alice', group_id='group', labels=['Person'])
+
     with pytest.raises(ValidationError, match='node_labels must start with a letter or underscore'):
         node.labels = ['Entity`) WITH n MATCH (x) DETACH DELETE x //']
 
 
-def test_entity_node_save_query_rejects_unsafe_labels():
+def test_entity_node_save_query_rejects_unsafe_labels_when_validation_is_bypassed():
     with pytest.raises(
         NodeLabelValidationError, match='node_labels must start with a letter or underscore'
     ):
@@ -35,7 +36,7 @@ def test_entity_node_save_query_rejects_unsafe_labels():
         )
 
 
-def test_entity_node_save_bulk_query_rejects_unsafe_labels():
+def test_entity_node_save_bulk_query_rejects_unsafe_labels_when_validation_is_bypassed():
     with pytest.raises(
         NodeLabelValidationError, match='node_labels must start with a letter or underscore'
     ):

@@ -74,6 +74,7 @@ class EpisodeType(Enum):
     message = 'message'
     json = 'json'
     text = 'text'
+    fact_triple = 'fact_triple'
 
     @staticmethod
     def from_str(episode_type: str):
@@ -83,6 +84,8 @@ class EpisodeType(Enum):
             return EpisodeType.json
         if episode_type == 'text':
             return EpisodeType.text
+        if episode_type == 'fact_triple':
+            return EpisodeType.fact_triple
         logger.error(f'Episode type: {episode_type} not implemented')
         raise NotImplementedError
 
@@ -323,6 +326,10 @@ class EpisodicNode(Node):
         description='list of entity edges referenced in this episode',
         default_factory=list,
     )
+    episode_metadata: dict[str, Any] | None = Field(
+        description='customer-defined metadata key-value pairs for filtering',
+        default=None,
+    )
 
     async def save(self, driver: GraphDriver):
         if driver.graph_operations_interface:
@@ -504,7 +511,9 @@ class EntityNode(Node):
         text = self.name.replace('\n', ' ')
         self.name_embedding = await embedder.create(input_data=[text])
         end = time()
-        logger.debug(f'embedded node {self.uuid} name ({len(text)} chars) in {(end - start) * 1000:.1f} ms')
+        logger.debug(
+            f'embedded entity {self.uuid} name ({len(text)} chars) in {(end - start) * 1000} ms'
+        )
 
         return self.name_embedding
 
@@ -571,7 +580,9 @@ class EntityNode(Node):
                 **entity_data,
             )
         else:
-            entity_data.update(self.attributes or {})
+            for k, v in (self.attributes or {}).items():
+                if k not in entity_data:
+                    entity_data[k] = v
             labels = ':'.join(self.labels + ['Entity'])
 
             result = await driver.execute_query(
@@ -609,10 +620,12 @@ class EntityNode(Node):
         return nodes[0]
 
     @classmethod
-    async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
+    async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str], group_id: str | None = None):
         if driver.graph_operations_interface:
             try:
-                return await driver.graph_operations_interface.node_get_by_uuids(cls, driver, uuids)
+                return await driver.graph_operations_interface.node_get_by_uuids(
+                    cls, driver, uuids, group_id
+                )
             except NotImplementedError:
                 pass
 
@@ -719,7 +732,9 @@ class CommunityNode(Node):
         text = self.name.replace('\n', ' ')
         self.name_embedding = await embedder.create(input_data=[text])
         end = time()
-        logger.debug(f'embedded node {self.uuid} name ({len(text)} chars) in {(end - start) * 1000:.1f} ms')
+        logger.debug(
+            f'embedded entity {self.uuid} name ({len(text)} chars) in {(end - start) * 1000} ms'
+        )
 
         return self.name_embedding
 
@@ -863,6 +878,16 @@ class CommunityNode(Node):
 
 
 class SagaNode(Node):
+    summary: str = ''
+    first_episode_uuid: str | None = None
+    last_episode_uuid: str | None = None
+    last_summarized_at: datetime | None = None
+    # Maximum ``valid_at`` (episode reference time) across all episodes covered
+    # by the most recent summary. ``last_summarized_at`` is wall-clock and is
+    # used as the watermark for the next incremental summarize run; this field
+    # carries the episode-time semantics for public/temporal consumers.
+    last_summarized_episode_valid_at: datetime | None = None
+
     async def save(self, driver: GraphDriver):
         if driver.graph_operations_interface:
             try:
@@ -876,6 +901,11 @@ class SagaNode(Node):
             name=self.name,
             group_id=self.group_id,
             created_at=self.created_at,
+            summary=self.summary,
+            first_episode_uuid=self.first_episode_uuid,
+            last_episode_uuid=self.last_episode_uuid,
+            last_summarized_at=self.last_summarized_at,
+            last_summarized_episode_valid_at=self.last_summarized_episode_valid_at,
         )
 
         logger.debug(f'Saved Node to Graph: {self.uuid}')
@@ -1075,11 +1105,22 @@ def get_community_node_from_record(record: Any) -> CommunityNode:
 
 
 def get_saga_node_from_record(record: Any) -> SagaNode:
+    last_summarized_at = record.get('last_summarized_at')
+    last_summarized_episode_valid_at = record.get('last_summarized_episode_valid_at')
     return SagaNode(
         uuid=record['uuid'],
         name=record['name'],
         group_id=record['group_id'],
         created_at=parse_db_date(record['created_at']),  # type: ignore
+        summary=record.get('summary', '') or '',
+        first_episode_uuid=record.get('first_episode_uuid'),
+        last_episode_uuid=record.get('last_episode_uuid'),
+        last_summarized_at=parse_db_date(last_summarized_at) if last_summarized_at else None,  # type: ignore
+        last_summarized_episode_valid_at=(
+            parse_db_date(last_summarized_episode_valid_at)  # type: ignore
+            if last_summarized_episode_valid_at
+            else None
+        ),
     )
 
 

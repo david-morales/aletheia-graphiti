@@ -93,8 +93,8 @@ async def test_extraction_isolates_per_episode_failures():
         if episode.name == 'ep1':
             raise RuntimeError('LLM extraction failed for ep1')
         if episode.name == 'ep0':
-            return [node_a]
-        return [node_b]
+            return ([node_a], {})
+        return ([node_b], {})
 
     async def mock_extract_edges(clients, episode, nodes, previous_episodes, **kwargs):
         if episode.name == 'ep0':
@@ -141,8 +141,8 @@ async def test_extraction_all_succeed_returns_empty_failures():
 
     async def mock_extract_nodes(clients, episode, previous_episodes, **kwargs):
         if episode.name == 'ep0':
-            return [node_a]
-        return [node_b]
+            return ([node_a], {})
+        return ([node_b], {})
 
     async def mock_extract_edges(clients, episode, nodes, previous_episodes, **kwargs):
         if episode.name == 'ep0':
@@ -188,10 +188,10 @@ async def test_edge_extraction_failure_also_captured():
 
     async def mock_extract_nodes(clients, episode, previous_episodes, **kwargs):
         if episode.name == 'ep0':
-            return [node_a]
+            return ([node_a], {})
         if episode.name == 'ep1':
-            return [node_b]
-        return [node_c]
+            return ([node_b], {})
+        return ([node_c], {})
 
     async def mock_extract_edges(clients, episode, nodes, previous_episodes, **kwargs):
         if episode.name == 'ep1':

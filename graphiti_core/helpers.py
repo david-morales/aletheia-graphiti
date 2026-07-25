@@ -71,7 +71,7 @@ def get_default_group_id(provider: GraphProvider) -> str:
     For most databases, the default group id is an empty string, while there are database types that require a specific default group id.
     """
     if provider == GraphProvider.FALKORDB:
-        return '\\_'
+        return '_'
     else:
         return ''
 
@@ -197,22 +197,28 @@ def validate_group_id(group_id: str | None) -> bool:
 
 def validate_group_ids(group_ids: list[str] | None) -> bool:
     """Validate a list of group ids used by search paths."""
+
     if group_ids is None:
         return True
+
     for group_id in group_ids:
         validate_group_id(group_id)
+
     return True
 
 
 def validate_node_labels(node_labels: list[str] | None) -> bool:
     """Validate that node labels are safe to interpolate into Cypher label expressions."""
+
     if not node_labels:
         return True
+
     invalid_labels = [
         label for label in node_labels if not SAFE_CYPHER_IDENTIFIER_PATTERN.match(label)
     ]
     if invalid_labels:
         raise NodeLabelValidationError(invalid_labels)
+
     return True
 
 

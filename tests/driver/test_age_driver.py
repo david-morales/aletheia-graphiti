@@ -92,6 +92,37 @@ async def test_node_save_and_get_roundtrip(age_driver):
 
 
 @pytest.mark.asyncio
+async def test_node_get_by_uuids_accepts_and_filters_by_group_id(age_driver):
+    """Regression: graphiti-core v0.29.2 added a ``group_id`` param to
+    GraphOperationsInterface.node_get_by_uuids and the core calls it positionally
+    (EntityNode.get_by_uuids). The AGE override must accept it and, when provided,
+    filter by it. Without the param this raised TypeError (5 positional args).
+    """
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import EntityNode
+
+    ops = age_driver.graph_operations_interface
+    now = datetime.now(timezone.utc)
+    a = EntityNode(name='A', group_id='g1', labels=['Entity'], created_at=now)
+    b = EntityNode(name='B', group_id='g2', labels=['Entity'], created_at=now)
+    a.name_embedding = [0.1] * age_driver.embedding_dim
+    b.name_embedding = [0.2] * age_driver.embedding_dim
+    await ops.node_save(a, age_driver)
+    await ops.node_save(b, age_driver)
+
+    uuids = [a.uuid, b.uuid]
+
+    # No group_id -> both returned (the param is optional).
+    both = await ops.node_get_by_uuids(EntityNode, age_driver, uuids)
+    assert {n.uuid for n in both} == {a.uuid, b.uuid}
+
+    # group_id provided -> only that partition's node (positional, as core calls it).
+    only_g1 = await ops.node_get_by_uuids(EntityNode, age_driver, uuids, 'g1')
+    assert {n.uuid for n in only_g1} == {a.uuid}
+
+
+@pytest.mark.asyncio
 async def test_node_attributes_are_queryable_map_not_json_string(age_driver):
     """Regression: entity attributes must persist as a queryable agtype MAP so
     `n.attributes.<field>` works in Cypher. They were previously json.dumps()'d to
