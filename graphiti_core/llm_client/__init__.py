@@ -18,6 +18,7 @@ from .client import LLMClient  # noqa: F401
 from .config import LLMConfig  # noqa: F401
 from .errors import RateLimitError  # noqa: F401
 from .openai_client import OpenAIClient  # noqa: F401
+from .token_tracker import TokenUsage, TokenUsageTracker  # noqa: F401
 
 # AnthropicClient is re-exported only when the `anthropic` package is
 # installed. The underlying module raises ImportError at import time when
@@ -41,7 +42,7 @@ try:
 except ImportError:
     _bedrock_available = False
 
-_base = ['LLMClient', 'OpenAIClient', 'LLMConfig', 'RateLimitError']
+_base = ['LLMClient', 'OpenAIClient', 'LLMConfig', 'RateLimitError', 'TokenUsage', 'TokenUsageTracker']
 if _anthropic_available:
     _base.append('AnthropicClient')
 if _bedrock_available:

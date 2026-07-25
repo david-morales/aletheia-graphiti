@@ -15,6 +15,7 @@ from graphiti_core.prompts import prompt_library
 from graphiti_core.prompts.summarize_nodes import Summary, SummaryDescription
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.edge_operations import build_community_edges
+from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
 
 MAX_COMMUNITY_BUILD_CONCURRENCY = 10
 MAX_ITERATIONS = 100
@@ -177,7 +178,7 @@ async def summarize_pair(llm_client: LLMClient, summary_pair: tuple[str, str]) -
 
     pair_summary = llm_response.get('summary', '')
 
-    return pair_summary
+    return truncate_at_sentence(pair_summary, MAX_SUMMARY_CHARS)
 
 
 async def generate_summary_description(llm_client: LLMClient, summary: str) -> str:
@@ -221,7 +222,7 @@ async def build_community(
         summaries = new_summaries
         length = len(summaries)
 
-    summary = summaries[0]
+    summary = truncate_at_sentence(summaries[0], MAX_SUMMARY_CHARS)
     name = await generate_summary_description(llm_client, summary)
     now = utc_now()
     community_node = CommunityNode(

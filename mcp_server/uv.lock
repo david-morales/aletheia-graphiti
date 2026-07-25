@@ -750,7 +750,7 @@ wheels = [
 
 [[package]]
 name = "graphiti-core"
-version = "0.27.0rc2"
+version = "0.29.2"
 source = { editable = "../" }
 dependencies = [
     { name = "neo4j" },
@@ -780,6 +780,8 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'neptune'", specifier = ">=1.39.16" },
     { name = "falkordb", marker = "extra == 'dev'", specifier = ">=1.1.2,<2.0.0" },
     { name = "falkordb", marker = "extra == 'falkordb'", specifier = ">=1.1.2,<2.0.0" },
+    { name = "falkordblite", marker = "python_full_version >= '3.12' and extra == 'falkordblite'", specifier = ">=0.5.0" },
+    { name = "gliner2", marker = "python_full_version >= '3.11' and extra == 'gliner2'", specifier = ">=1.2.0" },
     { name = "google-genai", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "google-genai", marker = "extra == 'google-genai'", specifier = ">=1.62.0" },
     { name = "groq", marker = "extra == 'dev'", specifier = ">=0.2.0" },
@@ -793,7 +795,7 @@ requires-dist = [
     { name = "langchain-aws", marker = "extra == 'dev'", specifier = ">=0.2.29" },
     { name = "langchain-aws", marker = "extra == 'neptune'", specifier = ">=0.2.29" },
     { name = "langchain-openai", marker = "extra == 'dev'", specifier = ">=0.2.6" },
-    { name = "langgraph", marker = "extra == 'dev'", specifier = ">=0.2.15" },
+    { name = "langgraph", marker = "extra == 'dev'", specifier = ">=1.0.10" },
     { name = "langsmith", marker = "extra == 'dev'", specifier = ">=0.1.108" },
     { name = "neo4j", specifier = ">=5.26.0" },
     { name = "numpy", specifier = ">=1.0.0" },
@@ -811,6 +813,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.1" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "redis", marker = "python_full_version >= '3.12' and extra == 'falkordblite'", specifier = "<8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.1" },
     { name = "sentence-transformers", marker = "extra == 'dev'", specifier = ">=3.2.1" },
     { name = "sentence-transformers", marker = "extra == 'sentence-transformers'", specifier = ">=3.2.1" },
@@ -819,7 +822,7 @@ requires-dist = [
     { name = "voyageai", marker = "extra == 'dev'", specifier = ">=0.2.3" },
     { name = "voyageai", marker = "extra == 'voyageai'", specifier = ">=0.2.3" },
 ]
-provides-extras = ["anthropic", "bedrock", "groq", "google-genai", "kuzu", "falkordb", "age", "voyageai", "neo4j-opensearch", "sentence-transformers", "neptune", "tracing", "dev"]
+provides-extras = ["anthropic", "bedrock", "groq", "google-genai", "kuzu", "falkordb", "age", "falkordblite", "voyageai", "gliner2", "neo4j-opensearch", "sentence-transformers", "neptune", "tracing", "dev"]
 
 [[package]]
 name = "groq"

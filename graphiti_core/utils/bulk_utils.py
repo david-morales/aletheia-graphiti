@@ -199,7 +199,9 @@ async def add_nodes_and_edges_bulk_tx(
                 if isinstance(v, str) and '\n' in v:
                     entity_data[k] = v.replace('\n', ' ')
         else:
-            entity_data.update(node.attributes or {})
+            for k, v in (node.attributes or {}).items():
+                if k not in entity_data:
+                    entity_data[k] = v
 
         nodes.append(entity_data)
 
@@ -219,6 +221,7 @@ async def add_nodes_and_edges_bulk_tx(
             'expired_at': edge.expired_at,
             'valid_at': edge.valid_at,
             'invalid_at': edge.invalid_at,
+            'reference_time': edge.reference_time,
             'fact_embedding': edge.fact_embedding,
         }
 
@@ -238,7 +241,13 @@ async def add_nodes_and_edges_bulk_tx(
                 if isinstance(v, str) and '\n' in v:
                     edge_data[k] = v.replace('\n', ' ')
         else:
-            edge_data.update(edge.attributes or {})
+            # Merge attributes without overwriting explicit edge fields.
+            # Attributes may contain stale string versions of typed fields
+            # (e.g. reference_time as ISO string) that would replace the
+            # datetime values set above.
+            for k, v in (edge.attributes or {}).items():
+                if k not in edge_data:
+                    edge_data[k] = v
 
         edges.append(edge_data)
 
