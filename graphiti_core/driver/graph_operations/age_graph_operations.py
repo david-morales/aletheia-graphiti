@@ -185,12 +185,19 @@ class AGEGraphOperations(GraphOperationsInterface):
             raise NodeNotFoundError(uuid)
         return self._hydrate_entity(_cls, records[0]['props'])
 
-    async def node_get_by_uuids(self, _cls: Any, driver: Any, uuids: list[str]) -> list[Any]:
+    async def node_get_by_uuids(
+        self, _cls: Any, driver: Any, uuids: list[str], group_id: str | None = None
+    ) -> list[Any]:
+        # group_id added to the GraphOperationsInterface in graphiti-core v0.29.2;
+        # honor it as an optional partition filter when provided.
         if not uuids:
             return []
         in_list = ', '.join(_cy(u) for u in uuids)
+        where = f'n.uuid IN [{in_list}]'
+        if group_id is not None:
+            where += f' AND n.group_id = {_cy(group_id)}'
         records, _, _ = await driver.execute_query(
-            f'MATCH (n) WHERE n.uuid IN [{in_list}] RETURN properties(n) AS props'
+            f'MATCH (n) WHERE {where} RETURN properties(n) AS props'
         )
         return [self._hydrate_entity(_cls, r['props']) for r in records]
 
