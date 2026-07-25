@@ -775,11 +775,21 @@ class TestToolDescriptions:
         assert 'Aircraft' in desc
 
     def test_run_cypher_description_includes_dialect_cheatsheet(self):
+        # ADR-019 R6: the dialect cheatsheet is now flavour-driven (sourced from the flavour's
+        # dialect_summary), not hardcoded. Passing the FalkorDB flavour surfaces its notes.
+        from tool_descriptions import build_run_cypher_description
+        from flavours.falkordb import FalkorDbFlavour
+
+        desc = build_run_cypher_description(_make_test_profile(), FalkorDbFlavour())
+        assert 'FalkorDB' in desc
+        assert 'APOC' in desc
+
+    def test_run_cypher_description_no_flavour_omits_dialect_cheatsheet(self):
+        # Without a flavour there is no per-backend dialect block (it is no longer hardcoded).
         from tool_descriptions import build_run_cypher_description
 
         desc = build_run_cypher_description(_make_test_profile())
-        assert 'FalkorDB' in desc
-        assert 'APOC' in desc
+        assert 'Dialect notes:' not in desc
 
     def test_run_cypher_description_includes_examples(self):
         from tool_descriptions import build_run_cypher_description
