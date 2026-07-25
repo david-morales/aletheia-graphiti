@@ -35,9 +35,12 @@ def test_prompt_mentions_alias_matching():
 
 def test_existing_guidelines_preserved():
     text = _get_prompt_text()
-    # Guideline 1: numeric key differences should not be marked as duplicates
+    # Guideline 1: numeric key differences should not be marked as duplicates.
+    # v0.29.2 rephrased the conclusion ("Do not mark these facts as duplicates"
+    # -> "NEVER mark facts as duplicates if they have key differences"); the
+    # intent is preserved.
     assert 'key differences' in text, "Original guideline about key differences must be preserved"
     assert 'numeric values' in text, "Original guideline about numeric values must be preserved"
-    assert 'Do not mark these facts as duplicates' in text, (
-        "Original guideline conclusion must be preserved"
+    assert 'never mark facts as duplicates' in text.lower(), (
+        "Guideline that facts with key differences are not duplicates must be preserved"
     )
