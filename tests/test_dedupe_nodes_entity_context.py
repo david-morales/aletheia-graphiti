@@ -58,20 +58,16 @@ class TestExistingEntitiesStructure:
     entity_type_description so the LLM knows it's available."""
 
     def test_existing_entities_structure_mentions_entity_type_description(self):
+        # v0.29.2 dedup prompt is ID-based (duplicate_candidate_id); the fork's
+        # f87e5f2 behavior is preserved by surfacing entity_type_description in
+        # the existing-entities context + guidance on type-defined identifiers.
         text = _render_nodes_prompt()
-        # The structure documentation for EXISTING ENTITIES should mention
-        # entity_type_description alongside name and entity_types.
-        # Find the part describing existing entities structure.
         lower = text.lower()
-        existing_section_start = lower.find('existing entities is an object')
-        assert existing_section_start != -1, (
-            "Prompt should describe EXISTING ENTITIES structure"
+        assert 'entity_type_description' in lower, (
+            "Prompt must surface entity_type_description for existing entities"
         )
-        # The structure description should mention entity_type_description
-        # somewhere after the structure heading
-        structure_section = lower[existing_section_start:existing_section_start + 500]
-        assert 'entity_type_description' in structure_section, (
-            "EXISTING ENTITIES structure description must include entity_type_description field"
+        assert 'unique identifier' in lower, (
+            "Prompt guidance should reference type-defined unique identifiers"
         )
 
     def test_existing_entities_data_included_in_prompt(self):
@@ -178,7 +174,7 @@ class TestResolveLlmPassesEntityTypeDescriptions:
             captured_context['prompt_text'] = prompt[1].content
             return {
                 'entity_resolutions': [
-                    {'id': 0, 'name': 'En route near LEBL', 'duplicate_name': ''},
+                    {'id': 0, 'name': 'En route near LEBL', 'duplicate_candidate_id': -1},
                 ]
             }
 
@@ -215,7 +211,7 @@ class TestResolveLlmPassesEntityTypeDescriptions:
             captured_context['prompt_text'] = prompt[1].content
             return {
                 'entity_resolutions': [
-                    {'id': 0, 'name': 'Another Entity', 'duplicate_name': ''},
+                    {'id': 0, 'name': 'Another Entity', 'duplicate_candidate_id': -1},
                 ]
             }
 

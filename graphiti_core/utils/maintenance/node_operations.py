@@ -517,16 +517,13 @@ async def _resolve_with_llm(
                 [ctx['id'] for ctx in extracted_nodes_context[-sample_size:]],
             )
 
-    def _get_entity_type_description(labels: list[str]) -> str:
-        type_name = next((label for label in labels if label != 'Entity'), '')
-        type_model = entity_types_dict.get(type_name)
-        return type_model.__doc__ or 'Default Entity Type' if type_model else 'Default Entity Type'
-
     existing_nodes_context = [
         {
             # fork f87e5f2: give the dedup LLM the entity-type description so it
             # can reason about type-defined unique identifiers.
-            'entity_type_description': _get_entity_type_description(candidate.labels),
+            'entity_type_description': _get_entity_type_description(
+                candidate.labels, entity_types_dict
+            ),
             **candidate.attributes,
             'candidate_id': i,
             'name': candidate.name,

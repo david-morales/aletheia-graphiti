@@ -735,12 +735,8 @@ async def resolve_extracted_edges(
 
         resolved_edges.append(resolved_edge)
         invalidated_edges.extend(invalidated_edge_chunk)
-        # Track edges that are new (not duplicates of existing edges)
-        if resolved_edge.uuid == extracted_edge.uuid:
-            new_edges.append(resolved_edge)
-
-        # Track edges that are new (not duplicates of existing edges)
-        # An edge is new if the resolved edge UUID matches the extracted edge UUID
+        # Track edges that are new (not duplicates of existing edges):
+        # an edge is new if the resolved edge UUID matches the extracted edge UUID.
         if resolved_edge.uuid == extracted_edge.uuid:
             new_edges.append(resolved_edge)
 

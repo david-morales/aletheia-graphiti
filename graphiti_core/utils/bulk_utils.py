@@ -343,7 +343,10 @@ async def extract_nodes_and_edges_bulk(
         idx: int, episode: EpisodicNode, previous_episodes: list[EpisodicNode]
     ) -> tuple[int, list[EntityNode] | None, Exception | None]:
         try:
-            nodes = await extract_nodes(
+            # extract_nodes returns (nodes, node_episode_index_map) since v0.29.2
+            # (#1432); the bulk path connects all nodes to all episodes, so the
+            # per-node attribution map is not used here.
+            nodes, _ = await extract_nodes(
                 clients,
                 episode,
                 previous_episodes,
