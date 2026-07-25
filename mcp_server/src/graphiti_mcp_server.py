@@ -67,11 +67,13 @@ from tool_descriptions import (
 )
 from models.response_types import (
     CommunityBuildResponse,
+    CypherResultResponse,
     EpisodeAddedResponse,
     EpisodeContextResponse,
     EpisodeSearchResponse,
     ErrorResponse,
     ExploreResponse,
+    SchemaResponse,
     SearchResponse,
     StatusResponse,
     SuccessResponse,
@@ -81,11 +83,11 @@ from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
     CypherError,
-    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
 )
+from flavours import build_flavour
 from utils.formatting import format_community_result, format_edge_result
 
 # Load .env file from mcp_server directory
@@ -241,6 +243,7 @@ class GraphitiService:
 
     def __init__(self, config: GraphitiConfig, semaphore_limit: int = 10):
         self.config = config
+        self.flavour = build_flavour(config.database.provider)
         self.semaphore_limit = semaphore_limit
         self.semaphore = asyncio.Semaphore(semaphore_limit)
         self.client: Graphiti | None = None
@@ -261,20 +264,31 @@ class GraphitiService:
         Returns None if the configured database provider has no ontology support.
         Raises on persistent connection failure after all retries exhausted.
         """
-        if self.config.database.provider.lower() != 'falkordb':
-            logger.warning(
-                f'Ontology graph not supported for {self.config.database.provider} provider'
+        provider = self.config.database.provider.lower()
+        ontology_graph_name = self.config.graphiti.ontology_graph
+
+        if provider == 'falkordb':
+            ontology_driver = FalkorDriver(
+                host=db_config['host'],
+                port=db_config['port'],
+                username=db_config.get('username'),
+                password=db_config['password'],
+                database=ontology_graph_name,
             )
+        elif provider == 'age':
+            # AGE ontology lives in a companion graph (<graph>_ontology) in the same Postgres/AGE
+            # instance — same DSN + embedding_dim, different graph_name.
+            from graphiti_core.driver.age_driver import AGEDriver
+
+            ontology_driver = AGEDriver(
+                dsn=db_config['dsn'],
+                graph_name=ontology_graph_name,
+                embedding_dim=db_config['embedding_dim'],
+            )
+        else:
+            logger.warning(f'Ontology graph not supported for {provider} provider')
             return None
 
-        ontology_graph_name = self.config.graphiti.ontology_graph
-        ontology_driver = FalkorDriver(
-            host=db_config['host'],
-            port=db_config['port'],
-            username=db_config.get('username'),
-            password=db_config['password'],
-            database=ontology_graph_name,
-        )
         client = Graphiti(
             graph_driver=ontology_driver,
             llm_client=None,
@@ -387,6 +401,22 @@ class GraphitiService:
 
                     self.client = Graphiti(
                         graph_driver=falkor_driver,
+                        llm_client=llm_client,
+                        embedder=embedder_client,
+                        max_coroutines=self.semaphore_limit,
+                    )
+                elif self.config.database.provider.lower() == 'age':
+                    # For AGE (PostgreSQL + Apache AGE), create an AGEDriver instance directly.
+                    from graphiti_core.driver.age_driver import AGEDriver
+
+                    age_driver = AGEDriver(
+                        dsn=db_config['dsn'],
+                        graph_name=db_config['graph_name'],
+                        embedding_dim=db_config['embedding_dim'],
+                    )
+
+                    self.client = Graphiti(
+                        graph_driver=age_driver,
                         llm_client=llm_client,
                         embedder=embedder_client,
                         max_coroutines=self.semaphore_limit,
@@ -746,6 +776,7 @@ async def search(
         return ErrorResponse(error='Graphiti service not initialized')
 
     try:
+        start_time = time.time()
         client = await graphiti_service.get_client()
 
         effective_group_ids = (
@@ -840,6 +871,7 @@ async def search(
             nodes=node_results,
             edges=edge_results,
             communities=community_results,
+            execution_ms=round((time.time() - start_time) * 1000, 1),
         )
 
     except ValueError as e:
@@ -1363,6 +1395,7 @@ async def search_ontology(
     assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     try:
+        start_time = time.time()
         search_config = resolve_search_config(search_mode, reranker, limit)
 
         ontology_group_id = config.graphiti.ontology_graph
@@ -1398,6 +1431,7 @@ async def search_ontology(
             nodes=node_results,
             edges=edge_results,
             communities=community_results,
+            execution_ms=round((time.time() - start_time) * 1000, 1),
         )
 
     except ValueError as e:
@@ -1718,7 +1752,7 @@ async def health_check(request) -> JSONResponse:
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
-async def get_schema() -> dict[str, Any]:
+async def get_schema() -> SchemaResponse:
     """Retrieve the structural schema of the knowledge graph.
 
     Returns node labels with property keys, relationship types with
@@ -1754,7 +1788,12 @@ async def get_schema() -> dict[str, Any]:
                 if label not in internal_labels:
                     label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
-        # 2. Properties per label (sample 50)
+        # 2. Properties + attribute_keys per label (sample 50)
+        #    `properties` = full top-level keys — feeds cypher_quality's schema_match and the
+        #    documented aletheia-extraction contract (kept unchanged). `attribute_keys` = the
+        #    canonical ADR-019 R5 domain-queryable keys, flavour-specific (FalkorDB: top-level
+        #    minus reserved bookkeeping; AGE: keys of the nested `attributes` agtype map).
+        flavour = graphiti_service.flavour
         node_labels: dict[str, dict] = {}
         for label in label_counts:
             prop_records, _, _ = await driver.execute_query(
@@ -1763,6 +1802,7 @@ async def get_schema() -> dict[str, Any]:
             props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
             node_labels[label] = {
                 'count': label_counts[label],
+                'attribute_keys': await flavour.attribute_keys(driver, label),
                 'properties': sorted(props),
                 'sampled': True,
             }
@@ -1799,6 +1839,8 @@ async def get_schema() -> dict[str, Any]:
             'type': 'schema',
             'graph_name': group_id,
             'domain': group_id.replace('_', ' ').title(),
+            'dialect': flavour.dialect_id,
+            'dialect_reference': flavour.dialect_reference,
             'node_labels': node_labels,
             'relationship_types': relationship_types,
         }
@@ -1884,38 +1926,11 @@ async def get_schema() -> dict[str, Any]:
             },
         }
 
-        # FalkorDB Cypher quick reference — helps LLMs generate correct queries.
-        # Curated from https://github.com/FalkorDB/skills
-        schema['cypher_reference'] = (
-            "## Cypher Quick Reference (FalkorDB)\n\n"
-            "### Property & Label Escaping\n"
-            "- Multi-word labels: MATCH (n:`My Label`) RETURN n\n"
-            "- Multi-word properties: WHERE n.`my property` = 'value'\n"
-            "- Always use backticks for identifiers with spaces or special chars\n\n"
-            "### Variable-Length Paths (no APOC)\n"
-            "- MATCH (a)-[*1..3]->(b) RETURN a, b\n"
-            "- MATCH path = (a)-[*..5]->(b) RETURN nodes(path), relationships(path)\n\n"
-            "### Aggregation Patterns\n"
-            "- GROUP BY is implicit: MATCH (n) RETURN n.type, count(n)\n"
-            "- Mid-query: MATCH (n)-[:REL]->(m) WITH m, count(n) AS cnt "
-            "WHERE cnt > 1 RETURN m.name, cnt\n\n"
-            "### Date Handling\n"
-            "- No date() function — compare strings: WHERE n.date > '2024-01-01'\n\n"
-            "### String Functions\n"
-            "- toLower() / toUpper() (NOT lower() / upper())\n"
-            "- starts with / ends with / contains\n\n"
-            "### Index-Aware Filtering\n"
-            "- Accelerated: =, <, >, <=, >=, IN, starts with\n"
-            "- NOT accelerated: <> (not-equal), contains, ends with\n"
-            "- Full-text: CALL db.idx.fulltext.queryNodes('idx', 'term')\n\n"
-            "### Known Limitations\n"
-            "- No APOC — use variable-length paths\n"
-            "- No pattern comprehensions — use OPTIONAL MATCH + collect()\n"
-            "- No EXISTS {} subqueries — use EXISTS(pattern) syntax\n"
-            "- No CALL {} subqueries — use WITH + OPTIONAL MATCH\n"
-            "- No map projections — return properties individually\n"
-            "- LIMIT auto-injected (200) if not specified"
-        )
+        # Backward-compatible alias of `dialect_reference` (emitted canonically above) under the
+        # fork's historical field name, for consumers not yet reading `dialect_reference`
+        # (ADR-019 R5 rename; drop in a future release). Now sourced from the flavour — correct
+        # per-backend (AGE gets AGE guidance), no longer FalkorDB-hardcoded.
+        schema['cypher_reference'] = flavour.dialect_reference
 
         # Cache the result
         graphiti_service._schema_cache = schema
@@ -2064,7 +2079,7 @@ async def get_ontology_documentation() -> dict[str, Any]:
         return {'error': f'Failed to retrieve ontology documentation: {e}'}
 
 
-async def run_cypher(query: str) -> dict[str, Any]:
+async def run_cypher(query: str) -> CypherResultResponse:
     """Execute a read-only Cypher query against the knowledge graph.
 
     The query is validated and sanitized before execution.
@@ -2072,12 +2087,9 @@ async def run_cypher(query: str) -> dict[str, Any]:
     explicit LIMIT values are respected.  Returns typed JSON (scalar,
     tabular, graph, path) with metadata.
 
-    Cypher dialect: FalkorDB openCypher (a few notable differences from
-    Neo4j).  Your system prompt may include a `FalkorDB Cypher dialect`
-    section — follow it.  Common gotchas: bound variables in patterns
-    must stay in parens (`(var)-[:R]->()`, not `var-[:R]->()`); WHERE
-    attaches only to MATCH/OPTIONAL MATCH/WITH (never directly to
-    UNWIND); dates are strings (`n.date > '2024-01-01'`, no `date()`).
+    Cypher dialect is backend-specific: the registered tool description and
+    get_schema's `dialect_reference` carry this graph's exact dialect notes
+    (FalkorDB openCypher vs Apache AGE openCypher differ) — follow those.
     """
     if graphiti_service is None:
         return format_error(query, CypherError(
@@ -2088,8 +2100,9 @@ async def run_cypher(query: str) -> dict[str, Any]:
             suggestion='Try again in a few seconds.',
         ))
 
-    # Validate and sanitize
-    result = validate_and_sanitize(query)
+    # Validate and sanitize (flavour drives the dialect reject + auto-fix)
+    flavour = graphiti_service.flavour
+    result = validate_and_sanitize(query, flavour)
     if isinstance(result, CypherError):
         return format_error(query, result)
 
@@ -2100,23 +2113,11 @@ async def run_cypher(query: str) -> dict[str, Any]:
         client = await graphiti_service.get_client()
         driver = client.driver
 
-        # Access FalkorDB graph directly for ro_query (read-only enforcement).
-        # The public execute_query() uses graph.query() (read-write), so we
-        # must use the internal _get_graph/_database — same pattern as graphiti_core.
-        graph = driver._get_graph(driver._database)
-
+        # Read-only execution is a flavour concern: FalkorDB uses DB-enforced ro_query;
+        # AGE/base rely on the pipeline whitelist + execute_query. Returns (records, header).
         start_time = time.time()
-        query_result = await graph.ro_query(sanitized.query)
+        records, header = await flavour.execute_graph_query(driver, sanitized.query)
         execution_ms = round((time.time() - start_time) * 1000, 1)
-
-        # Convert QueryResult to records + header
-        header = [h[1] for h in query_result.header] if query_result.header else []
-        records = []
-        for row in (query_result.result_set or []):
-            record = {}
-            for i, field_name in enumerate(header):
-                record[field_name] = row[i] if i < len(row) else None
-            records.append(record)
 
         _cache = getattr(graphiti_service, '_schema_cache', None) if graphiti_service else None
         schema = _cache if isinstance(_cache, dict) else None
@@ -2124,7 +2125,7 @@ async def run_cypher(query: str) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
-        error = classify_execution_error(str(e))
+        error = flavour.classify_execution_error(str(e))
         result = format_error(sanitized.query, error)
         result['auto_fixes'] = sanitized.auto_fixes
         return result
@@ -2160,6 +2161,10 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
 
+    # Backend flavour drives the per-backend Cypher dialect surfaced in the run_cypher
+    # description + server instructions (ADR-019 R1/R6).
+    flavour = graphiti_service.flavour if graphiti_service is not None else None
+
     mcp.add_tool(search, description=build_search_description(profile))
     mcp.add_tool(explore_node, description=build_explore_node_description(profile))
     mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
@@ -2167,11 +2172,11 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp.add_tool(get_schema, description=build_get_schema_description(profile))
     mcp.add_tool(get_ontology_structure)
     mcp.add_tool(get_ontology_documentation)
-    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile))
+    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile, flavour))
     mcp.add_tool(profile_graph)
 
     # Update MCP instructions
-    mcp._mcp_server.instructions = build_instructions(profile)
+    mcp._mcp_server.instructions = build_instructions(profile, flavour)
 
     logger.info('Registered tools with dynamic descriptions')
 
@@ -2251,7 +2256,7 @@ async def initialize_server() -> ServerConfig:
     )
     parser.add_argument(
         '--database-provider',
-        choices=['neo4j', 'falkordb'],
+        choices=['neo4j', 'falkordb', 'age'],
         help='Database provider to use',
     )
 

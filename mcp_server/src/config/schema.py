@@ -232,11 +232,25 @@ class FalkorDBProviderConfig(BaseModel):
     database: str = 'default_db'
 
 
+class AgeProviderConfig(BaseModel):
+    """PostgreSQL + Apache AGE provider configuration.
+
+    embedding_dim MUST equal the embedder's output dim (EmbedderConfig.dimensions,
+    default 1024) and the dim the target graph was ingested at — a mismatch reproduces
+    the DataError: expected 1536, got 1024. Default 1024 (NOT AGEDriver's own 1536 default).
+    """
+
+    dsn: str = 'postgresql://age:age@localhost:5433/age_test'
+    graph_name: str = 'graphiti'
+    embedding_dim: int = 1024
+
+
 class DatabaseProvidersConfig(BaseModel):
     """Database providers configuration."""
 
     neo4j: Neo4jProviderConfig | None = None
     falkordb: FalkorDBProviderConfig | None = None
+    age: AgeProviderConfig | None = None
 
 
 class DatabaseConfig(BaseModel):

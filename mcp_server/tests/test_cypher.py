@@ -14,16 +14,23 @@ from utils.cypher import (
     DEFAULT_LIMIT,
     CypherError,
     SanitizedQuery,
-    _check_falkordb_dialect,
     _check_whitelist,
-    _fix_falkordb_dialect,
     _fix_llm_syntax,
     _inject_safety,
-    classify_execution_error,
     format_error,
     format_result,
     validate_and_sanitize,
 )
+from flavours.falkordb import (
+    FalkorDbFlavour,
+    check_falkordb_dialect as _check_falkordb_dialect,
+    classify_falkordb_execution_error as classify_execution_error,
+    fix_falkordb_dialect as _fix_falkordb_dialect,
+)
+
+# FalkorDB flavour for validate_and_sanitize(query, flavour, ..., _FLAVOUR) calls (these tests
+# exercise FalkorDB dialect behavior through the now-flavour-driven pipeline).
+_FLAVOUR = FalkorDbFlavour()
 
 
 class TestDataModels:
@@ -562,52 +569,49 @@ class TestStage4SafetyInjection:
 
 class TestPipelineOrchestration:
     def test_clean_query_passes(self):
-        result = validate_and_sanitize('MATCH (n:Occurrence) RETURN n.name LIMIT 10')
+        result = validate_and_sanitize('MATCH (n:Occurrence) RETURN n.name LIMIT 10', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert result.auto_fixes == []
         assert result.effective_limit == 10
 
     def test_fixable_query_returns_fixes(self):
         result = validate_and_sanitize(
-            "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o"
-        )
+            "MATCH (o:Occurrence) WHERE o.date_value > date('2024-06-01') RETURN o", _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert any('date' in f.lower() for f in result.auto_fixes)
         assert result.effective_limit == DEFAULT_LIMIT
 
     def test_write_query_rejected(self):
-        result = validate_and_sanitize('CREATE (n:Test {name: "test"})')
+        result = validate_and_sanitize('CREATE (n:Test {name: "test"})', _FLAVOUR)
         assert isinstance(result, CypherError)
         assert result.stage == 'security'
 
     def test_apoc_rejected_before_date_fix(self):
         result = validate_and_sanitize(
-            "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path"
-        )
+            "MATCH (n) WHERE n.date > date('2024-01-01') CALL apoc.path.expand(n, 'KNOWS>') YIELD path RETURN path", _FLAVOUR)
         assert isinstance(result, CypherError)
         assert result.reason == 'apoc_unsupported'
 
     def test_smart_quotes_fixed_then_dialect_fixed(self):
         result = validate_and_sanitize(
-            'MATCH (o) WHERE o.name = \u201cBoeing\u201d AND o.date > date(\u20182024-01-01\u2019) RETURN o'
-        )
+            'MATCH (o) WHERE o.name = \u201cBoeing\u201d AND o.date > date(\u20182024-01-01\u2019) RETURN o', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert len(result.auto_fixes) >= 2
 
     def test_limit_injected_on_clean_query(self):
-        result = validate_and_sanitize('MATCH (n) RETURN n')
+        result = validate_and_sanitize('MATCH (n) RETURN n', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert 'LIMIT' in result.query
         assert any('LIMIT' in f for f in result.auto_fixes)
 
     def test_existing_limit_preserved(self):
-        result = validate_and_sanitize('MATCH (n) RETURN n LIMIT 50')
+        result = validate_and_sanitize('MATCH (n) RETURN n LIMIT 50', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert 'LIMIT 50' in result.query
         assert not any('LIMIT' in f for f in result.auto_fixes)
 
     def test_code_block_plus_missing_return_plus_limit(self):
-        result = validate_and_sanitize('```cypher\nMATCH (n:Occurrence)\n```')
+        result = validate_and_sanitize('```cypher\nMATCH (n:Occurrence)\n```', _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         assert 'RETURN' in result.query
         assert 'LIMIT' in result.query
@@ -701,7 +705,11 @@ class TestResultFormatter:
         result = format_error('CREATE (n:Test)', err)
         assert result['type'] == 'error'
         assert result['query'] == 'CREATE (n:Test)'
-        assert result['error']['stage'] == 'security'
+        # ADR-015 R4: top-level `error` is a STRING; structured detail is additive.
+        assert isinstance(result['error'], str)
+        assert result['error'] == 'Write not allowed.'
+        assert result['hint'] == 'Use MATCH instead.'
+        assert result['error_detail']['stage'] == 'security'
         assert result['execution_ms'] == 0
 
 
@@ -767,11 +775,21 @@ class TestToolDescriptions:
         assert 'Aircraft' in desc
 
     def test_run_cypher_description_includes_dialect_cheatsheet(self):
+        # ADR-019 R6: the dialect cheatsheet is now flavour-driven (sourced from the flavour's
+        # dialect_summary), not hardcoded. Passing the FalkorDB flavour surfaces its notes.
+        from tool_descriptions import build_run_cypher_description
+        from flavours.falkordb import FalkorDbFlavour
+
+        desc = build_run_cypher_description(_make_test_profile(), FalkorDbFlavour())
+        assert 'FalkorDB' in desc
+        assert 'APOC' in desc
+
+    def test_run_cypher_description_no_flavour_omits_dialect_cheatsheet(self):
+        # Without a flavour there is no per-backend dialect block (it is no longer hardcoded).
         from tool_descriptions import build_run_cypher_description
 
         desc = build_run_cypher_description(_make_test_profile())
-        assert 'FalkorDB' in desc
-        assert 'APOC' in desc
+        assert 'Dialect notes:' not in desc
 
     def test_run_cypher_description_includes_examples(self):
         from tool_descriptions import build_run_cypher_description
@@ -845,6 +863,7 @@ class TestRunCypher:
         mock_client.driver = mock_driver
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
@@ -860,6 +879,7 @@ class TestRunCypher:
         from graphiti_mcp_server import run_cypher
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
 
@@ -867,7 +887,7 @@ class TestRunCypher:
             result = await run_cypher(query='CREATE (n:Test {name: "test"})')
 
         assert result['type'] == 'error'
-        assert result['error']['stage'] == 'security'
+        assert result['error_detail']['stage'] == 'security'
 
     @pytest.mark.asyncio
     async def test_auto_fixes_in_response(self):
@@ -887,6 +907,7 @@ class TestRunCypher:
         mock_client.driver = mock_driver
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
@@ -914,6 +935,7 @@ class TestRunCypher:
         mock_client.driver = mock_driver
 
         mock_svc = AsyncMock()
+        mock_svc.flavour = _FLAVOUR
         mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_svc.config = MagicMock()
         mock_svc.config.graphiti.group_id = 'test_graph'
@@ -922,7 +944,7 @@ class TestRunCypher:
             result = await run_cypher(query='MATCH (n) RETURN foo(n)')
 
         assert result['type'] == 'error'
-        assert result['error']['stage'] == 'execution'
+        assert result['error_detail']['stage'] == 'execution'
         assert 'auto_fixes' in result
 
     @pytest.mark.asyncio
@@ -933,7 +955,7 @@ class TestRunCypher:
             result = await run_cypher(query='MATCH (n) RETURN n')
 
         assert result['type'] == 'error'
-        assert result['error']['stage'] == 'initialization'
+        assert result['error_detail']['stage'] == 'initialization'
 
 
 # ---------------------------------------------------------------------------
@@ -975,6 +997,7 @@ def _make_mock_schema_service():
     mock_client.driver = make_mock_driver()
 
     mock_svc = AsyncMock()
+    mock_svc.flavour = _FLAVOUR
     mock_svc.get_client = AsyncMock(return_value=mock_client)
     mock_svc._schema_cache = None
     mock_svc._schema_dirty = True
@@ -1449,7 +1472,7 @@ class TestNonCodeSpanPreservation:
             "// Calcular edad aproximada (asumiendo año actual 2026)\n"
             "MATCH (p:Persona {name: 'KHADIJA DAOUD'}) RETURN p"
         )
-        result = validate_and_sanitize(query)
+        result = validate_and_sanitize(query, _FLAVOUR)
         assert isinstance(result, SanitizedQuery)
         # Only the LIMIT injection should have fired
         real_fixes = [f for f in result.auto_fixes if 'LIMIT' not in f]
@@ -1470,12 +1493,14 @@ class TestNonCodeSpanPreservation:
 
 
 class TestRunCypherToolDescription:
-    def test_description_mentions_falkordb_dialect(self):
+    def test_docstring_is_backend_neutral_and_points_to_dialect_reference(self):
+        # ADR-019 R6: the run_cypher docstring must NOT hardcode a single backend's dialect —
+        # per-backend dialect lives in the (flavour-driven) tool description + get_schema's
+        # dialect_reference. The docstring points there instead.
         import re
         from pathlib import Path
         src_path = Path(__file__).parent.parent / 'src' / 'graphiti_mcp_server.py'
         source = src_path.read_text()
-        # Find the run_cypher async function and capture its docstring.
         m = re.search(
             r'async def run_cypher\([^)]*\)[^:]*:\s*"""(.*?)"""',
             source,
@@ -1483,8 +1508,7 @@ class TestRunCypherToolDescription:
         )
         assert m, 'run_cypher docstring not found'
         doc = m.group(1)
-        assert 'FalkorDB' in doc
         assert 'dialect' in doc.lower()
-        assert 'parens' in doc.lower() or 'parenthes' in doc.lower()
-        assert 'UNWIND' in doc
-        assert 'date' in doc.lower()
+        assert 'dialect_reference' in doc            # points to the announced dialect
+        # No hardcoded FalkorDB-only gotchas remain in the docstring.
+        assert 'FalkorDB Cypher dialect' not in doc

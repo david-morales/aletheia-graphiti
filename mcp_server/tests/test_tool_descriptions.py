@@ -88,3 +88,40 @@ class TestOntologyDescriptions:
         desc = build_explore_ontology_description(make_test_profile())
         assert 'ontology' in desc.lower()
         assert 'propert' in desc.lower()
+
+
+class TestFlavourAwareDescriptions:
+    """ADR-019 R1/R6: dialect short-form comes from the flavour, not hardcoded."""
+
+    def test_run_cypher_description_falkordb_dialect(self):
+        from tool_descriptions import build_run_cypher_description
+        from flavours.falkordb import FalkorDbFlavour
+        desc = build_run_cypher_description(make_test_profile(), FalkorDbFlavour())
+        assert 'Dialect notes:' in desc
+        assert 'FalkorDB openCypher' in desc
+        assert 'toLower' in desc
+
+    def test_run_cypher_description_age_dialect(self):
+        from tool_descriptions import build_run_cypher_description
+        from flavours.age import AgeFlavour
+        desc = build_run_cypher_description(make_test_profile(), AgeFlavour())
+        assert 'Apache AGE openCypher' in desc
+        assert 'n.attributes' in desc
+        assert 'never name a variable `id`' in desc
+        # NOT the FalkorDB summary
+        assert 'FalkorDB openCypher: no APOC' not in desc
+
+    def test_run_cypher_description_no_flavour_has_no_dialect_block(self):
+        from tool_descriptions import build_run_cypher_description
+        desc = build_run_cypher_description(make_test_profile())
+        assert 'Dialect notes:' not in desc
+
+    def test_instructions_include_flavour_dialect(self):
+        from flavours.age import AgeFlavour
+        instr = build_instructions(make_test_profile(), AgeFlavour())
+        assert 'Cypher dialect' in instr
+        assert 'Apache AGE openCypher' in instr
+
+    def test_instructions_no_flavour_has_no_dialect(self):
+        instr = build_instructions(make_test_profile())
+        assert 'Cypher dialect:' not in instr

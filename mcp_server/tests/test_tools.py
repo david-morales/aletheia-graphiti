@@ -196,6 +196,9 @@ class TestSearch:
         assert len(result['nodes']) == 1
         assert len(result['edges']) == 1
         assert result['nodes'][0]['uuid'] == 'node-uuid-1'
+        # execution_ms timing is included on the search result (ADR-019 diagnostics)
+        assert 'execution_ms' in result
+        assert isinstance(result['execution_ms'], float)
 
     @pytest.mark.asyncio
     async def test_invalid_recipe_returns_error(self):

@@ -205,3 +205,28 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+
+# --- AGE provider (backend-agnostic two-flavour evolution) ---
+
+def test_age_provider_config_defaults():
+    from config.schema import AgeProviderConfig
+    c = AgeProviderConfig(dsn="postgresql://age:age@localhost:5433/age_test")
+    assert c.graph_name == "graphiti"
+    assert c.embedding_dim == 1024   # matches EmbedderConfig.dimensions default, NOT AGEDriver's 1536
+
+
+def test_database_driver_factory_age():
+    from config.schema import DatabaseConfig, DatabaseProvidersConfig, AgeProviderConfig
+    from services.factories import DatabaseDriverFactory
+    cfg = DatabaseConfig(
+        provider="age",
+        providers=DatabaseProvidersConfig(
+            age=AgeProviderConfig(dsn="postgresql://age:age@localhost:5433/age_test",
+                                  graph_name="policia_age_poc", embedding_dim=1024)
+        ),
+    )
+    out = DatabaseDriverFactory.create_config(cfg)
+    assert out["driver"] == "age"
+    assert out["graph_name"] == "policia_age_poc"
+    assert out["embedding_dim"] == 1024
