@@ -76,9 +76,11 @@ flavours/                    # NEW package
                  #     -> normalized (records: list[dict], header: list[str]).
   age.py         # AgeFlavour(BaseFlavour): dialect_id="age-opencypher";
                  #   dialect_reference = the AGE/openCypher teaching text (from PoC gotchas / scaffold age.py);
-                 #   check_dialect rejects ONLY a variable named `id` (reject-with-hint — renaming a var
-                 #     is semantically risky);
-                 #   auto_fix = SAFE subset: LIMIT (via shared pipeline) + [:A|B|C] -> WHERE type(r) IN [...];
+                 #   check_dialect REJECTS-with-hint both AGE-unsupported constructs: a variable named
+                 #     `id` AND relationship-type disjunction [:A|B|C] (detection on a string-masked view);
+                 #   auto_fix = inherited no-op — the ONLY AGE auto-fix is the shared pipeline's LIMIT
+                 #     injection (see §5 rationale: a reliable [:A|B|C] REWRITE of arbitrary openCypher is
+                 #     not feasible with pattern matching; reject-with-hint is strictly safer);
                  #   attribute_keys over the nested `attributes` agtype map;
                  #   classify_execution_error maps AGE errors post-hoc as a net (`.id` on graphid, `|` syntax);
                  #   execute_graph_query = whitelist-guarded driver.execute_query -> (records, header).
@@ -119,11 +121,14 @@ class Flavour(Protocol):
 - **FalkorDbFlavour** — the existing machinery, relocated. `execute_graph_query` uses the
   DB-enforced `ro_query`.
 - **AgeFlavour** — reuses the scaffold `age.py` **dialect data** (`_AGE_DIALECT` text + the
-  `graphid`/`|` error-hint patterns) with the fork's **method shapes**: `check_dialect` rejects
-  only the `id`-variable (reject-with-hint); `auto_fix` = safe subset (LIMIT + `[:A|B|C]`→`WHERE
-  type(r) IN [...]`); `classify_execution_error` maps the `graphid` and `|` errors post-hoc as a
-  net; nested-map `attribute_keys`; `execute_graph_query` uses the shared whitelist guard +
-  `execute_query` (AGE has no `ro_query` — accepted limitation carried from the PoC).
+  `graphid`/`|` error-hint patterns) with the fork's **method shapes**: `check_dialect`
+  reject-with-hints BOTH AGE-unsupported constructs — a variable named `id` AND relationship-type
+  disjunction `[:A|B|C]` (detection on a string/comment-masked view); `auto_fix` is the inherited
+  no-op (the only AGE auto-fix is the shared pipeline's LIMIT injection — see §5 for why the
+  `[:A|B|C]` *rewrite* was dropped in favour of reject-with-hint); `classify_execution_error` maps
+  the `graphid` and `|` errors post-hoc as a net; nested-map `attribute_keys`; `execute_graph_query`
+  uses the shared whitelist guard + `execute_query` (AGE has no `ro_query` — accepted limitation
+  carried from the PoC).
 
 ### 3.3 Config + driver wiring
 
@@ -206,9 +211,20 @@ envelope through its flavour.
 | ④ | **Full canonical `get_schema`** with the `properties` alias safeguard (emit both `attribute_keys` and `properties`=same value for one release). |
 | ⑤ | **Type only the contract-changing tools** in P1 (`run_cypher` → `CypherResult`, `get_schema` → canonical model); migrate the rest opportunistically per ADR-019 enforcement. |
 
-AGE auto-fix specifics (locked): SAFE subset only — LIMIT + `[:A|B|C]`→`WHERE type(r) IN […]`;
-the `id`-variable case is REJECT-with-hint, not an auto-rewrite; FalkorDB keeps its full
-existing fixer.
+AGE auto-fix specifics: the ONLY AGE auto-fix is the shared pipeline's LIMIT injection. Both
+AGE-unsupported constructs — a variable named `id` and relationship-type disjunction `[:A|B|C]`
+— are **reject-with-hint** in `check_dialect`, not auto-rewrites. FalkorDB keeps its full existing
+fixer (its transforms are genuinely lossless; the AGE `[:A|B|C]`→WHERE rewrite is not).
+
+**Rationale (revises the kickoff's "[:A|B|C]→auto-fix" decision, 2026-07-25):** three focused
+review rounds on an attempted `[:A|B|C]`→`WHERE type(r) IN [...]` regex rewrite each surfaced new
+correctness bugs — the rewrite could not reliably distinguish query *structure* from *content*
+(clause keywords appearing as property names like `n.attributes.limit`, keywords inside
+`EXISTS {}` subqueries or `{}` map literals, `|` inside backtick-quoted type names, OR-precedence,
+variable collisions). A wrong rewrite silently returns wrong data. Detection-and-reject is
+strictly safer (worst case: a valid query is rejected and the agent rewrites it — the AGE PoC
+proved it recovers in one step from the hint) and dramatically simpler. Decision confirmed with
+the user. A proper parse-based (ANTLR) rewrite remains a possible future enhancement.
 
 ## 6. Testing
 
