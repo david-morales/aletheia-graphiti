@@ -131,3 +131,55 @@ def test_query_and_schema_tools_publish_output_schema():
     gs_props = gs["properties"]
     for key in ("dialect", "dialect_reference", "node_labels", "relationship_types"):
         assert key in gs_props, f"get_schema outputSchema missing {key}"
+
+
+def test_typed_tool_outputs_survive_fastmcp_output_validation():
+    """Regression: run_cypher / get_schema success AND error payloads must pass
+    FastMCP's structured-output path over the wire.
+
+    FastMCP builds a pydantic model from each total=False TypedDict with every
+    optional field defaulted to None, then convert_result dumps it WITHOUT
+    exclude_unset (mcp <=1.28.1) — so any field absent from a real payload is
+    emitted as None in structuredContent. If the outputSchema types that field
+    non-nullable, the lowlevel server rejects it ("None is not of type 'string'"),
+    which broke get_schema (`error`) and run_cypher (`truncated`, ...) for every
+    over-the-wire caller. The fork's capability-level tests never exercised this
+    round-trip. This test reproduces it; the fix makes the TypedDict fields
+    nullable so the injected None validates.
+    """
+    import jsonschema
+    from mcp.server.fastmcp import FastMCP
+    import graphiti_mcp_server as srv
+
+    m = FastMCP("t")
+    m.add_tool(srv.run_cypher)
+    m.add_tool(srv.get_schema)
+    tools = m._tool_manager._tools
+
+    get_schema_success = {
+        "type": "schema", "graph_name": "g", "domain": "G",
+        "dialect": "falkordb-cypher", "dialect_reference": "ref",
+        "node_labels": {"Persona": {"count": 3, "attribute_keys": ["dni"],
+                                    "properties": ["dni", "name"], "sampled": True}},
+        "relationship_types": {"ES_DETENIDO": {"count": 2,
+                                               "patterns": [["Persona", "Detencion"]]}},
+        "cypher_reference": "ref", "tool_capabilities": {},
+    }
+    get_schema_error = {"error": "Failed to retrieve schema: boom"}
+    run_cypher_success = {"query": "MATCH (n) RETURN n", "type": "tabular",
+                          "columns": ["n"], "rows": [[1]], "row_count": 1}
+    run_cypher_error = {"error": "syntax error", "hint": "use <>",
+                        "error_detail": {"code": "SYNTAX"}}
+
+    cases = [
+        ("get_schema", get_schema_success),
+        ("get_schema", get_schema_error),
+        ("run_cypher", run_cypher_success),
+        ("run_cypher", run_cypher_error),
+    ]
+    for name, payload in cases:
+        meta = tools[name].fn_metadata
+        converted = meta.convert_result(payload)
+        structured = converted[1] if isinstance(converted, tuple) else converted
+        # Exactly what the lowlevel server validates before sending — must not raise.
+        jsonschema.validate(structured, meta.output_schema)
