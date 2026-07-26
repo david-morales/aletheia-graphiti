@@ -1796,8 +1796,13 @@ async def get_schema() -> SchemaResponse:
         flavour = graphiti_service.flavour
         node_labels: dict[str, dict] = {}
         for label in label_counts:
+            # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
+            # (openCypher variable projections lose their name), so `r['key']`
+            # would KeyError on AGE. The explicit alias makes the column `key` on
+            # both flavours (FalkorDB already returns `key`). Regression: AGE
+            # get_schema live test.
             prop_records, _, _ = await driver.execute_query(
-                f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key'
+                f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
             )
             props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
             node_labels[label] = {

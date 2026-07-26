@@ -97,38 +97,61 @@ class CommunityBuildResponse(TypedDict):
     communities: list[CommunityResult]
 
 
+# ---------------------------------------------------------------------------
+# Typed tool-output TypedDicts (ADR-019 R2). EVERY field is `X | None`.
+#
+# WHY nullable: these are declared as tool return annotations (get_schema ->
+# SchemaResponse, run_cypher -> CypherResultResponse), so FastMCP validates the
+# structuredContent against their outputSchema over the wire. FastMCP (mcp
+# <=1.28.1) builds a pydantic model from a total=False TypedDict with EVERY
+# optional field defaulted to None, then convert_result dumps it WITHOUT
+# exclude_unset — so any field ABSENT from a returned payload is emitted as None
+# in structuredContent. A non-nullable field type then makes the lowlevel server
+# reject that None ("None is not of type 'string'"), which broke EVERY
+# over-the-wire caller of get_schema (`error`) and run_cypher (`truncated`, ...).
+# Declaring the fields nullable lets the injected None validate. The fork's
+# capability-level tests call the functions directly and never hit this path;
+# test_typed_tool_outputs_survive_fastmcp_output_validation guards it.
+#
+# DO NOT drop the `| None` — it is load-bearing. Consumers read the UNSTRUCTURED
+# content (the original payload, no injected None), so nullability here is
+# invisible to them (see aletheia per_call_client._parse_mcp_response).
+# ---------------------------------------------------------------------------
+
+
 class SchemaNodeInfo(TypedDict, total=False):
-    count: int
-    attribute_keys: list[str]  # canonical ADR-019 R5: domain-queryable keys
-    properties: list[str]      # full top-level keys (feeds cypher_quality schema_match)
-    sampled: bool
-    description: str
-    sample_names: list[str]
+    count: int | None
+    attribute_keys: list[str] | None  # canonical ADR-019 R5: domain-queryable keys
+    properties: list[str] | None      # full top-level keys (feeds cypher_quality schema_match)
+    sampled: bool | None
+    description: str | None
+    sample_names: list[str] | None
 
 
 class SchemaRelationshipInfo(TypedDict, total=False):
-    count: int
-    patterns: list[list[str]]
-    description: str
+    count: int | None
+    patterns: list[list[str]] | None
+    description: str | None
 
 
 class SchemaResponse(TypedDict, total=False):
     """Canonical get_schema payload (ADR-019 R5) + retained fork extras + error path.
 
     total=False so FastMCP's structuredContent preserves every returned key (undeclared keys are
-    silently dropped from structuredContent) without requiring any of them.
+    silently dropped from structuredContent) without requiring any of them. Every field is
+    nullable — see the module note above (FastMCP injects None for absent optional fields).
     """
-    type: str  # Always "schema"
-    graph_name: str
-    domain: str
-    dialect: str                 # short id, e.g. "falkordb-cypher" | "age-opencypher"
-    dialect_reference: str       # full dialect teaching text
-    node_labels: dict[str, SchemaNodeInfo]
-    relationship_types: dict[str, SchemaRelationshipInfo]
-    cypher_reference: str        # back-compat alias of dialect_reference (one release)
-    tool_capabilities: dict[str, Any]
-    analysis_notes: list[str]
-    error: str                   # ADR-015 R4 error path
+    type: str | None  # Always "schema"
+    graph_name: str | None
+    domain: str | None
+    dialect: str | None                 # short id, e.g. "falkordb-cypher" | "age-opencypher"
+    dialect_reference: str | None       # full dialect teaching text
+    node_labels: dict[str, SchemaNodeInfo] | None
+    relationship_types: dict[str, SchemaRelationshipInfo] | None
+    cypher_reference: str | None        # back-compat alias of dialect_reference (one release)
+    tool_capabilities: dict[str, Any] | None
+    analysis_notes: list[str] | None
+    error: str | None                   # ADR-015 R4 error path
 
 
 class CypherResultResponse(TypedDict, total=False):
@@ -136,23 +159,23 @@ class CypherResultResponse(TypedDict, total=False):
 
     A single flat TypedDict (not a Success|Error union) so FastMCP's structuredContent stays flat
     (a union return would nest it under `result`). total=False so nothing is required and no
-    returned key is dropped.
+    returned key is dropped. Every field is nullable — see the module note above.
     """
-    query: str
-    auto_fixes: list[str]
-    type: str  # "scalar", "tabular", "graph", "path", "error"
+    query: str | None
+    auto_fixes: list[str] | None
+    type: str | None  # "scalar", "tabular", "graph", "path", "error"
     result: Any
-    columns: list[str]
-    rows: list[list[Any]]
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
-    steps: list[dict[str, Any]]
-    row_count: int
-    truncated: bool
-    limit_applied: int
-    execution_ms: float
-    cypher_quality: dict[str, Any]
+    columns: list[str] | None
+    rows: list[list[Any]] | None
+    nodes: list[dict[str, Any]] | None
+    edges: list[dict[str, Any]] | None
+    steps: list[dict[str, Any]] | None
+    row_count: int | None
+    truncated: bool | None
+    limit_applied: int | None
+    execution_ms: float | None
+    cypher_quality: dict[str, Any] | None
     # error path (ADR-015 R4): top-level `error` is a STRING; hint + error_detail are additive.
-    error: str
-    hint: str
-    error_detail: dict[str, str]
+    error: str | None
+    hint: str | None
+    error_detail: dict[str, str] | None
