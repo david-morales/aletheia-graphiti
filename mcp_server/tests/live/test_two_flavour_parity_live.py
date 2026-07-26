@@ -78,6 +78,42 @@ async def test_age_envelope_shape():
     assert envelope["type"] in ("scalar", "tabular")
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv("AGE_PARITY_LIVE"), reason="AGE live gate off")
+async def test_age_get_schema_property_query_needs_return_alias():
+    """Regression for get_schema KeyError('key') on AGE.
+
+    get_schema builds each label's `properties` from
+    ``... UNWIND k AS key RETURN DISTINCT key`` and reads ``r['key']``. AGE names an
+    unaliased openCypher projection ``col0`` (the variable name is lost), so the
+    unaliased form yields no ``key`` column and get_schema raised KeyError('key') —
+    i.e. ``{'error': "Failed to retrieve schema: 'key'"}`` for EVERY AGE caller,
+    while FalkorDB (which keeps ``key``) was unaffected. The fix aliases the
+    projection ``RETURN DISTINCT key AS key``. This proves the quirk on the live
+    graph and pins the alias requirement.
+    """
+    from graphiti_core.driver.age_driver import AGEDriver
+
+    dsn = os.getenv("AGE_DSN", "postgresql://age:age@localhost:5433/age_test")
+    graph_name = os.getenv("AGE_GRAPH_NAME", "policia_age_poc")
+    driver = AGEDriver(dsn=dsn, graph_name=graph_name, embedding_dim=1024)
+
+    lab, _, _ = await driver.execute_query(
+        "MATCH (n) UNWIND labels(n) AS l RETURN DISTINCT l AS l LIMIT 1"
+    )
+    assert lab, "expected a populated AGE graph"
+    label = lab[0]["l"]
+    base = f"MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key"
+
+    unaliased, _, _ = await driver.execute_query(base)
+    aliased, _, _ = await driver.execute_query(base + " AS key")
+
+    # AGE drops the unaliased projection name (-> col0); the explicit alias (the fix
+    # get_schema now uses) restores a `key` column that `r['key']` can read.
+    assert unaliased and "key" not in unaliased[0], f"AGE should drop unaliased name: {unaliased[0]}"
+    assert aliased and "key" in aliased[0], f"aliased query must yield a `key` column: {aliased[0]}"
+
+
 @pytest.mark.skipif(
     not (os.getenv("FALKORDB_PARITY_LIVE") and os.getenv("AGE_PARITY_LIVE")),
     reason="both live gates required for the cross-flavour parity assertion",
