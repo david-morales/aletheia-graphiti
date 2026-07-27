@@ -179,3 +179,26 @@ class AGESearch(SearchInterface):
             *args,
         )
         return await self._hydrate_edges_in_order(driver, [r['uuid'] for r in rows])
+
+    async def episode_fulltext_search(
+        self,
+        driver: Any,
+        query: str,
+        search_filter: Any,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        """Fulltext search over episode content.
+
+        Episodic (raw-document) nodes are not mirrored into a tsvector shadow
+        table on the AGE backend — only Entity nodes and edges are (see
+        node_fulltext_search / edge_fulltext_search) — so there is nothing to
+        keyword-rank here. Return an empty list rather than raising, so the
+        combined/hybrid search recipes — which fan a node + edge + episode
+        sub-search out concurrently via asyncio.gather — still return their node
+        and edge results on AGE instead of the whole call failing. (Mirrors
+        node_summary_similarity_search, likewise a documented shadow-table gap.)
+        A future task can add an episode shadow table populated on
+        episodic_node_save to make this live.
+        """
+        return []
