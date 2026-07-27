@@ -202,3 +202,37 @@ class AGESearch(SearchInterface):
         episodic_node_save to make this live.
         """
         return []
+
+    async def community_fulltext_search(
+        self,
+        driver: Any,
+        query: str,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        """Fulltext search over community names.
+
+        Communities (built by build_communities) are not projected into AGE nor
+        mirrored into a shadow table, so there is nothing to rank. Return [] —
+        NOT-implemented would be caught by the caller and fall through to a
+        FalkorDB/Neo4j-specific fulltext Cypher (`YIELD node …`) that AGE cannot
+        parse ("syntax error at or near '.'"), breaking every combined/hybrid
+        search. Returning [] keeps the node + edge results flowing on AGE.
+        """
+        return []
+
+    async def community_similarity_search(
+        self,
+        driver: Any,
+        search_vector: list[float],
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+        min_score: float = 0.6,
+    ) -> list[Any]:
+        """Vector similarity search over community name embeddings.
+
+        Same rationale as community_fulltext_search: no communities are stored on
+        AGE, and the caller falls through to backend-specific Cypher on
+        NotImplementedError, so return [] to keep combined/hybrid search working.
+        """
+        return []
