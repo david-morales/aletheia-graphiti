@@ -28,6 +28,31 @@ logger = logging.getLogger(__name__)
 # once-set search_path and leave cypher() unresolvable on the next acquire.
 _SESSION_INIT = "LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;"
 
+_PARAM_RE = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)')
+
+
+def _inline_cypher_params(query: str, params: dict[str, Any]) -> str:
+    """Substitute openCypher ``$name`` parameters into the query as escaped
+    literals.
+
+    AGE's ``cypher()`` SQL function does not accept openCypher ``$name`` bound
+    parameters (they must go through the awkward agtype 3rd argument), so core
+    callers that pass params — e.g. ``explore_node`` looking a node up by uuid or
+    name — would otherwise be unusable. Reuse the write-path ``_cy`` serializer
+    (the same one the graph-operations layer uses for MERGE literals) to turn each
+    value into a safe Cypher literal, replacing every ``$name`` token whose name
+    is present in ``params``. Unknown ``$name`` tokens are left untouched. The
+    regex matches whole identifier tokens, so ``$group`` never partially matches
+    inside ``$group_ids``.
+    """
+    from graphiti_core.driver.graph_operations.age_graph_operations import _cy
+
+    def _repl(m: 're.Match[str]') -> str:
+        name = m.group(1)
+        return _cy(params[name]) if name in params else m.group(0)
+
+    return _PARAM_RE.sub(_repl, query)
+
 
 class AGEDriverSession(GraphDriverSession):
     provider = GraphProvider.AGE
@@ -165,12 +190,10 @@ class AGEDriver(GraphDriver):
 
     async def execute_query(self, cypher_query_: str, columns: list[str] | None = None, **kwargs: Any):
         if kwargs:
-            # Passing Cypher params through AGE's cypher() agtype 3rd argument is
-            # a known friction point (must be a bound parameter). Phase 0's
-            # controlled queries pass none; implement when a task first needs it.
-            raise NotImplementedError(
-                'AGE execute_query with cypher params is not implemented yet'
-            )
+            # AGE's cypher() takes no openCypher `$name` params, so inline them as
+            # escaped literals (reusing the write-path serializer). Unblocks core
+            # paths that pass params — e.g. explore_node's uuid/name lookups.
+            cypher_query_ = _inline_cypher_params(cypher_query_, kwargs)
         cols = columns or self._columns_from_return(cypher_query_) or ['result']
         col_def = ', '.join(f'{c} agtype' for c in cols)
         sql = f"SELECT * FROM cypher('{self._database}', $$ {cypher_query_} $$) AS ({col_def})"
