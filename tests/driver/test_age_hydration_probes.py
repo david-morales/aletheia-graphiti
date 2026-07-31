@@ -10,41 +10,19 @@ paths production actually reads through?
       through `_hydrate_nodes_in_order` -> `node_get_by_uuids`
 
 Both passing means hydration is intact and the wipe entered only via re-saves.
-Live-gated: needs the Postgres+AGE store (AGE_TEST_DSN, default
-postgresql://age:age@localhost:5434/age_test). Throwaway graph only.
+Live-gated through the shared `age_driver` fixture (tests/driver/conftest.py):
+a per-test `g_<hex>` graph on AGE_TEST_DSN, dropped in teardown, skipped when
+the store is unreachable.
 """
 
-import os
 from datetime import datetime, timezone
 
 import pytest
-import pytest_asyncio
-
-AGE_DSN = os.environ.get('AGE_TEST_DSN', 'postgresql://age:age@localhost:5434/age_test')
-GRAPH = 'attrloss_hydration_probe'
 
 ATTRS = {'nacimiento_fecha': '1980-01-01', 'telefono': '600000000', 'sexo': 'F'}
 
 
-@pytest_asyncio.fixture
-async def driver():
-    from graphiti_core.driver.age_driver import AGEDriver
-
-    d = AGEDriver(dsn=AGE_DSN, graph_name=GRAPH, embedding_dim=8)
-    try:
-        await d.build_indices_and_constraints()
-        await d.execute_query('RETURN 1')
-    except Exception as exc:  # store down => skip, never fail
-        await d.close()
-        pytest.skip(f'AGE store not reachable: {exc}')
-    try:
-        yield d
-    finally:
-        await d.drop_graph()
-        await d.close()
-
-
-def _entity(uuid, name):
+def _entity(driver, uuid, name):
     from graphiti_core.nodes import EntityNode
 
     n = EntityNode(
@@ -52,35 +30,35 @@ def _entity(uuid, name):
         labels=['Entity', 'Persona'], created_at=datetime.now(timezone.utc),
         summary='persona detenida', attributes=dict(ATTRS),
     )
-    n.name_embedding = [0.1] * 8
+    n.name_embedding = [0.1] * driver.embedding_dim
     return n
 
 
 @pytest.mark.asyncio
-async def test_get_by_uuids_carries_attributes(driver):
+async def test_get_by_uuids_carries_attributes(age_driver):
     """Probe (a): the bulk get hydrates the stored attribute map."""
     from graphiti_core.nodes import EntityNode
 
-    ops = driver.graph_operations_interface
-    await ops.node_save(_entity('attrloss-hyd-1', 'PERSONA HIDRATADA'), driver)
+    ops = age_driver.graph_operations_interface
+    await ops.node_save(_entity(age_driver, 'attrloss-hyd-1', 'PERSONA HIDRATADA'), age_driver)
 
-    got = await ops.node_get_by_uuids(EntityNode, driver, ['attrloss-hyd-1'])
+    got = await ops.node_get_by_uuids(EntityNode, age_driver, ['attrloss-hyd-1'])
     assert len(got) == 1
     assert got[0].attributes == ATTRS
 
 
 @pytest.mark.asyncio
-async def test_fulltext_search_result_carries_attributes(driver):
+async def test_fulltext_search_result_carries_attributes(age_driver):
     """Probe (b): the search path hydrates attributes too.
 
     `node_save` writes both the AGE vertex and its `_node_tbl` search row, so the
     fulltext row exists exactly as production creates it.
     """
-    ops = driver.graph_operations_interface
-    await ops.node_save(_entity('attrloss-hyd-2', 'KHADIJA DAOUD'), driver)
+    ops = age_driver.graph_operations_interface
+    await ops.node_save(_entity(age_driver, 'attrloss-hyd-2', 'KHADIJA DAOUD'), age_driver)
 
-    found = await driver.search_interface.node_fulltext_search(
-        driver, 'KHADIJA', None, group_ids=['attrloss'], limit=10
+    found = await age_driver.search_interface.node_fulltext_search(
+        age_driver, 'KHADIJA', None, group_ids=['attrloss'], limit=10
     )
     assert [n.uuid for n in found] == ['attrloss-hyd-2']
     assert found[0].attributes == ATTRS
