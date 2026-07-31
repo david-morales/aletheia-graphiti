@@ -5,14 +5,27 @@ Requires the docker-compose.age.yml service running and reachable at AGE_TEST_DS
 """
 
 import os
+import socket
 import uuid
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
 from graphiti_core.driver.age_driver import AGEDriver
 
 AGE_DSN = os.environ.get('AGE_TEST_DSN', 'postgresql://age:age@localhost:5433/age_test')
+
+# Connectivity-class failures only: anything else (e.g. the driver's own DDL
+# breaking, AGE missing from a reachable Postgres) must FAIL, not skip — a bare
+# except here once turned the whole live AGE suite silently green.
+_UNREACHABLE_ERRORS = (
+    OSError,
+    socket.gaierror,
+    asyncpg.CannotConnectNowError,
+    asyncpg.InvalidCatalogNameError,
+    asyncpg.InvalidPasswordError,
+)
 
 
 @pytest_asyncio.fixture
@@ -28,7 +41,7 @@ async def age_driver():
     driver = AGEDriver(dsn=AGE_DSN, graph_name=graph, embedding_dim=1536)
     try:
         await driver.build_indices_and_constraints(delete_existing=True)
-    except Exception as exc:  # store down => skip, never fail
+    except _UNREACHABLE_ERRORS as exc:  # store down => skip; real failures propagate
         await driver.close()
         pytest.skip(f'AGE store not reachable at {AGE_DSN}: {exc}')
     try:
