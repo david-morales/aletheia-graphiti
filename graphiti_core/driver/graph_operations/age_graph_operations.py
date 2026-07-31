@@ -70,6 +70,21 @@ def _map(props: dict[str, Any]) -> str:
     return '{' + ', '.join(parts) + '}'
 
 
+def _merged_attributes(stored: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
+    """Per-key union of the stored and incoming attribute maps; an incoming key
+    wins only with a non-empty value. Storage-layer guard for the 2026-08-01
+    attribute-loss bug: AGE keeps attributes as ONE nested map and `SET n +=`
+    replaces a nested map wholesale, so a re-save carrying empty in-memory
+    attributes (entity resolution does this) must never erase stored ones.
+    Limitation: an attribute cannot be cleared by saving an empty value —
+    clearing needs an explicit future API, not this write path."""
+    merged = dict(stored or {})
+    for k, v in (incoming or {}).items():
+        if v not in (None, '', [], {}):
+            merged[k] = v
+    return merged
+
+
 def _node_label(labels: Any) -> str:
     """AGE vertex label = the most-specific (leaf) ontology class.
 
@@ -138,7 +153,47 @@ class AGEGraphOperations(GraphOperationsInterface):
             await driver.execute_sql(f'TRUNCATE {driver._node_tbl}, {driver._edge_tbl}')
 
     # --------------------------------------------------------------- entity nodes
+    @staticmethod
+    def _as_attr_map(raw: Any) -> dict[str, Any]:
+        """Coerce a returned `n.attributes` value to a dict (agtype maps decode to
+        dicts; a JSON string is tolerated for older rows; anything else = {})."""
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return {}
+        return raw if isinstance(raw, dict) else {}
+
+    async def _stored_attributes(self, driver: Any, uuid: str) -> dict[str, Any]:
+        """Attributes currently stored for `uuid` ({} when the node is absent)."""
+        records, _, _ = await driver.execute_query(
+            f'MATCH (n) WHERE n.uuid = {_cy(uuid)} RETURN n.attributes AS attributes'
+        )
+        if not records:
+            return {}
+        return self._as_attr_map(records[0].get('attributes'))
+
+    async def _stored_attributes_bulk(
+        self, driver: Any, uuids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """One query for many uuids -> {uuid: stored attributes}; absent uuids are
+        simply missing from the result (callers treat that as {})."""
+        if not uuids:
+            return {}
+        in_list = ', '.join(_cy(u) for u in uuids)
+        records, _, _ = await driver.execute_query(
+            f'MATCH (n) WHERE n.uuid IN [{in_list}] '
+            f'RETURN n.uuid AS uuid, n.attributes AS attributes'
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for r in records:
+            key = r.get('uuid')
+            if key is not None:
+                out[str(key)] = self._as_attr_map(r.get('attributes'))
+        return out
+
     async def node_save(self, node: Any, driver: Any) -> None:
+        stored = await self._stored_attributes(driver, node.uuid)
         props = {
             'uuid': node.uuid,
             'name': node.name,
@@ -146,7 +201,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'summary': getattr(node, 'summary', '') or '',
             'created_at': node.created_at.isoformat(),
             'labels': list(node.labels or []),
-            'attributes': getattr(node, 'attributes', {}) or {},
+            'attributes': _merged_attributes(stored, getattr(node, 'attributes', {}) or {}),
         }
         await driver.execute_query(
             f'MERGE (n:{_node_label(node.labels)} {{uuid: {_cy(node.uuid)}}}) SET n += {_map(props)}'
@@ -469,8 +524,16 @@ class AGEGraphOperations(GraphOperationsInterface):
             d['uuid'], d['group_id'], content, _vec(d.get('name_embedding')),
         )
 
-    async def _write_entity_from_fields(self, driver: Any, d: dict[str, Any]) -> None:
-        attributes = {k: v for k, v in d.items() if k not in _KNOWN_NODE_KEYS}
+    async def _write_entity_from_fields(
+        self, driver: Any, d: dict[str, Any], stored_attributes: dict[str, Any] | None = None
+    ) -> None:
+        """Persist one flat entity dict. `stored_attributes` is the node's currently
+        stored attribute map; pass it when the caller has already batch-fetched
+        (see `node_save_bulk`), leave it None to have this method look it up. Either
+        way the write merges rather than replaces — see `_merged_attributes`."""
+        incoming = {k: v for k, v in d.items() if k not in _KNOWN_NODE_KEYS}
+        if stored_attributes is None:
+            stored_attributes = await self._stored_attributes(driver, d['uuid'])
         props = {
             'uuid': d['uuid'],
             'name': d.get('name') or '',
@@ -478,7 +541,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'summary': d.get('summary') or '',
             'created_at': self._iso(d.get('created_at')),
             'labels': list(d.get('labels') or []),
-            'attributes': attributes,
+            'attributes': _merged_attributes(stored_attributes, incoming),
         }
         await driver.execute_query(
             f'MERGE (n:{_node_label(d.get("labels"))} {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}'
@@ -560,8 +623,11 @@ class AGEGraphOperations(GraphOperationsInterface):
     async def node_save_bulk(
         self, _cls: Any, driver: Any, transaction: Any, nodes: list[Any], batch_size: int = 100
     ) -> None:
+        # One round-trip for every uuid's stored attributes, so the per-node
+        # merge-on-write guard costs a single extra query for the whole batch.
+        stored = await self._stored_attributes_bulk(driver, [d['uuid'] for d in nodes])
         for d in nodes:
-            await self._write_entity_from_fields(driver, d)
+            await self._write_entity_from_fields(driver, d, stored.get(d['uuid'], {}))
 
     async def episodic_node_save_bulk(
         self, _cls: Any, driver: Any, transaction: Any, nodes: list[Any], batch_size: int = 100
