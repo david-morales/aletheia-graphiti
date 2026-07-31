@@ -152,10 +152,18 @@ class AGEGraphOperations(GraphOperationsInterface):
             await driver.execute_query('MATCH (n) DETACH DELETE n')
             await driver.execute_sql(f'TRUNCATE {driver._node_tbl}, {driver._edge_tbl}')
 
-    # --------------------------------------------------------------- entity nodes
+    # ---------------------------------------------- merge-on-write stored lookup
+    # Nodes and edges both keep their custom attributes in ONE nested `attributes`
+    # map, and both are written with `SET x += {...}`, which replaces a nested map
+    # wholesale. Every writer therefore reads the stored map first and merges —
+    # see `_merged_attributes`. The only difference between the two families is
+    # the match pattern, so they share these helpers.
+    _NODE_MATCH = ('MATCH (n)', 'n')
+    _EDGE_MATCH = ('MATCH ()-[r]->()', 'r')
+
     @staticmethod
     def _as_attr_map(raw: Any) -> dict[str, Any]:
-        """Coerce a returned `n.attributes` value to a dict (agtype maps decode to
+        """Coerce a returned `attributes` value to a dict (agtype maps decode to
         dicts; a JSON string is tolerated for older rows; anything else = {})."""
         if isinstance(raw, str):
             try:
@@ -164,26 +172,18 @@ class AGEGraphOperations(GraphOperationsInterface):
                 return {}
         return raw if isinstance(raw, dict) else {}
 
-    async def _stored_attributes(self, driver: Any, uuid: str) -> dict[str, Any]:
-        """Attributes currently stored for `uuid` ({} when the node is absent)."""
-        records, _, _ = await driver.execute_query(
-            f'MATCH (n) WHERE n.uuid = {_cy(uuid)} RETURN n.attributes AS attributes'
-        )
-        if not records:
-            return {}
-        return self._as_attr_map(records[0].get('attributes'))
-
-    async def _stored_attributes_bulk(
-        self, driver: Any, uuids: list[str]
+    async def _stored_attributes_map(
+        self, driver: Any, pattern: tuple[str, str], uuids: list[str]
     ) -> dict[str, dict[str, Any]]:
-        """One query for many uuids -> {uuid: stored attributes}; absent uuids are
+        """One query for many uuids -> {uuid: stored attributes}. Absent uuids are
         simply missing from the result (callers treat that as {})."""
         if not uuids:
             return {}
+        match, var = pattern
         in_list = ', '.join(_cy(u) for u in uuids)
         records, _, _ = await driver.execute_query(
-            f'MATCH (n) WHERE n.uuid IN [{in_list}] '
-            f'RETURN n.uuid AS uuid, n.attributes AS attributes'
+            f'{match} WHERE {var}.uuid IN [{in_list}] '
+            f'RETURN {var}.uuid AS uuid, {var}.attributes AS attributes'
         )
         out: dict[str, dict[str, Any]] = {}
         for r in records:
@@ -192,8 +192,15 @@ class AGEGraphOperations(GraphOperationsInterface):
                 out[str(key)] = self._as_attr_map(r.get('attributes'))
         return out
 
+    async def _stored_attributes(
+        self, driver: Any, pattern: tuple[str, str], uuid: str
+    ) -> dict[str, Any]:
+        """Attributes currently stored for one uuid ({} when it is absent)."""
+        return (await self._stored_attributes_map(driver, pattern, [uuid])).get(uuid, {})
+
+    # --------------------------------------------------------------- entity nodes
     async def node_save(self, node: Any, driver: Any) -> None:
-        stored = await self._stored_attributes(driver, node.uuid)
+        stored = await self._stored_attributes(driver, self._NODE_MATCH, node.uuid)
         props = {
             'uuid': node.uuid,
             'name': node.name,
@@ -364,6 +371,7 @@ class AGEGraphOperations(GraphOperationsInterface):
         def _iso(v: Any) -> Any:
             return v.isoformat() if isinstance(v, datetime) else v
 
+        stored = await self._stored_attributes(driver, self._EDGE_MATCH, edge.uuid)
         props = {
             'uuid': edge.uuid,
             'group_id': edge.group_id,
@@ -376,7 +384,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'valid_at': _iso(getattr(edge, 'valid_at', None)),
             'invalid_at': _iso(getattr(edge, 'invalid_at', None)),
             'expired_at': _iso(getattr(edge, 'expired_at', None)),
-            'attributes': getattr(edge, 'attributes', {}) or {},
+            'attributes': _merged_attributes(stored, getattr(edge, 'attributes', {}) or {}),
         }
         await driver.execute_query(
             f'MATCH (a), (b) WHERE a.uuid = {_cy(edge.source_node_uuid)} '
@@ -533,7 +541,7 @@ class AGEGraphOperations(GraphOperationsInterface):
         way the write merges rather than replaces — see `_merged_attributes`."""
         incoming = {k: v for k, v in d.items() if k not in _KNOWN_NODE_KEYS}
         if stored_attributes is None:
-            stored_attributes = await self._stored_attributes(driver, d['uuid'])
+            stored_attributes = await self._stored_attributes(driver, self._NODE_MATCH, d['uuid'])
         props = {
             'uuid': d['uuid'],
             'name': d.get('name') or '',
@@ -570,8 +578,16 @@ class AGEGraphOperations(GraphOperationsInterface):
         'episodes', 'created_at', 'expired_at', 'valid_at', 'invalid_at', 'fact_embedding',
     }
 
-    async def _write_entity_edge_from_fields(self, driver: Any, d: dict[str, Any]) -> None:
-        attributes = {k: v for k, v in d.items() if k not in self._KNOWN_EDGE_KEYS}
+    async def _write_entity_edge_from_fields(
+        self, driver: Any, d: dict[str, Any], stored_attributes: dict[str, Any] | None = None
+    ) -> None:
+        """Persist one flat edge dict. `stored_attributes` is the edge's currently
+        stored attribute map; pass it when the caller has already batch-fetched
+        (see `edge_save_bulk`), leave it None to have this method look it up. Either
+        way the write merges rather than replaces — see `_merged_attributes`."""
+        incoming = {k: v for k, v in d.items() if k not in self._KNOWN_EDGE_KEYS}
+        if stored_attributes is None:
+            stored_attributes = await self._stored_attributes(driver, self._EDGE_MATCH, d['uuid'])
         props = {
             'uuid': d['uuid'],
             'group_id': d['group_id'],
@@ -584,7 +600,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'valid_at': self._iso(d.get('valid_at')),
             'invalid_at': self._iso(d.get('invalid_at')),
             'expired_at': self._iso(d.get('expired_at')),
-            'attributes': attributes,
+            'attributes': _merged_attributes(stored_attributes, incoming),
         }
         await driver.execute_query(
             f'MATCH (a), (b) WHERE a.uuid = {_cy(d["source_node_uuid"])} '
@@ -625,7 +641,9 @@ class AGEGraphOperations(GraphOperationsInterface):
     ) -> None:
         # One round-trip for every uuid's stored attributes, so the per-node
         # merge-on-write guard costs a single extra query for the whole batch.
-        stored = await self._stored_attributes_bulk(driver, [d['uuid'] for d in nodes])
+        stored = await self._stored_attributes_map(
+            driver, self._NODE_MATCH, [d['uuid'] for d in nodes]
+        )
         for d in nodes:
             await self._write_entity_from_fields(driver, d, stored.get(d['uuid'], {}))
 
@@ -638,8 +656,13 @@ class AGEGraphOperations(GraphOperationsInterface):
     async def edge_save_bulk(
         self, _cls: Any, driver: Any, transaction: Any, edges: list[Any], batch_size: int = 100
     ) -> None:
+        # One round-trip for every uuid's stored attributes, so the per-edge
+        # merge-on-write guard costs a single extra query for the whole batch.
+        stored = await self._stored_attributes_map(
+            driver, self._EDGE_MATCH, [d['uuid'] for d in edges]
+        )
         for d in edges:
-            await self._write_entity_edge_from_fields(driver, d)
+            await self._write_entity_edge_from_fields(driver, d, stored.get(d['uuid'], {}))
 
     async def episodic_edge_save_bulk(
         self,
