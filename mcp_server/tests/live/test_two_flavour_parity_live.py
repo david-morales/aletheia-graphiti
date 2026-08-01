@@ -125,3 +125,124 @@ def test_both_flavours_share_envelope_key_contract():
         "query", "auto_fixes", "type", "row_count", "truncated",
         "limit_applied", "execution_ms", "cypher_quality",
     }
+
+
+# ---------------------------------------------------------------------------
+# AGE classifier parity: every pattern is pinned against REAL AGE error text.
+# Each query below was confirmed on the :5433 bed on 2026-08-01.
+# ---------------------------------------------------------------------------
+
+_AGE_CLASSIFIER_CASES = [
+    ("MATCH (n) WHERE n.name = $nm RETURN n LIMIT 1", "unbound_parameter"),
+    ("MATCH (n) WHERE n:Persona OR n:Ubicacion RETURN n LIMIT 1", "boolean_label_test"),
+    ("MATCH (n:Persona OR n:Ubicacion) RETURN n LIMIT 1", "boolean_label_test"),
+    ("MATCH (n) RETURN label(n) AS t, count(n) AS count ORDER BY count DESC LIMIT 1",
+     "reserved_alias"),
+    ("MATCH (a)-[r:A|B]->(b) RETURN a LIMIT 1", "reltype_disjunction_unsupported"),
+    ("MATCH (n) WHERE n.name != 'zzz' RETURN n.name AS name LIMIT 1", "not_equals_operator"),
+    ("MATCH (n) RETURN n.name AS x, n.uuid AS x LIMIT 1", "duplicate_return_column"),
+    ("MATCH (n) RETURN label(n) AS TipoDelito LIMIT 1", "mixed_case_alias"),
+]
+
+
+def _age_driver():
+    from graphiti_core.driver.age_driver import AGEDriver
+
+    dsn = os.getenv("AGE_DSN", "postgresql://age:age@localhost:5433/age_test")
+    graph_name = os.getenv("AGE_GRAPH_NAME", "policia_age_poc")
+    return AGEDriver(dsn=dsn, graph_name=graph_name, embedding_dim=1024)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query,expected_reason", _AGE_CLASSIFIER_CASES,
+                         ids=[r for _, r in _AGE_CLASSIFIER_CASES])
+@pytest.mark.skipif(not os.getenv("AGE_PARITY_LIVE"), reason="AGE live gate off")
+async def test_age_classifier_matches_real_backend_errors(query, expected_reason):
+    """The classifier is pinned to what AGE ACTUALLY says, not to a remembered string.
+
+    These queries bypass validate_and_sanitize on purpose — several are caught pre-flight by
+    check_dialect, and the point here is the post-hoc net against live error text.
+    """
+    driver = _age_driver()
+    flavour = AgeFlavour()
+    try:
+        await flavour.execute_graph_query(driver, query)
+    except Exception as exc:  # noqa: BLE001 — the error IS the subject under test
+        err = flavour.classify_execution_error(str(exc), query=query)
+        assert err.reason == expected_reason, f"{exc!s} -> {err.reason}"
+        assert err.suggestion, "a classified error must carry a suggestion"
+        assert err.doc_hint, "a classified error must carry a doc_hint"
+    else:
+        pytest.fail(f"expected {query!r} to fail on AGE, but it succeeded")
+    finally:
+        await driver.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv("AGE_PARITY_LIVE"), reason="AGE live gate off")
+async def test_age_profile_queries_return_data_on_the_live_graph():
+    """W2 acceptance: every AGE profile probe runs and returns rows on a real graph."""
+    driver = _age_driver()
+    group_id = os.getenv("AGE_GRAPH_NAME", "policia_age_poc")
+    queries = AgeFlavour().profile_queries()
+    try:
+        entity_rows, _, _ = await driver.execute_query(
+            queries["entity_types"], group_id=group_id
+        )
+        assert entity_rows, "entity_types probe returned nothing"
+        assert any(r.get("entity_type") for r in entity_rows)
+        assert all(r.get("cnt") is not None for r in entity_rows)
+
+        edge_rows, _, _ = await driver.execute_query(queries["edge_types"], group_id=group_id)
+        assert edge_rows, "edge_types probe returned nothing"
+
+        label = next(
+            lbl
+            for r in entity_rows
+            for lbl in (r.get("entity_type") or [])
+            if lbl not in ("Entity", "Episodic", "Community")
+        )
+        name_rows, _, _ = await driver.execute_query(
+            queries["sample_names"], group_id=group_id, label=label, limit=5
+        )
+        assert name_rows, f"sample_names probe returned nothing for {label}"
+
+        time_rows, _, _ = await driver.execute_query(queries["time_range"], group_id=group_id)
+        assert time_rows and time_rows[0].get("earliest")
+    finally:
+        await driver.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv("AGE_PARITY_LIVE"), reason="AGE live gate off")
+async def test_age_auto_fixed_count_alias_actually_runs_on_the_live_graph():
+    """The stage-2b rename must produce a query AGE accepts — proven, not assumed."""
+    from utils.cypher import SanitizedQuery, validate_and_sanitize
+
+    raw = "MATCH (n) RETURN label(n) AS t, count(n) AS count ORDER BY count DESC"
+    flavour = AgeFlavour()
+    sanitized = validate_and_sanitize(raw, flavour)
+    assert isinstance(sanitized, SanitizedQuery)
+    assert "count_" in sanitized.query
+
+    driver = _age_driver()
+    try:
+        records, header = await flavour.execute_graph_query(driver, sanitized.query)
+    finally:
+        await driver.close()
+    assert records and "count_" in header
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv("FALKORDB_PARITY_LIVE"), reason="FalkorDB live gate off")
+async def test_base_profile_queries_still_run_on_falkordb():
+    """No-regression: the shared probe text (now aliased `cnt`) still works on FalkorDB."""
+    from flavours.base import BaseFlavour
+    from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+    database = os.getenv("FALKORDB_DATABASE", "policia_partes_real_v2")
+    driver = FalkorDriver(host="localhost", port=6379, database=database)
+    queries = BaseFlavour().profile_queries()
+    records, _, _ = await driver.execute_query(queries["entity_types"], group_id=database)
+    assert records, "FalkorDB entity_types probe returned nothing"
+    assert all(r.get("cnt") is not None for r in records)
