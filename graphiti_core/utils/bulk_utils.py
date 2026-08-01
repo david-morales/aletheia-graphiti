@@ -177,7 +177,18 @@ async def add_nodes_and_edges_bulk_tx(
             'summary': node.summary,
             'created_at': node.created_at,
             'name_embedding': node.name_embedding,
-            'labels': list(set(node.labels + ['Entity'])),
+            # Fork divergence (2026-08-01, aletheia-v0.8.0) — KEEP ON UPSTREAM SYNC.
+            # Order-preserving dedupe, not `list(set(...))`. AGE collapses a node
+            # to ONE vertex label and picks it as the last non-'Entity' entry, so
+            # this list's order decides which vertex the bulk path MERGEs on; a set
+            # made that pick differ from the projection path's (`node_save`, which
+            # uses the raw ordered list) and split one uuid across two vertices.
+            # Every other backend applies all of these labels, so order is inert
+            # there. `dict.fromkeys` keeps the FIRST occurrence, which is why
+            # 'Entity' is appended at the end: a list that already contains it
+            # keeps its own position, and one that does not gets it last, leaving
+            # the ontology leaf as the last non-'Entity' entry either way.
+            'labels': list(dict.fromkeys(node.labels + ['Entity'])),
         }
 
         if driver.provider == GraphProvider.KUZU:
