@@ -124,11 +124,25 @@ async def test_bulk_row_repeated_label_keeps_the_first_occurrence():
 
 
 @pytest.mark.asyncio
-async def test_bulk_row_label_membership_is_unchanged_for_the_other_backends():
+@pytest.mark.parametrize(
+    'labels',
+    [
+        LABELS_A,                                            # Entity first, no repeats
+        ['Entity', 'PhysicalObject', 'Vehiculo'],            # ordered projection shape
+        ['Vehiculo', 'PhysicalObject', 'Entity'],            # Entity last
+        ['Vehiculo', 'PhysicalObject'],                      # Entity absent -> appended
+        ['Entity'],                                          # Entity only
+        [],                                                  # empty -> Entity only
+        ['Entity', 'Vehiculo', 'PhysicalObject', 'Vehiculo'],  # repeated leaf -> collapsed
+    ],
+)
+async def test_bulk_row_label_membership_is_unchanged_for_the_other_backends(labels):
     """No-regression bar for Neo4j / FalkorDB / Neptune / Kuzu: their bulk queries
     apply EVERY entry of this list to the vertex (node_db_queries.py:204, :224,
     :260) or store it as a property, so only membership matters — and membership
-    is exactly what an order-preserving dedupe leaves alone."""
-    rows = await _bulk_rows([_node('labelorder-h', LABELS_A)])
-    assert set(rows[0]['labels']) == set(LABELS_A)
-    assert len(rows[0]['labels']) == len(set(LABELS_A))
+    is exactly what an order-preserving dedupe leaves alone. Parametrized over the
+    classes where the dedupe semantics actually changed (Entity absent -> appended;
+    repeated entry -> collapsed), not just the identity class (ship review F2)."""
+    rows = await _bulk_rows([_node('labelorder-h', labels)])
+    assert set(rows[0]['labels']) == set(labels) | {'Entity'}
+    assert len(rows[0]['labels']) == len(set(rows[0]['labels']))

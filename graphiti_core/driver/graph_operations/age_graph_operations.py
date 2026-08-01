@@ -166,10 +166,12 @@ class AGEGraphOperations(GraphOperationsInterface):
     #
     # The read MUST be scoped to the same label the write MERGEs on. AGE's MERGE
     # is label-scoped, so one uuid can legitimately exist as several vertices under
-    # different leaf labels (Graphiti reaches this routinely: `bulk_utils` builds
-    # `labels` with `list(set(...))`, whose order is not stable across processes,
-    # so `_node_label`'s leaf pick can differ run to run for the same logical
-    # node). A label-blind read would return some other vertex's map and the write
+    # different leaf labels. `bulk_utils` now preserves label order (dict.fromkeys,
+    # 2026-08-01), but the multi-vertex state remains reachable: legacy graphs
+    # written before the fix and not yet repaired, `add_triplet`'s set-union label
+    # merge (graphiti.py, unordered), and repeated non-Entity labels whose first
+    # and last occurrences differ. A label-blind read would return some other
+    # vertex's map and the write
     # would then stamp it onto this one. Scoping also makes the read address
     # exactly one vertex, so there is no first-row/last-row ambiguity to resolve.
     @staticmethod
