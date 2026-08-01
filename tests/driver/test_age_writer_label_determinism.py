@@ -21,9 +21,13 @@ compare its label pick with the projection path's. The live test appended in
 Task 3 proves the whole thing end to end on the AGE bed.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from graphiti_core.driver.graph_operations.age_graph_operations import _node_label
+from graphiti_core.nodes import EntityNode
+from graphiti_core.utils.bulk_utils import add_nodes_and_edges_bulk_tx
 
 # Reuse the bulk-path harness from the bulk-row order regression instead of
 # duplicating the driver double: same fixture, different question.
@@ -77,3 +81,74 @@ async def test_repeated_leaf_label_is_the_one_known_disagreement():
     rows = await _bulk_rows([node])
     assert _node_label(node.labels) == 'Vehiculo'
     assert _node_label(rows[0]['labels']) == 'PhysicalObject'
+
+
+# ------------------------------------------------------------------ live (AGE)
+# Live-gated through the shared `age_driver` fixture (tests/driver/conftest.py):
+# a per-test `g_<hex>` graph on AGE_TEST_DSN, dropped in teardown, skipped only
+# when the store is unreachable.
+
+
+def _live_node(driver, uuid: str, labels: list[str]) -> EntityNode:
+    node = EntityNode(
+        uuid=uuid,
+        name='VEHICULO UNO',
+        group_id='labeldet',
+        labels=list(labels),
+        created_at=datetime.now(timezone.utc),
+    )
+    node.name_embedding = [0.1] * driver.embedding_dim
+    return node
+
+
+@pytest.mark.asyncio
+async def test_projection_then_bulk_save_leaves_exactly_one_vertex_per_uuid(age_driver):
+    """The bug's exact live condition: the SAME node written through BOTH writers.
+    Two uuids carry the same six labels in different orders, so before the fix the
+    single set-derived bulk pick could not match both projection picks and at least
+    one uuid ended up as two label-scoped vertices."""
+    ops = age_driver.graph_operations_interface
+    node_a = _live_node(age_driver, 'labeldet-a', LABELS_A)
+    node_b = _live_node(age_driver, 'labeldet-b', LABELS_B)
+
+    await ops.node_save(node_a, age_driver)  # projection path
+    await ops.node_save(node_b, age_driver)
+    await add_nodes_and_edges_bulk_tx(  # bulk / narrative path
+        age_driver.session(), [], [], [node_a, node_b], [], None, age_driver
+    )
+
+    for uuid in ('labeldet-a', 'labeldet-b'):
+        records, _, _ = await age_driver.execute_query(
+            f"MATCH (n) WHERE n.uuid = '{uuid}' RETURN n.uuid AS uuid, n.labels AS labels"
+        )
+        assert len(records) == 1, (uuid, records)
+
+    leaf_a, _, _ = await age_driver.execute_query(
+        "MATCH (n:Incautado) WHERE n.uuid = 'labeldet-a' RETURN n.uuid AS uuid"
+    )
+    assert len(leaf_a) == 1, leaf_a
+    leaf_b, _, _ = await age_driver.execute_query(
+        "MATCH (n:PhysicalObject) WHERE n.uuid = 'labeldet-b' RETURN n.uuid AS uuid"
+    )
+    assert len(leaf_b) == 1, leaf_b
+
+    # No sibling under any of the non-leaf labels either.
+    for label in ('PhysicalObject', 'Vehiculo', 'Turismo', 'Matriculado', 'Entity'):
+        stray, _, _ = await age_driver.execute_query(
+            f"MATCH (n:{label}) WHERE n.uuid = 'labeldet-a' RETURN n.uuid AS uuid"
+        )
+        assert stray == [], (label, stray)
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_stores_the_ordered_label_list_on_the_vertex(age_driver):
+    """The `labels` property is what abstract-tier filtering reads, and what the
+    repair tooling uses to identify the true leaf, so the order must survive the
+    bulk write and not only the label pick."""
+    node = _live_node(age_driver, 'labeldet-c', LABELS_A)
+    await add_nodes_and_edges_bulk_tx(age_driver.session(), [], [], [node], [], None, age_driver)
+    records, _, _ = await age_driver.execute_query(
+        "MATCH (n) WHERE n.uuid = 'labeldet-c' RETURN n.labels AS labels"
+    )
+    assert len(records) == 1, records
+    assert list(records[0]['labels']) == LABELS_A
