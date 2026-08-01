@@ -8,6 +8,8 @@ whitelist as the read-only guard.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
@@ -85,6 +87,121 @@ def check_age_dialect(query: str) -> CypherError | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Execution-error classification (Layer 3)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExecutionErrorPattern:
+    """Maps an AGE/Postgres error string to an actionable CypherError.
+
+    Walked in order by :func:`classify_age_execution_error`; first match wins.
+
+    ``matcher`` is tested against the error MESSAGE. ``query_check``, when present, is tested
+    against the SUBMITTED QUERY and must also match — Postgres messages are far less specific
+    than FalkorDB's, so several AGE patterns are only distinguishable by corroborating what the
+    agent actually wrote. A pattern carrying a ``query_check`` never fires when no query was
+    supplied. ``suggestion_fn(message, query)`` overrides the static ``suggestion`` when the
+    hint must name concrete tokens from the query.
+    """
+
+    name: str
+    matcher: re.Pattern
+    suggestion: str
+    doc_hint: str
+    example_fix: str | None = None
+    query_check: re.Pattern | None = None
+    suggestion_fn: Callable[[str, str], str] | None = None
+
+
+# Postgres reports the offending token as `at or near "X"` but never echoes the query, so the
+# AGE classifier reconstructs FalkorDB's `errCtx` itself: find X in the submitted query and
+# quote the surrounding fragment. That echo is what let the FalkorDB arm of the v0.31.0 bench
+# self-correct; without it the agent has nothing to diff against.
+_AT_OR_NEAR_RE = re.compile(r'at or near "([^"]+)"')
+
+
+def _synthesize_errctx(message: str, query: str | None, width: int = 40) -> str:
+    """Return a short fragment of ``query`` around the failing token, or '' if unavailable."""
+    if not query:
+        return ""
+    flat = " ".join(query.split())
+    m = _AT_OR_NEAR_RE.search(message or "")
+    if m:
+        token = m.group(1)
+        idx = flat.lower().find(token.lower())
+        if idx >= 0:
+            start = max(0, idx - width)
+            end = min(len(flat), idx + len(token) + width)
+            prefix = "..." if start > 0 else ""
+            suffix = "..." if end < len(flat) else ""
+            return f"{prefix}{flat[start:end]}{suffix}"
+    return flat[:120] + ("..." if len(flat) > 120 else "")
+
+
+# Order matters: specific message fingerprints first, then the patterns that lean on
+# query_check to disambiguate a generic `syntax error at or near "..."`.
+_AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
+    ExecutionErrorPattern(
+        name="reserved_id_variable",
+        matcher=re.compile(r"graphid", re.IGNORECASE),
+        suggestion="A variable named `id` collides with AGE's built-in id()/graphid. "
+        "Rename the variable (e.g. `ident`, `x`) and retry.",
+        doc_hint="AGE reserves id()/graphid; never name a variable `id`.",
+        example_fix="MATCH (ident) RETURN ident.name LIMIT 25",
+    ),
+    ExecutionErrorPattern(
+        name="reltype_disjunction_unsupported",
+        matcher=re.compile(r'at or near "\|"'),
+        suggestion="AGE does not support relationship-type disjunction like [:A|B|C]. "
+        "Match a generic edge and filter: MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C'].",
+        doc_hint="AGE has no [:A|B|C]; use WHERE type(r) IN [...].",
+        example_fix="MATCH (a)-[r]->(b) WHERE type(r) IN ['DETIENE','INVESTIGA'] RETURN b LIMIT 25",
+    ),
+]
+
+
+def classify_age_execution_error(msg: str, query: str | None = None) -> CypherError:
+    """Map an AGE/Postgres execution-error message to an actionable CypherError."""
+    for pattern in _AGE_EXECUTION_ERROR_PATTERNS:
+        if not pattern.matcher.search(msg or ""):
+            continue
+        if pattern.query_check is not None:
+            if not query or not pattern.query_check.search(_strip_non_code_spans(query)):
+                continue
+        explanation = f"Apache AGE returned an error: {msg}"
+        errctx = _synthesize_errctx(msg or "", query)
+        if errctx:
+            explanation += f"\nerrCtx: {errctx}"
+        if pattern.example_fix:
+            explanation += f"\nCorrected example: {pattern.example_fix}"
+        suggestion = pattern.suggestion
+        if pattern.suggestion_fn is not None and query:
+            suggestion = pattern.suggestion_fn(msg or "", query)
+        return CypherError(
+            stage="execution",
+            reason=pattern.name,
+            found=msg,
+            explanation=explanation,
+            suggestion=suggestion,
+            doc_hint=pattern.doc_hint,
+        )
+
+    explanation = f"Apache AGE returned an error: {msg}"
+    errctx = _synthesize_errctx(msg or "", query)
+    if errctx:
+        explanation += f"\nerrCtx: {errctx}"
+    return CypherError(
+        stage="execution",
+        reason="query_failed",
+        found=msg,
+        explanation=explanation,
+        suggestion="Check your Cypher against this graph's dialect. Use get_schema to verify "
+        "label and property names and to read `dialect_reference`.",
+        doc_hint="Apache AGE openCypher — see get_schema `dialect_reference`.",
+    )
+
+
 class AgeFlavour(BaseFlavour):
     """AGE flavour — reject-with-hint for AGE-unsupported constructs, nested-map attribute_keys.
 
@@ -110,27 +227,7 @@ class AgeFlavour(BaseFlavour):
     # LIMIT injection; AGE-unsupported constructs are reject-with-hint via check_dialect.
 
     def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
-        m = (message or "").lower()
-        if "graphid" in m:
-            return CypherError(
-                stage="execution",
-                reason="reserved_id_variable",
-                found="id",
-                explanation="A variable named `id` collides with AGE's built-in id()/graphid.",
-                suggestion="Rename the variable (e.g. `ident`, `x`) and retry.",
-                doc_hint="AGE reserves id()/graphid.",
-            )
-        if 'syntax error at or near "|"' in m or 'at or near "|"' in m:
-            return CypherError(
-                stage="execution",
-                reason="reltype_disjunction_unsupported",
-                found="|",
-                explanation="AGE does not support relationship-type disjunction like [:A|B|C].",
-                suggestion="Match a generic edge and filter: MATCH (a)-[r]->(b) "
-                "WHERE type(r) IN ['A','B','C'].",
-                doc_hint="AGE has no [:A|B|C]; use WHERE type(r) IN [...].",
-            )
-        return super().classify_execution_error(message, query)
+        return classify_age_execution_error(message, query)
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Keys of the nested `attributes` agtype map, UNIONED across a small sample."""

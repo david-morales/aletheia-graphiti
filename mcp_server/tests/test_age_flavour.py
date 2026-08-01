@@ -159,3 +159,50 @@ def test_module_level_check_age_dialect_is_the_implementation():
     err = check_age_dialect("MATCH (a)-[:A|B]->(b) RETURN b")
     assert err is not None and err.reason == "reltype_disjunction_unsupported"
     assert check_age_dialect("MATCH (n) RETURN n.name") is None
+
+
+# --- execution-error table + synthesized errCtx (Postgres echoes no query context) ---
+
+def test_classify_migrated_graphid_pattern():
+    err = AgeFlavour().classify_execution_error(
+        "column notation .id applied to type graphid",
+        query="MATCH (id) RETURN id.name LIMIT 5",
+    )
+    assert err.reason == "reserved_id_variable"
+    assert "ident" in err.suggestion
+    assert err.doc_hint != ""
+
+
+def test_classify_migrated_reltype_disjunction_pattern():
+    err = AgeFlavour().classify_execution_error('syntax error at or near "|"')
+    assert err.reason == "reltype_disjunction_unsupported"
+    assert "type(r) IN" in err.suggestion
+    assert err.doc_hint != ""
+
+
+def test_classify_synthesizes_errctx_around_the_failing_token():
+    query = (
+        "MATCH (a)-[r:DETIENE|INVESTIGA]->(b) "
+        "WHERE b.name = 'OMAR MOHAMED' RETURN b.name LIMIT 25"
+    )
+    err = AgeFlavour().classify_execution_error('syntax error at or near "|"', query=query)
+    assert "errCtx:" in err.explanation
+    assert "DETIENE|INVESTIGA" in err.explanation
+
+
+def test_classify_errctx_falls_back_to_the_query_head_when_no_token_named():
+    query = "MATCH (n) WHERE n.name = 'x' RETURN n.name LIMIT 25"
+    err = AgeFlavour().classify_execution_error("something went sideways", query=query)
+    assert "MATCH (n) WHERE n.name = 'x'" in err.explanation
+
+
+def test_classify_without_a_query_emits_no_errctx():
+    err = AgeFlavour().classify_execution_error('syntax error at or near "|"')
+    assert "errCtx:" not in err.explanation
+
+
+def test_classify_unknown_error_returns_the_generic_envelope():
+    err = AgeFlavour().classify_execution_error("totally novel failure")
+    assert err.stage == "execution"
+    assert err.reason == "query_failed"
+    assert "get_schema" in err.suggestion
