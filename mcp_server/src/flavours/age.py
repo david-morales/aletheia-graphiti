@@ -602,6 +602,10 @@ def fix_age_dialect(query: str) -> tuple[str, list[str]]:
 #  * `n.labels` (the stored ordered list) instead of `labels(n)`, which returns only the leaf
 #  * `n.labels IS NOT NULL` — Episodic vertices carry no labels list
 #  * `$label IN n.labels` for the sample-name lookup
+# The endpoint `labels IS NOT NULL` tests on the edge probes are the AGE equivalent of the
+# base query's `:Entity` endpoint scoping: they exclude Graphiti's bookkeeping edges, which
+# hang off label-less Episodic vertices. Without them the probe advertised `MENTIONS: 11` on
+# the live bed as though it were a domain relationship.
 _AGE_PROFILE_QUERIES: dict[str, str] = {
     "entity_types": (
         "MATCH (n) "
@@ -612,6 +616,7 @@ _AGE_PROFILE_QUERIES: dict[str, str] = {
     "edge_types": (
         "MATCH (s)-[r]->(t) "
         "WHERE s.group_id = $group_id AND t.group_id = $group_id "
+        "AND s.labels IS NOT NULL AND t.labels IS NOT NULL "
         "RETURN type(r) AS relationship_type, count(r) AS cnt "
         "ORDER BY cnt DESC"
     ),
@@ -624,6 +629,7 @@ _AGE_PROFILE_QUERIES: dict[str, str] = {
     "time_range": (
         "MATCH (s)-[r]->(t) "
         "WHERE s.group_id = $group_id AND r.created_at IS NOT NULL "
+        "AND s.labels IS NOT NULL AND t.labels IS NOT NULL "
         "RETURN min(r.created_at) AS earliest, max(r.created_at) AS latest"
     ),
 }

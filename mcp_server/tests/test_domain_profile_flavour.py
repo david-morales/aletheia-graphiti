@@ -128,3 +128,24 @@ class TestDomainProfileUsesTheFlavour:
         assert any('Domain-profile probe entity_types failed [query_failed]' in m
                    for m in messages), messages
         assert any('get_schema' in m for m in messages), messages
+
+
+class TestAgeEdgeTypesExcludesBookkeeping:
+    """F6 — the AGE probe must scope its endpoints the way the FalkorDB shape does.
+
+    The base query scopes both endpoints to `:Entity`, which excludes Graphiti's bookkeeping
+    edges by construction. The AGE variant dropped that (`:Entity` is useless on AGE), so the
+    Episodic->Entity `MENTIONS` edge was advertised as a domain relationship: live on the
+    :5433 bed the probe returned `MENTIONS: 11`. Episodic vertices carry no `labels` list, so
+    testing that property is the AGE-correct equivalent of the endpoint scoping.
+    """
+
+    def test_age_edge_types_scopes_both_endpoints(self):
+        q = AgeFlavour().profile_queries()['edge_types']
+        assert 's.labels IS NOT NULL' in q, q
+        assert 't.labels IS NOT NULL' in q, q
+
+    def test_age_time_range_scopes_its_source_endpoint_too(self):
+        # Same bookkeeping-edge exposure, same fix.
+        q = AgeFlavour().profile_queries()['time_range']
+        assert 's.labels IS NOT NULL' in q, q

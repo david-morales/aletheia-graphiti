@@ -247,3 +247,28 @@ async def test_base_profile_queries_still_run_on_falkordb():
     records, _, _ = await driver.execute_query(queries["entity_types"], group_id=database)
     assert records, "FalkorDB entity_types probe returned nothing"
     assert all(r.get("cnt") is not None for r in records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv("AGE_PARITY_LIVE"), reason="AGE live gate off")
+async def test_age_edge_types_probe_excludes_graphiti_bookkeeping_edges():
+    """F6: MENTIONS is an Episodic->Entity bookkeeping edge, not a domain relationship.
+
+    Before the endpoint scoping was restored this probe advertised `MENTIONS: 11` on the live
+    bed — a relationship the FalkorDB shape excludes by construction via its `:Entity`
+    endpoints. Asserted against the built profile's edge types, not just the query text.
+    """
+    from domain_profile import _query_edge_types
+
+    driver = _age_driver()
+    group_id = os.getenv("AGE_GRAPH_NAME", "policia_age_poc")
+    try:
+        edge_types = await _query_edge_types(driver, group_id, AgeFlavour())
+    finally:
+        await driver.close()
+
+    assert edge_types, "edge_types probe returned nothing"
+    assert "MENTIONS" not in edge_types, sorted(edge_types)
+    assert "RELATES_TO" not in edge_types, sorted(edge_types)
+    # ...and the real domain relationships survive.
+    assert any(name.isupper() and name != "MENTIONS" for name in edge_types), sorted(edge_types)
