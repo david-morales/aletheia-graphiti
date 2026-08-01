@@ -673,3 +673,28 @@ def test_auto_fix_still_fires_when_the_alias_is_referenced_in_where_or_with():
         q, fixes = AgeFlavour().auto_fix(raw)
         assert "count_" in q, raw
         assert fixes, raw
+
+
+# --- F5: the PROFILE/EXPLAIN strip is a PREFIX strip, not a per-segment one ---
+
+def test_auto_fix_does_not_strip_a_mid_query_profile():
+    # _apply_to_code_spans splits the query at every string literal, so a `^`-anchored regex
+    # re-anchors after each one. A PROFILE sitting mid-query was therefore deleted, silently
+    # changing the text the agent has to diagnose.
+    raw = "MATCH (n) WHERE n.note = 'x' PROFILE RETURN n.name AS name"
+    q, fixes = AgeFlavour().auto_fix(raw)
+    assert q == raw, q
+    assert fixes == []
+
+
+def test_auto_fix_does_not_strip_explain_after_a_string_literal():
+    raw = "MATCH (n) WHERE n.note = 'x' EXPLAIN RETURN n.name AS name"
+    q, fixes = AgeFlavour().auto_fix(raw)
+    assert q == raw, q
+    assert fixes == []
+
+
+def test_auto_fix_still_strips_a_leading_profile_after_whitespace():
+    q, fixes = AgeFlavour().auto_fix("   PROFILE MATCH (n) RETURN n.name AS name")
+    assert q.startswith("MATCH")
+    assert any("PROFILE" in f for f in fixes)

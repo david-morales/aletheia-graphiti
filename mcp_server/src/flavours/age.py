@@ -569,8 +569,11 @@ def fix_age_dialect(query: str) -> tuple[str, list[str]]:
         query = new_query
         fixes.append("Replaced != with <> (Apache AGE has no != operator)")
 
-    # 2. Strip a leading PROFILE/EXPLAIN.
-    new_query = _apply_to_code_spans(query, lambda s: _PROFILE_EXPLAIN_RE.sub("", s))
+    # 2. Strip a leading PROFILE/EXPLAIN. Applied to the WHOLE query, not per code span:
+    # _apply_to_code_spans restarts each segment, so a `^`-anchored pattern would re-anchor
+    # after every string literal and delete a mid-query PROFILE the agent needs to see.
+    # A leading keyword cannot sit inside a literal, so nothing is lost by skipping the mask.
+    new_query = _PROFILE_EXPLAIN_RE.sub("", query, count=1)
     if new_query != query:
         query = new_query
         fixes.append(
