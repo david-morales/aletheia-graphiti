@@ -139,9 +139,48 @@ def _synthesize_errctx(message: str, query: str | None, width: int = 40) -> str:
     return flat[:120] + ("..." if len(flat) > 120 else "")
 
 
+# openCypher `$name` parameters. AGE's cypher() SQL function takes no openCypher parameters,
+# and run_cypher binds none, so every $name reaches the parser raw. Matched on code spans only
+# so `'costs $50'` inside a string literal is not read as a parameter.
+_PARAM_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _find_parameters(query: str) -> list[str]:
+    """Ordered, de-duplicated `$name` parameters used in code position."""
+    seen: list[str] = []
+    for m in _PARAM_RE.finditer(_strip_non_code_spans(query or "")):
+        name = m.group(0)
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _suggest_inline_parameters(_message: str, query: str) -> str:
+    params = _find_parameters(query)
+    named = ", ".join(params) if params else "the `$name` tokens"
+    return (
+        f"This query uses openCypher parameters ({named}) but Apache AGE's cypher() function "
+        "cannot bind them and this tool never supplies a parameter map — so they reach the "
+        "parser unbound. Inline the literal values directly into the query "
+        "(e.g. `WHERE n.name = 'OMAR MOHAMED'` instead of `WHERE n.name = $name`), quoting "
+        "strings with single quotes and leaving numbers bare."
+    )
+
+
 # Order matters: specific message fingerprints first, then the patterns that lean on
 # query_check to disambiguate a generic `syntax error at or near "..."`.
 _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
+    ExecutionErrorPattern(
+        name="unbound_parameter",
+        matcher=re.compile(
+            r"parameters argument is missing from cypher\(\) function call", re.IGNORECASE
+        ),
+        suggestion="This query uses openCypher `$name` parameters. Apache AGE cannot bind "
+        "them — inline the literal values directly into the query instead.",
+        doc_hint="Apache AGE: no `$param` binding; inline literals into the Cypher text.",
+        example_fix="MATCH (n) WHERE n.name = 'OMAR MOHAMED' RETURN n.name LIMIT 25",
+        suggestion_fn=_suggest_inline_parameters,
+    ),
     ExecutionErrorPattern(
         name="reserved_id_variable",
         matcher=re.compile(r"graphid", re.IGNORECASE),

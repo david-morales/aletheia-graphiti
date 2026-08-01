@@ -206,3 +206,38 @@ def test_classify_unknown_error_returns_the_generic_envelope():
     assert err.stage == "execution"
     assert err.reason == "query_failed"
     assert "get_schema" in err.suggestion
+
+
+# --- unbound $parameter: 8 of the 11 AGE bench failures ---
+
+_UNBOUND_PARAM_MSG = "parameters argument is missing from cypher() function call"
+
+
+def test_classify_unbound_parameter():
+    err = AgeFlavour().classify_execution_error(
+        _UNBOUND_PARAM_MSG, query="MATCH (n) WHERE n.name = $nm RETURN n.name LIMIT 25"
+    )
+    assert err.reason == "unbound_parameter"
+    assert "$nm" in err.suggestion
+    assert "inline" in err.suggestion.lower()
+    assert err.doc_hint != ""
+
+
+def test_classify_unbound_parameter_names_every_parameter_once():
+    query = "MATCH (n) WHERE n.a = $one AND n.b = $two AND n.c = $one RETURN n LIMIT 25"
+    err = AgeFlavour().classify_execution_error(_UNBOUND_PARAM_MSG, query=query)
+    assert "$one" in err.suggestion and "$two" in err.suggestion
+    assert err.suggestion.count("$one") == 1
+
+
+def test_classify_unbound_parameter_ignores_dollars_inside_string_literals():
+    query = "MATCH (n) WHERE n.note = 'costs $50 total' AND n.x = $real RETURN n LIMIT 25"
+    err = AgeFlavour().classify_execution_error(_UNBOUND_PARAM_MSG, query=query)
+    assert "$real" in err.suggestion
+    assert "$50" not in err.suggestion
+
+
+def test_classify_unbound_parameter_without_a_query_still_classifies():
+    err = AgeFlavour().classify_execution_error(_UNBOUND_PARAM_MSG)
+    assert err.reason == "unbound_parameter"
+    assert "inline" in err.suggestion.lower()
