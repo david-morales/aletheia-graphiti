@@ -28,7 +28,7 @@ class Flavour(Protocol):
 
     def check_dialect(self, query: str) -> CypherError | None: ...
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
-    def classify_execution_error(self, message: str) -> CypherError: ...
+    def classify_execution_error(self, message: str, query: str | None = None) -> CypherError: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
     async def execute_graph_query(
         self, driver: Any, query: str
@@ -49,7 +49,8 @@ class BaseFlavour:
     def auto_fix(self, query: str) -> tuple[str, list[str]]:
         return query, []
 
-    def classify_execution_error(self, message: str) -> CypherError:
+    def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
+        """Generic envelope. ``query`` is accepted for protocol parity and ignored here."""
         return CypherError(
             stage="execution",
             reason="execution_error",

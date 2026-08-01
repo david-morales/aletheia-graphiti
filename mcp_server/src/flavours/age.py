@@ -124,7 +124,7 @@ class AgeFlavour(BaseFlavour):
     # auto_fix: inherited from BaseFlavour (no-op). AGE's only auto-fix is the shared pipeline's
     # LIMIT injection; AGE-unsupported constructs are reject-with-hint via check_dialect.
 
-    def classify_execution_error(self, message: str) -> CypherError:
+    def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
         m = (message or "").lower()
         if "graphid" in m:
             return CypherError(
@@ -145,7 +145,7 @@ class AgeFlavour(BaseFlavour):
                 "WHERE type(r) IN ['A','B','C'].",
                 doc_hint="AGE has no [:A|B|C]; use WHERE type(r) IN [...].",
             )
-        return super().classify_execution_error(message)
+        return super().classify_execution_error(message, query)
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Keys of the nested `attributes` agtype map, UNIONED across a small sample."""

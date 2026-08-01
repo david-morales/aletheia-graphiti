@@ -2130,7 +2130,7 @@ async def run_cypher(query: str) -> CypherResultResponse:
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
-        error = flavour.classify_execution_error(str(e))
+        error = flavour.classify_execution_error(str(e), query=sanitized.query)
         result = format_error(sanitized.query, error)
         result['auto_fixes'] = sanitized.auto_fixes
         return result

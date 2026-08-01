@@ -145,3 +145,30 @@ async def test_base_execute_handles_tuple_shape():
     records, header = await BaseFlavour().execute_graph_query(_TupleStub(), "RETURN 5 AS c")
     assert header == ["c"]
     assert records == [{"c": 5}]
+
+
+# --- classify_execution_error(message, query=None): the contract every flavour honours ---
+
+def test_all_flavours_accept_the_query_argument():
+    from flavours.age import AgeFlavour
+    from flavours.falkordb import FalkorDbFlavour
+
+    for flavour in (BaseFlavour(), FalkorDbFlavour(), AgeFlavour()):
+        err = flavour.classify_execution_error("boom", query="MATCH (n) RETURN n")
+        assert isinstance(err, CypherError), f"{flavour.name} did not return a CypherError"
+        assert err.stage == "execution"
+
+
+def test_falkordb_classify_ignores_the_query_argument():
+    # FalkorDB already carries errCtx inside the message; passing a query must not change it.
+    from flavours.falkordb import FalkorDbFlavour
+
+    msg = "errMsg: Invalid input '-': expected '=' errCtx: OPTIONAL MATCH parte-[:R]->(t)"
+    without = FalkorDbFlavour().classify_execution_error(msg)
+    with_query = FalkorDbFlavour().classify_execution_error(msg, query="OPTIONAL MATCH parte-[:R]->(t)")
+    assert without == with_query
+
+
+def test_classify_execution_error_query_argument_is_optional():
+    # Legacy positional-only callers must keep working (backward-compatible default).
+    assert BaseFlavour().classify_execution_error("boom").reason == "execution_error"
