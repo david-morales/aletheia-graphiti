@@ -3,8 +3,9 @@
 AGE-unsupported constructs (a variable named `id`, relationship-type disjunction [:A|B|C]) are
 REJECT-with-hint via check_dialect — never auto-rewritten (a reliable structural rewrite of
 arbitrary openCypher is not feasible with pattern matching, and a wrong rewrite silently returns
-wrong data; the agent writes the correct form in one step from the hint). The only AGE auto-fix
-is the shared pipeline's LIMIT injection.
+wrong data; the agent writes the correct form in one step from the hint). auto_fix applies three
+bench-observed rewrites (`!=` -> `<>`, strip PROFILE/EXPLAIN, rename the reserved `count` alias);
+LIMIT injection remains the shared pipeline's job.
 """
 import pytest
 
@@ -98,11 +99,14 @@ def test_no_disjunction_with_keyword_property_is_allowed():
     assert AgeFlavour().check_dialect("MATCH (a)-[r:KNOWS]->(b) WHERE b.limit > 5 RETURN b") is None
 
 
-# --- auto_fix: no AGE-specific rewrite (inherited no-op; LIMIT is the shared pipeline's job) ---
+# --- auto_fix: bench-observed AGE rewrites (LIMIT is still the shared pipeline's job) ---
 
-def test_auto_fix_is_noop():
-    q, fixes = AgeFlavour().auto_fix("MATCH (a)-[r:DETIENE]->(b) RETURN b")
-    assert q == "MATCH (a)-[r:DETIENE]->(b) RETURN b"
+def test_auto_fix_leaves_a_clean_query_untouched():
+    # Replaces the former test_auto_fix_is_noop: AGE now HAS auto-fixes, so the invariant
+    # under test changed from "never rewrites" to "never rewrites a query that is already
+    # AGE-valid". Deliberate behaviour change, not a relaxed assertion.
+    q, fixes = AgeFlavour().auto_fix("MATCH (a)-[r:DETIENE]->(b) RETURN b.name AS name")
+    assert q == "MATCH (a)-[r:DETIENE]->(b) RETURN b.name AS name"
     assert fixes == []
 
 
@@ -463,3 +467,50 @@ def test_check_dialect_allows_dollar_inside_a_comment():
     assert AgeFlavour().check_dialect(
         "MATCH (n) // was: WHERE n.x = $foo and $$\nRETURN n.name"
     ) is None
+
+
+def test_auto_fix_rewrites_not_equals():
+    # Live: `!=` -> `operator does not exist: agtype != agtype`; `<>` works.
+    q, fixes = AgeFlavour().auto_fix("MATCH (n) WHERE n.name != 'zzz' RETURN n.name AS name")
+    assert "<>" in q and "!=" not in q
+    assert any("<>" in f for f in fixes)
+
+
+def test_auto_fix_preserves_not_equals_inside_a_string_literal():
+    q, fixes = AgeFlavour().auto_fix("MATCH (n) WHERE n.note = 'a != b' RETURN n.name AS name")
+    assert "'a != b'" in q
+    assert fixes == []
+
+
+def test_auto_fix_strips_a_profile_prefix():
+    # Live: `PROFILE MATCH ...` -> `syntax error at or near "PROFILE"`.
+    q, fixes = AgeFlavour().auto_fix("PROFILE MATCH (n) RETURN n.name AS name")
+    assert q.startswith("MATCH")
+    assert any("PROFILE" in f for f in fixes)
+
+
+def test_auto_fix_strips_an_explain_prefix():
+    # Live: EXPLAIN is ACCEPTED and escalates to a SQL-level EXPLAIN returning a QUERY PLAN
+    # column, which then breaks the driver's column lookup. Stripping it is required.
+    q, fixes = AgeFlavour().auto_fix("EXPLAIN MATCH (n) RETURN n.name AS name")
+    assert q.startswith("MATCH")
+    assert any("EXPLAIN" in f for f in fixes)
+
+
+def test_auto_fix_renames_the_reserved_count_alias_and_its_references():
+    q, fixes = AgeFlavour().auto_fix(
+        "MATCH (n) RETURN label(n) AS type, count(n) AS count ORDER BY count DESC"
+    )
+    assert "AS count_" in q
+    assert "ORDER BY count_ DESC" in q
+    assert "count(n)" in q          # the aggregate call is untouched
+    assert any("count" in f for f in fixes)
+
+
+def test_auto_fix_does_not_touch_count_without_a_reserved_alias():
+    # No `AS count` -> no rename; a property or map key named count stays as written.
+    q, fixes = AgeFlavour().auto_fix(
+        "MATCH (n) WHERE n.count > 5 RETURN n.count AS total ORDER BY total DESC"
+    )
+    assert q == "MATCH (n) WHERE n.count > 5 RETURN n.count AS total ORDER BY total DESC"
+    assert fixes == []

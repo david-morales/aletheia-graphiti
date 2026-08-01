@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
-from utils.cypher import CypherError, _strip_non_code_spans
+from utils.cypher import CypherError, _apply_to_code_spans, _strip_non_code_spans
 
 _AGE_DIALECT = (
     "Backend: Apache AGE (openCypher over PostgreSQL) — this is NOT FalkorDB or Neo4j. "
@@ -431,13 +431,69 @@ def classify_age_execution_error(msg: str, query: str | None = None) -> CypherEr
     )
 
 
+# ---------------------------------------------------------------------------
+# Stage 2b: AGE auto-fixes. Bench-observed patterns only — each verified against the live
+# :5433 bed before inclusion. Every fix appends a human-readable note so the agent sees the
+# transform in the envelope's `auto_fixes`.
+# ---------------------------------------------------------------------------
+
+# AGE has no `!=` (live: `operator does not exist: agtype != agtype`); `<>` works.
+_NEQ_RE = re.compile(r"!=")
+# `PROFILE` is a syntax error; `EXPLAIN` is worse — it silently escalates to a SQL-level
+# EXPLAIN and returns a QUERY PLAN column the driver cannot read.
+_PROFILE_EXPLAIN_RE = re.compile(r"^\s*(PROFILE|EXPLAIN)\s+", re.IGNORECASE)
+# `AS count` parses, but every bare reference to it is a syntax error. Rename the alias AND
+# its references; `count(` (the aggregate) and `n.count` / `{count:` are excluded.
+_AS_COUNT_RE = re.compile(r"\bAS\s+count\b", re.IGNORECASE)
+_BARE_COUNT_RE = re.compile(r"(?<![.\w`])count\b(?!\s*[:(])", re.IGNORECASE)
+
+
+def fix_age_dialect(query: str) -> tuple[str, list[str]]:
+    """Auto-fix track — lossless rewrites for AGE compatibility.
+
+    Returns the fixed query and human-readable descriptions of each fix applied. Every step
+    runs through :func:`_apply_to_code_spans`, so string literals and comments are never
+    rewritten and the ``fixes`` list never reports a change that did not happen.
+    """
+    fixes: list[str] = []
+
+    # 1. `!=` -> `<>`
+    new_query = _apply_to_code_spans(query, lambda s: _NEQ_RE.sub("<>", s))
+    if new_query != query:
+        query = new_query
+        fixes.append("Replaced != with <> (Apache AGE has no != operator)")
+
+    # 2. Strip a leading PROFILE/EXPLAIN.
+    new_query = _apply_to_code_spans(query, lambda s: _PROFILE_EXPLAIN_RE.sub("", s))
+    if new_query != query:
+        query = new_query
+        fixes.append(
+            "Stripped PROFILE/EXPLAIN prefix (PROFILE is a syntax error on Apache AGE and "
+            "EXPLAIN returns a query plan instead of rows)"
+        )
+
+    # 3. Rename the reserved alias `count`. Gated on an actual `AS count` so a bare `count`
+    # reference in an already-broken query is not turned into an unbound variable.
+    if _AS_COUNT_RE.search(_strip_non_code_spans(query)):
+        new_query = _apply_to_code_spans(query, lambda s: _BARE_COUNT_RE.sub("count_", s))
+        if new_query != query:
+            query = new_query
+            fixes.append(
+                "Renamed the reserved alias `count` to `count_` (Apache AGE reserves `count`; "
+                "a bare `count` reference is a syntax error)"
+            )
+
+    return query, fixes
+
+
 class AgeFlavour(BaseFlavour):
     """AGE flavour — reject-with-hint for AGE-unsupported constructs, nested-map attribute_keys.
 
     check_dialect rejects (with an actionable hint) a variable named ``id`` and relationship-type
     disjunction ``[:A|B|C]`` — both AGE-unsupported, and both safer to reject than to auto-rewrite.
-    The only AGE auto-fix is the shared pipeline's LIMIT injection (BaseFlavour.auto_fix is a
-    no-op here). classify_execution_error is a post-hoc net for anything check_dialect misses.
+    auto_fix applies three bench-observed rewrites (``!=`` → ``<>``, strip PROFILE/EXPLAIN,
+    rename the reserved ``count`` alias); everything AGE cannot express is reject-with-hint.
+    classify_execution_error is a post-hoc net for anything check_dialect misses.
     """
 
     name = "age"
@@ -452,8 +508,8 @@ class AgeFlavour(BaseFlavour):
     def check_dialect(self, query: str) -> CypherError | None:
         return check_age_dialect(query)
 
-    # auto_fix: inherited from BaseFlavour (no-op). AGE's only auto-fix is the shared pipeline's
-    # LIMIT injection; AGE-unsupported constructs are reject-with-hint via check_dialect.
+    def auto_fix(self, query: str) -> tuple[str, list[str]]:
+        return fix_age_dialect(query)
 
     def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
         return classify_age_execution_error(message, query)
