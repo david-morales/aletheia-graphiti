@@ -337,3 +337,53 @@ def test_classify_reserved_alias_ignores_a_reserved_word_inside_a_string():
         query="MATCH (n) WHERE n.note = 'AS count' RETURN n.name AS nm ORDER BY nm DESC LIMIT 5",
     )
     assert err.reason == "query_failed"
+
+
+# --- projection / column-derivation failures (AGEDriver._columns_from_return) ---
+
+def test_classify_duplicate_return_column():
+    err = AgeFlavour().classify_execution_error(
+        'column name "parte_uuid" specified more than once',
+        query="MATCH (p)-[]->(r) RETURN p.uuid AS parte_uuid, r.uuid AS parte_uuid LIMIT 25",
+    )
+    assert err.reason == "duplicate_return_column"
+    assert "parte_uuid" in err.explanation
+    assert "distinct" in err.suggestion.lower() or "unique" in err.suggestion.lower()
+    assert err.doc_hint != ""
+
+
+def test_classify_projection_column_mismatch():
+    err = AgeFlavour().classify_execution_error(
+        "return row and column definition list do not match",
+        query="MATCH (n) RETURN n.name, n.uuid LIMIT 25",
+    )
+    assert err.reason == "projection_column_mismatch"
+    assert "AS" in err.suggestion
+    assert err.doc_hint != ""
+
+
+def test_classify_mixed_case_alias():
+    # str(KeyError('TipoDelito')) is exactly "'TipoDelito'" — the whole message.
+    err = AgeFlavour().classify_execution_error(
+        "'TipoDelito'",
+        query="MATCH (n) RETURN label(n) AS TipoDelito, count(n) AS cnt LIMIT 25",
+    )
+    assert err.reason == "mixed_case_alias"
+    assert "TipoDelito" in err.suggestion
+    assert "lowercase" in err.suggestion.lower() or "snake_case" in err.suggestion
+
+
+def test_classify_mixed_case_alias_requires_an_uppercase_alias():
+    err = AgeFlavour().classify_execution_error(
+        "'tipodelito'", query="MATCH (n) RETURN label(n) AS tipodelito LIMIT 25"
+    )
+    assert err.reason == "query_failed"
+
+
+def test_classify_mixed_case_alias_names_every_offender():
+    err = AgeFlavour().classify_execution_error(
+        "'TipoDelito'",
+        query="MATCH (n) RETURN label(n) AS TipoDelito, n.name AS nombreCompleto LIMIT 25",
+    )
+    assert "TipoDelito" in err.suggestion
+    assert "nombreCompleto" in err.suggestion

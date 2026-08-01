@@ -210,6 +210,33 @@ def _suggest_rename_reserved_alias(_message: str, query: str) -> str:
     )
 
 
+# An `AS <alias>` whose name carries an uppercase letter. The AGE driver builds an UNQUOTED
+# SQL column-definition list from these aliases; PostgreSQL folds unquoted identifiers to
+# lower case, so `AS TipoDelito` yields a result column named `tipodelito` while the driver
+# still looks up `TipoDelito` -> KeyError. Verified live on the :5433 bed.
+_MIXED_CASE_ALIAS_RE = re.compile(r"\bAS\s+([A-Za-z_]*[A-Z]\w*)\b")
+
+
+def _find_mixed_case_aliases(query: str) -> list[str]:
+    seen: list[str] = []
+    for m in _MIXED_CASE_ALIAS_RE.finditer(_strip_non_code_spans(query or "")):
+        alias = m.group(1)
+        if alias not in seen:
+            seen.append(alias)
+    return seen
+
+
+def _suggest_lowercase_alias(_message: str, query: str) -> str:
+    aliases = _find_mixed_case_aliases(query)
+    named = ", ".join(f"`{a}`" for a in aliases) if aliases else "the aliases"
+    return (
+        f"Apache AGE returns results through an unquoted SQL column list, and PostgreSQL folds "
+        f"unquoted identifiers to lower case — so a mixed-case alias ({named}) is requested "
+        "under one name and delivered under another, and the lookup fails. Use all-lowercase "
+        "snake_case aliases: `AS tipo_delito`, `AS nombre_completo`."
+    )
+
+
 # Order matters: specific message fingerprints first, then the patterns that lean on
 # query_check to disambiguate a generic `syntax error at or near "..."`.
 _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
@@ -231,6 +258,39 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         "Rename the variable (e.g. `ident`, `x`) and retry.",
         doc_hint="AGE reserves id()/graphid; never name a variable `id`.",
         example_fix="MATCH (ident) RETURN ident.name LIMIT 25",
+    ),
+    ExecutionErrorPattern(
+        name="duplicate_return_column",
+        matcher=re.compile(r'column name "([^"]+)" specified more than once', re.IGNORECASE),
+        suggestion="Two RETURN columns share the same alias. Apache AGE turns the RETURN "
+        "aliases into SQL column names, which must be unique. Give every projected column a "
+        "distinct alias (e.g. `p.uuid AS parte_uuid, r.uuid AS rol_uuid`).",
+        doc_hint="Apache AGE: RETURN aliases become SQL column names and must be unique.",
+        example_fix="MATCH (p)-[]->(r) RETURN p.uuid AS parte_uuid, r.uuid AS rol_uuid LIMIT 25",
+    ),
+    ExecutionErrorPattern(
+        name="projection_column_mismatch",
+        matcher=re.compile(
+            r"return row and column definition list do not match", re.IGNORECASE
+        ),
+        suggestion="Apache AGE derives the result columns from the RETURN clause, and this "
+        "projection could not be reconciled. Give EVERY returned expression an explicit, "
+        "unique, lowercase alias — `RETURN n.name AS name, count(n) AS cnt` — and avoid "
+        "returning whole nodes alongside expressions in the same clause.",
+        doc_hint="Apache AGE: alias every RETURN item explicitly; unaliased projections lose "
+        "their name (they come back as `col0`).",
+        example_fix="MATCH (n) RETURN n.name AS name, n.uuid AS uuid LIMIT 25",
+    ),
+    ExecutionErrorPattern(
+        name="mixed_case_alias",
+        # str(KeyError('X')) is "'X'" — the entire message is a quoted identifier.
+        matcher=re.compile(r"^'[A-Za-z_]*[A-Z]\w*'$"),
+        suggestion="A mixed-case RETURN alias was lost to PostgreSQL identifier folding. "
+        "Use all-lowercase snake_case aliases.",
+        doc_hint="Apache AGE: RETURN aliases are folded to lower case — use snake_case.",
+        example_fix="MATCH (n) RETURN label(n) AS tipo_delito, count(n) AS cnt LIMIT 25",
+        query_check=_MIXED_CASE_ALIAS_RE,
+        suggestion_fn=_suggest_lowercase_alias,
     ),
     ExecutionErrorPattern(
         name="reltype_disjunction_unsupported",
