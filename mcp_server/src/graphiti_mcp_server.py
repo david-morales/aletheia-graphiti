@@ -2356,6 +2356,7 @@ async def initialize_server() -> ServerConfig:
             profile_client,
             group_id=config.graphiti.group_id,
             ontology_client=ontology_client,
+            flavour=graphiti_service.flavour,
         )
         graphiti_service.domain_profile = domain_profile
         register_dynamic_tools(domain_profile)

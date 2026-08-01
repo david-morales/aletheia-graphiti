@@ -435,9 +435,10 @@ def classify_age_execution_error(msg: str, query: str | None = None) -> CypherEr
     for pattern in _AGE_EXECUTION_ERROR_PATTERNS:
         if not pattern.matcher.search(msg or ""):
             continue
-        if pattern.query_check is not None:
-            if not query or not pattern.query_check.search(_strip_non_code_spans(query)):
-                continue
+        if pattern.query_check is not None and (
+            not query or not pattern.query_check.search(_strip_non_code_spans(query))
+        ):
+            continue
         explanation = f"Apache AGE returned an error: {msg}"
         errctx = _synthesize_errctx(msg or "", query)
         if errctx:
@@ -526,6 +527,38 @@ def fix_age_dialect(query: str) -> tuple[str, list[str]]:
     return query, fixes
 
 
+# AGE variants of the startup probes. Differences from the base text, each verified live:
+#  * no `:Entity` scoping — only 6 of 2228 vertices carry it on a real AGE graph
+#  * `n.labels` (the stored ordered list) instead of `labels(n)`, which returns only the leaf
+#  * `n.labels IS NOT NULL` — Episodic vertices carry no labels list
+#  * `$label IN n.labels` for the sample-name lookup
+_AGE_PROFILE_QUERIES: dict[str, str] = {
+    "entity_types": (
+        "MATCH (n) "
+        "WHERE n.group_id = $group_id AND n.labels IS NOT NULL "
+        "RETURN n.labels AS entity_type, count(n) AS cnt "
+        "ORDER BY cnt DESC"
+    ),
+    "edge_types": (
+        "MATCH (s)-[r]->(t) "
+        "WHERE s.group_id = $group_id AND t.group_id = $group_id "
+        "RETURN type(r) AS relationship_type, count(r) AS cnt "
+        "ORDER BY cnt DESC"
+    ),
+    "sample_names": (
+        "MATCH (n) "
+        "WHERE $label IN n.labels AND n.group_id = $group_id "
+        "RETURN n.name AS name "
+        "LIMIT $limit"
+    ),
+    "time_range": (
+        "MATCH (s)-[r]->(t) "
+        "WHERE s.group_id = $group_id AND r.created_at IS NOT NULL "
+        "RETURN min(r.created_at) AS earliest, max(r.created_at) AS latest"
+    ),
+}
+
+
 class AgeFlavour(BaseFlavour):
     """AGE flavour — reject-with-hint for AGE-unsupported constructs, nested-map attribute_keys.
 
@@ -556,6 +589,9 @@ class AgeFlavour(BaseFlavour):
 
     def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
         return classify_age_execution_error(message, query)
+
+    def profile_queries(self) -> dict[str, str]:
+        return dict(_AGE_PROFILE_QUERIES)
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Keys of the nested `attributes` agtype map, UNIONED across a small sample."""
