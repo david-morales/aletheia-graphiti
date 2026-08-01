@@ -139,3 +139,23 @@ async def test_age_attribute_keys_swallows_non_map_label():
             raise RuntimeError("attributes is not a map on this label")
 
     assert await AgeFlavour().attribute_keys(_BoomDriver(), "Weird") == []
+
+
+# --- shared span masking (utils.cypher._strip_non_code_spans), not a bespoke copy ---
+
+def test_check_dialect_ignores_constructs_inside_a_line_comment():
+    q = "MATCH (a)-[r:KNOWS]->(b) // avoid MATCH (id) and [:A|B] here\nRETURN b"
+    assert AgeFlavour().check_dialect(q) is None
+
+
+def test_check_dialect_ignores_constructs_inside_a_block_comment():
+    q = "MATCH (a)-[r:KNOWS]->(b) /* was: MATCH (id)-[:A|B]->(x) */ RETURN b"
+    assert AgeFlavour().check_dialect(q) is None
+
+
+def test_module_level_check_age_dialect_is_the_implementation():
+    from flavours.age import check_age_dialect
+
+    err = check_age_dialect("MATCH (a)-[:A|B]->(b) RETURN b")
+    assert err is not None and err.reason == "reltype_disjunction_unsupported"
+    assert check_age_dialect("MATCH (n) RETURN n.name") is None

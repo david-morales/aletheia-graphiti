@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
-from utils.cypher import CypherError
+from utils.cypher import CypherError, _strip_non_code_spans
 
 _AGE_DIALECT = (
     "Backend: Apache AGE (openCypher over PostgreSQL) — this is NOT FalkorDB or Neo4j. "
@@ -30,27 +30,6 @@ _AGE_DIALECT = (
     "filter: `MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C']`. Always include a LIMIT."
 )
 
-# String literals + comments, matched for LENGTH-PRESERVING masking so structural regexes
-# (clause keywords, bracket patterns) never trip on text inside quotes/comments while byte
-# positions stay aligned with the raw query for splicing.
-_LITERAL_OR_COMMENT_RE = re.compile(
-    r'"(?:[^"\\]|\\.)*"'      # double-quoted string
-    r"|'(?:[^'\\]|\\.)*'"     # single-quoted string
-    r"|//[^\n]*"              # line comment
-    r"|/\*[\s\S]*?\*/"        # block comment
-)
-
-
-def _mask_literals(query: str) -> str:
-    """Same-length copy of query with string-literal / comment chars replaced by 'x'.
-
-    Structural analysis (finding disjunctions, clause keywords, WHERE-condition ends) runs on
-    the masked view so a keyword or bracket INSIDE a string literal can never misfire; byte
-    positions are preserved, so edits are spliced from the RAW query at masked-derived offsets.
-    """
-    return _LITERAL_OR_COMMENT_RE.sub(lambda m: "x" * (m.end() - m.start()), query)
-
-
 # `id` as a node/relationship PATTERN variable — `(id` / `[id` not followed by `.`(property)
 # or `(`(function). Brace maps `{id:` are intentionally NOT matched (map key, not a variable).
 _ID_PATTERN_VAR_RE = re.compile(r"[\(\[]\s*id\b(?!\s*[.(])", re.IGNORECASE)
@@ -66,6 +45,44 @@ _REL_DISJUNCTION_RE = re.compile(
     r"\[\s*(?P<var>[A-Za-z_]\w*)?\s*:\s*"
     r"(?P<types>`?\w[\w`]*`?(?:\s*\|\s*`?\w[\w`]*`?)+)\s*\]"
 )
+
+
+def check_age_dialect(query: str) -> CypherError | None:
+    """Reject track — return a CypherError for AGE-incompatible constructs, else None.
+
+    Every check runs on the code-only view (`_strip_non_code_spans`, the same primitive the
+    FalkorDB flavour and the security whitelist use), so a construct that appears only inside
+    a string literal or a comment can never trigger a rejection. Checks are ordered by
+    severity; the first match wins.
+    """
+    code_only = _strip_non_code_spans(query)
+
+    # (1) `id` used as a VARIABLE — a pattern variable ((id / [id) or an alias (AS id).
+    # Precise on purpose: property access (n.id), the id() function and map keys ({id: ...})
+    # are allowed; ambiguous bare references fall through to the execution-error net.
+    if _ID_PATTERN_VAR_RE.search(code_only) or _ID_ALIAS_RE.search(code_only):
+        return CypherError(
+            stage="age_dialect",
+            reason="reserved_id_variable",
+            found="id",
+            explanation="A variable named `id` collides with AGE's built-in id()/graphid "
+            "and fails at execution ('column notation .id applied to type graphid').",
+            suggestion="Rename the variable (e.g. `ident`, `x`) and retry.",
+            doc_hint="AGE reserves id()/graphid; never name a variable `id`.",
+        )
+
+    # (2) relationship-type disjunction [:A|B|C] — unsupported by AGE.
+    if _REL_DISJUNCTION_RE.search(code_only):
+        return CypherError(
+            stage="age_dialect",
+            reason="reltype_disjunction_unsupported",
+            found="[:A|B|C]",
+            explanation="AGE does not support relationship-type disjunction like [:A|B|C].",
+            suggestion="Match a generic edge and filter by type: "
+            "MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C'].",
+            doc_hint="AGE has no [:A|B|C]; use WHERE type(r) IN [...].",
+        )
+    return None
 
 
 class AgeFlavour(BaseFlavour):
@@ -87,39 +104,7 @@ class AgeFlavour(BaseFlavour):
     )
 
     def check_dialect(self, query: str) -> CypherError | None:
-        # Match on the masked view so a construct inside a string literal / comment never trips
-        # these. Both cases are reject-with-hint (not auto-rewrite): renaming a variable is
-        # semantically risky, and a reliable [:A|B|C] rewrite of arbitrary openCypher is not
-        # feasible with pattern matching.
-        masked = _mask_literals(query)
-
-        # (1) `id` used as a VARIABLE — a pattern variable ((id / [id) or an alias (AS id).
-        # We stay PRECISE (only high-confidence variable positions): property access (n.id), the
-        # id() function, and map keys ({id: ...}) are allowed; ambiguous bare references fall
-        # through to the execution-error hint net.
-        if _ID_PATTERN_VAR_RE.search(masked) or _ID_ALIAS_RE.search(masked):
-            return CypherError(
-                stage="age_dialect",
-                reason="reserved_id_variable",
-                found="id",
-                explanation="A variable named `id` collides with AGE's built-in id()/graphid "
-                "and fails at execution ('column notation .id applied to type graphid').",
-                suggestion="Rename the variable (e.g. `ident`, `x`) and retry.",
-                doc_hint="AGE reserves id()/graphid; never name a variable `id`.",
-            )
-
-        # (2) relationship-type disjunction [:A|B|C] — unsupported by AGE.
-        if _REL_DISJUNCTION_RE.search(masked):
-            return CypherError(
-                stage="age_dialect",
-                reason="reltype_disjunction_unsupported",
-                found="[:A|B|C]",
-                explanation="AGE does not support relationship-type disjunction like [:A|B|C].",
-                suggestion="Match a generic edge and filter by type: "
-                "MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C'].",
-                doc_hint="AGE has no [:A|B|C]; use WHERE type(r) IN [...].",
-            )
-        return None
+        return check_age_dialect(query)
 
     # auto_fix: inherited from BaseFlavour (no-op). AGE's only auto-fix is the shared pipeline's
     # LIMIT injection; AGE-unsupported constructs are reject-with-hint via check_dialect.
