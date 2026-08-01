@@ -698,3 +698,20 @@ def test_auto_fix_still_strips_a_leading_profile_after_whitespace():
     q, fixes = AgeFlavour().auto_fix("   PROFILE MATCH (n) RETURN n.name AS name")
     assert q.startswith("MATCH")
     assert any("PROFILE" in f for f in fixes)
+
+
+# --- claim softening: the $$ reject is scoped to code position, and says so ---
+
+def test_dialect_reference_does_not_overclaim_the_dollar_quote_reject():
+    ref = AgeFlavour().dialect_reference
+    # The reject runs on the code-only view, so a `$$` inside a string literal passes through
+    # to the driver; claiming "anywhere" was false. Proven by the behaviour below.
+    assert "A `$$` anywhere in the query is rejected" not in ref
+    assert "$$" in ref
+    assert "outside a string literal" in ref or "in code position" in ref
+
+
+def test_dollar_quote_claim_matches_actual_behaviour():
+    # code position -> rejected; inside a literal -> not rejected (the documented scope).
+    assert AgeFlavour().check_dialect("MATCH (n) WHERE n.x = $$ RETURN n") is not None
+    assert AgeFlavour().check_dialect("MATCH (n) WHERE n.x = '$$' RETURN n.name") is None
