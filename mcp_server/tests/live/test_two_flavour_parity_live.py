@@ -237,8 +237,9 @@ async def test_age_auto_fixed_count_alias_actually_runs_on_the_live_graph():
 @pytest.mark.skipif(not os.getenv("FALKORDB_PARITY_LIVE"), reason="FalkorDB live gate off")
 async def test_base_profile_queries_still_run_on_falkordb():
     """No-regression: the shared probe text (now aliased `cnt`) still works on FalkorDB."""
-    from flavours.base import BaseFlavour
     from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+    from flavours.base import BaseFlavour
 
     database = os.getenv("FALKORDB_DATABASE", "policia_partes_real_v2")
     driver = FalkorDriver(host="localhost", port=6379, database=database)
