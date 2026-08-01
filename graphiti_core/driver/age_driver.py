@@ -15,6 +15,7 @@ import json
 import logging
 import re
 from typing import Any
+from uuid import uuid4
 
 import asyncpg
 
@@ -52,6 +53,23 @@ def _inline_cypher_params(query: str, params: dict[str, Any]) -> str:
         return _cy(params[name]) if name in params else m.group(0)
 
     return _PARAM_RE.sub(_repl, query)
+
+
+def _dollar_quote_tag(query: str) -> str:
+    """A dollar-quote tag (``$q<hex8>$``) that does not occur inside ``query``.
+
+    The Cypher body is spliced into SQL as ``cypher('<graph>', <tag> … <tag>)``.
+    A FIXED ``$$`` tag is a breakout: a query containing ``$$`` closes the quote
+    early and the remainder is parsed as raw SQL — e.g.
+    ``MATCH (n) RETURN 1 $$) AS (result agtype) LIMIT 1 --``, which the Cypher
+    write-verb whitelist upstream of here does not stop. Generating the tag per
+    query, and regenerating while the query happens to contain it, makes that
+    structurally impossible regardless of any caller-side validation.
+    """
+    while True:
+        tag = f'$q{uuid4().hex[:8]}$'
+        if tag not in query:
+            return tag
 
 
 class AGEDriverSession(GraphDriverSession):
@@ -188,6 +206,15 @@ class AGEDriver(GraphDriver):
         except (ValueError, TypeError):
             return stripped
 
+    def _cypher_sql(self, cypher_query_: str, cols: list[str]) -> str:
+        """The ``cypher()`` SQL wrapper for one Cypher body, dollar-quoted with a
+        per-query unique tag (see ``_dollar_quote_tag``)."""
+        tag = _dollar_quote_tag(cypher_query_)
+        col_def = ', '.join(f'{c} agtype' for c in cols)
+        return (
+            f"SELECT * FROM cypher('{self._database}', {tag} {cypher_query_} {tag}) AS ({col_def})"
+        )
+
     async def execute_query(self, cypher_query_: str, columns: list[str] | None = None, **kwargs: Any):
         if kwargs:
             # AGE's cypher() takes no openCypher `$name` params, so inline them as
@@ -195,8 +222,7 @@ class AGEDriver(GraphDriver):
             # paths that pass params — e.g. explore_node's uuid/name lookups.
             cypher_query_ = _inline_cypher_params(cypher_query_, kwargs)
         cols = columns or self._columns_from_return(cypher_query_) or ['result']
-        col_def = ', '.join(f'{c} agtype' for c in cols)
-        sql = f"SELECT * FROM cypher('{self._database}', $$ {cypher_query_} $$) AS ({col_def})"
+        sql = self._cypher_sql(cypher_query_, cols)
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(sql)
