@@ -59,7 +59,44 @@ def check_age_dialect(query: str) -> CypherError | None:
     """
     code_only = _strip_non_code_spans(query)
 
-    # (1) `id` used as a VARIABLE — a pattern variable ((id / [id) or an alias (AS id).
+    # (0) `$$` / a bare `$` in code position. The driver splices the query into a
+    # dollar-quoted SQL literal, so `$$` would break out of it. Reject, never rewrite.
+    m = _DOLLAR_QUOTE_RE.search(code_only)
+    if m:
+        return CypherError(
+            stage="age_dialect",
+            reason="dollar_quote_unsupported",
+            found=code_only[m.start():m.start() + 2],
+            explanation="A `$` that is not part of a `$name` parameter is not accepted. "
+            "Apache AGE queries are submitted inside a dollar-quoted SQL literal, so a `$$` "
+            "or a stray `$` corrupts the statement.",
+            suggestion="Remove the `$` and inline the value you meant as a literal "
+            "(single-quoted for strings, bare for numbers). If the `$` is part of text you "
+            "want to match, put it inside a quoted string literal.",
+            doc_hint="Apache AGE: `$` is only valid as `$name`, and even those cannot be bound "
+            "here — inline literals instead.",
+        )
+
+    # (1) openCypher `$name` parameters. AGE's cypher() cannot bind them and run_cypher
+    # supplies no parameter map, so they would reach the parser unbound.
+    params = _find_parameters(query)
+    if params:
+        named = ", ".join(params)
+        return CypherError(
+            stage="age_dialect",
+            reason="unbound_parameter",
+            found=params[0],
+            explanation=f"This query uses openCypher parameters ({named}). Apache AGE's "
+            "cypher() function cannot bind them and this tool supplies no parameter map, so "
+            "they would fail at execution with 'parameters argument is missing from cypher() "
+            "function call'.",
+            suggestion=f"Inline the literal values directly into the query instead of "
+            f"{named} — e.g. `WHERE n.name = 'OMAR MOHAMED'` rather than "
+            "`WHERE n.name = $name`. Quote strings with single quotes; leave numbers bare.",
+            doc_hint="Apache AGE: no `$param` binding; inline literals into the Cypher text.",
+        )
+
+    # (2) `id` used as a VARIABLE — a pattern variable ((id / [id) or an alias (AS id).
     # Precise on purpose: property access (n.id), the id() function and map keys ({id: ...})
     # are allowed; ambiguous bare references fall through to the execution-error net.
     if _ID_PATTERN_VAR_RE.search(code_only) or _ID_ALIAS_RE.search(code_only):
@@ -73,7 +110,7 @@ def check_age_dialect(query: str) -> CypherError | None:
             doc_hint="AGE reserves id()/graphid; never name a variable `id`.",
         )
 
-    # (2) relationship-type disjunction [:A|B|C] — unsupported by AGE.
+    # (3) relationship-type disjunction [:A|B|C] — unsupported by AGE.
     if _REL_DISJUNCTION_RE.search(code_only):
         return CypherError(
             stage="age_dialect",
@@ -143,6 +180,12 @@ def _synthesize_errctx(message: str, query: str | None, width: int = 40) -> str:
 # and run_cypher binds none, so every $name reaches the parser raw. Matched on code spans only
 # so `'costs $50'` inside a string literal is not read as a parameter.
 _PARAM_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
+# A `$` that is NOT the start of a `$name` parameter — `$$`, `$1`, a bare trailing `$`.
+# The AGE driver wraps the query as `cypher('g', $$ <query> $$)`, so a `$$` inside the query
+# terminates the dollar-quoted literal and the remainder is parsed as raw SQL. Rejecting it
+# here is the UX layer; the structural driver guard is a separate change.
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?![A-Za-z_])")
 
 
 def _find_parameters(query: str) -> list[str]:

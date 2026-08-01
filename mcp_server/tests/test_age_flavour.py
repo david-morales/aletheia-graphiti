@@ -418,3 +418,48 @@ def test_pattern_table_order_puts_specific_fingerprints_before_generic_ones():
     assert names[-2] == "boolean_label_test"
     assert names.index("reltype_disjunction_unsupported") < names.index("boolean_label_test")
     assert len(names) == len(set(names)), "duplicate pattern names"
+
+
+# --- stage 2a rejects: $parameter and $$ ---
+
+def test_check_dialect_rejects_dollar_parameter():
+    err = AgeFlavour().check_dialect("MATCH (n) WHERE n.name = $name RETURN n.name")
+    assert isinstance(err, CypherError)
+    assert err.stage == "age_dialect"
+    assert err.reason == "unbound_parameter"
+    assert "$name" in err.suggestion
+    assert "inline" in err.suggestion.lower()
+    assert err.doc_hint != ""
+
+
+def test_check_dialect_reject_names_every_parameter():
+    err = AgeFlavour().check_dialect(
+        "MATCH (n) WHERE n.a = $one AND n.b = $two RETURN n"
+    )
+    assert "$one" in err.suggestion and "$two" in err.suggestion
+
+
+def test_check_dialect_rejects_double_dollar():
+    err = AgeFlavour().check_dialect("MATCH (n) WHERE n.x = $$ RETURN n")
+    assert isinstance(err, CypherError)
+    assert err.reason == "dollar_quote_unsupported"
+    assert "inline" in err.suggestion.lower()
+    assert err.doc_hint != ""
+
+
+def test_check_dialect_dollar_quote_is_checked_before_parameters():
+    # A query carrying both must report the security-relevant one.
+    err = AgeFlavour().check_dialect("MATCH (n) WHERE n.a = $one AND n.b = $$ RETURN n")
+    assert err.reason == "dollar_quote_unsupported"
+
+
+def test_check_dialect_allows_dollar_inside_a_string_literal():
+    assert AgeFlavour().check_dialect(
+        "MATCH (n) WHERE n.note = 'costs $50 and $$ too' RETURN n.name"
+    ) is None
+
+
+def test_check_dialect_allows_dollar_inside_a_comment():
+    assert AgeFlavour().check_dialect(
+        "MATCH (n) // was: WHERE n.x = $foo and $$\nRETURN n.name"
+    ) is None
