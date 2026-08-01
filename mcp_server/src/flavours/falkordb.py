@@ -511,7 +511,9 @@ class FalkorDbFlavour(BaseFlavour):
     def auto_fix(self, query: str) -> tuple[str, list[str]]:
         return fix_falkordb_dialect(query)
 
-    def classify_execution_error(self, message: str) -> CypherError:
+    def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
+        # FalkorDB's message already embeds `errCtx: <failing fragment>`, so the submitted
+        # query adds nothing here — accepted for protocol parity, deliberately ignored.
         return classify_falkordb_execution_error(message)
 
     # attribute_keys: inherited from BaseFlavour (top-level keys minus reserved) — correct for

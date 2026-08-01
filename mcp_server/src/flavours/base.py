@@ -19,6 +19,41 @@ RESERVED_KEYS: frozenset[str] = frozenset(
 )
 
 
+# Startup domain-profile probes. The FLAVOUR owns the query text (dialects disagree on label
+# semantics and reserved words); domain_profile owns the parsing. Every variant MUST return the
+# same column names, or domain_profile cannot read it:
+#   entity_types -> (entity_type: list[str], cnt: int)
+#   edge_types   -> (relationship_type: str, cnt: int)
+#   sample_names -> (name: str)
+#   time_range   -> (earliest, latest)
+# The count column is aliased `cnt`, not `count`: `count` is a reserved word on Apache AGE.
+_BASE_PROFILE_QUERIES: dict[str, str] = {
+    "entity_types": (
+        "MATCH (n:Entity) "
+        "WHERE n.group_id = $group_id "
+        "RETURN labels(n) AS entity_type, count(n) AS cnt "
+        "ORDER BY cnt DESC"
+    ),
+    "edge_types": (
+        "MATCH (s:Entity)-[r]->(t:Entity) "
+        "WHERE s.group_id = $group_id AND t.group_id = $group_id "
+        "RETURN type(r) AS relationship_type, count(r) AS cnt "
+        "ORDER BY cnt DESC"
+    ),
+    "sample_names": (
+        "MATCH (n:Entity) "
+        "WHERE $label IN labels(n) AND n.group_id = $group_id "
+        "RETURN n.name AS name "
+        "LIMIT $limit"
+    ),
+    "time_range": (
+        "MATCH (s:Entity)-[r]->(t:Entity) "
+        "WHERE s.group_id = $group_id AND r.created_at IS NOT NULL "
+        "RETURN min(r.created_at) AS earliest, max(r.created_at) AS latest"
+    ),
+}
+
+
 @runtime_checkable
 class Flavour(Protocol):
     name: str
@@ -28,7 +63,8 @@ class Flavour(Protocol):
 
     def check_dialect(self, query: str) -> CypherError | None: ...
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
-    def classify_execution_error(self, message: str) -> CypherError: ...
+    def classify_execution_error(self, message: str, query: str | None = None) -> CypherError: ...
+    def profile_queries(self) -> dict[str, str]: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
     async def execute_graph_query(
         self, driver: Any, query: str
@@ -49,7 +85,8 @@ class BaseFlavour:
     def auto_fix(self, query: str) -> tuple[str, list[str]]:
         return query, []
 
-    def classify_execution_error(self, message: str) -> CypherError:
+    def classify_execution_error(self, message: str, query: str | None = None) -> CypherError:
+        """Generic envelope. ``query`` is accepted for protocol parity and ignored here."""
         return CypherError(
             stage="execution",
             reason="execution_error",
@@ -57,6 +94,10 @@ class BaseFlavour:
             explanation=message,
             suggestion="Check the query against the schema (get_schema) and retry.",
         )
+
+    def profile_queries(self) -> dict[str, str]:
+        """Cypher for the four startup domain-profile probes, keyed by probe name."""
+        return dict(_BASE_PROFILE_QUERIES)
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Top-level property keys for a label, minus reserved bookkeeping keys."""

@@ -58,11 +58,11 @@ def make_mock_driver(label_records, edge_records, sample_records_by_label, time_
 
     async def mock_execute(query, **kwargs):
         # FalkorDB returns (records, header, None)
-        if 'labels(n)' in query and 'count' in query:
-            header = ['entity_type', 'count']
+        if 'AS entity_type' in query:
+            header = ['entity_type', 'cnt']
             return (label_records, header, None)
-        elif 'type(r)' in query and 'count' in query:
-            header = ['relationship_type', 'count']
+        elif 'AS relationship_type' in query:
+            header = ['relationship_type', 'cnt']
             return (edge_records, header, None)
         elif 'n.name' in query and 'LIMIT' in query:
             label = kwargs.get('label', '')
@@ -82,12 +82,12 @@ class TestBuildDomainProfile:
     @pytest.mark.asyncio
     async def test_builds_profile_from_data_graph(self):
         label_records = [
-            {'entity_type': ['Entity', 'Aircraft'], 'count': 47},
-            {'entity_type': ['Entity', 'Occurrence'], 'count': 23},
+            {'entity_type': ['Entity', 'Aircraft'], 'cnt': 47},
+            {'entity_type': ['Entity', 'Occurrence'], 'cnt': 23},
         ]
         edge_records = [
-            {'relationship_type': 'OPERATED_BY', 'count': 31},
-            {'relationship_type': 'RELATES_TO', 'count': 50},
+            {'relationship_type': 'OPERATED_BY', 'cnt': 31},
+            {'relationship_type': 'RELATES_TO', 'cnt': 50},
         ]
         sample_records = {
             'Aircraft': [{'name': 'PH-KZB'}, {'name': 'EC-MYC'}],
@@ -112,7 +112,7 @@ class TestBuildDomainProfile:
     async def test_filters_out_entity_and_episodic_labels(self):
         """Labels like 'Entity' and 'Episodic' are internal -- should not appear as types."""
         label_records = [
-            {'entity_type': ['Entity', 'Aircraft'], 'count': 10},
+            {'entity_type': ['Entity', 'Aircraft'], 'cnt': 10},
         ]
         driver = make_mock_driver(label_records, [], {})
         mock_client = MagicMock()
@@ -140,7 +140,7 @@ class TestOntologyEnrichment:
     async def test_enriches_entity_descriptions_from_ontology(self):
         """Entity types get descriptions from ontology node summaries."""
         label_records = [
-            {'entity_type': ['Entity', 'Aircraft'], 'count': 10},
+            {'entity_type': ['Entity', 'Aircraft'], 'cnt': 10},
         ]
         driver = make_mock_driver(label_records, [], {'Aircraft': [{'name': 'PH-KZB'}]})
         mock_client = MagicMock()
@@ -171,7 +171,7 @@ class TestOntologyEnrichment:
     async def test_works_without_ontology_client(self):
         """Profile builds fine with no ontology client — descriptions stay empty."""
         label_records = [
-            {'entity_type': ['Entity', 'Aircraft'], 'count': 10},
+            {'entity_type': ['Entity', 'Aircraft'], 'cnt': 10},
         ]
         driver = make_mock_driver(label_records, [], {})
         mock_client = MagicMock()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from flavours.base import BaseFlavour
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,24 +93,34 @@ class DomainProfile:
 _INTERNAL_LABELS = frozenset({'Entity', 'Episodic', 'Community'})
 
 
-async def _query_entity_types(driver, group_id: str) -> dict[str, EntityTypeInfo]:
-    """Query data graph for entity labels and counts."""
-    query = (
-        'MATCH (n:Entity) '
-        'WHERE n.group_id = $group_id '
-        'RETURN labels(n) AS entity_type, count(n) AS count '
-        'ORDER BY count DESC'
+def _log_probe_failure(probe: str, exc: Exception, flavour, query: str) -> None:
+    """WARNING with the flavour's classification — startup must not die, but must be legible.
+
+    The query is passed through: several classifier patterns can only be distinguished by
+    corroborating against what was actually submitted, and without it they never fire.
+    """
+    err = flavour.classify_execution_error(str(exc), query=query)
+    logger.warning(
+        'Domain-profile probe %s failed [%s]: %s | hint: %s',
+        probe, err.reason, exc, err.suggestion,
     )
+
+
+async def _query_entity_types(driver, group_id: str, flavour=None) -> dict[str, EntityTypeInfo]:
+    """Query data graph for entity labels and counts."""
+    flavour = flavour or BaseFlavour()
+    query = flavour.profile_queries()['entity_types']
     try:
         records, _, _ = await driver.execute_query(query, group_id=group_id)
     except Exception as e:
-        logger.warning(f'Failed to query entity types: {e}')
+        _log_probe_failure('entity_types', e, flavour, query)
         return {}
 
     types: dict[str, EntityTypeInfo] = {}
     for record in records:
-        labels = record.get('entity_type', [])
-        count = record.get('count', 0)
+        # `or []`: AGE returns NULL for vertices with no stored labels list.
+        labels = record.get('entity_type') or []
+        count = record.get('cnt', 0) or 0
         for label in labels:
             if label in _INTERNAL_LABELS:
                 continue
@@ -119,58 +131,49 @@ async def _query_entity_types(driver, group_id: str) -> dict[str, EntityTypeInfo
     return types
 
 
-async def _query_edge_types(driver, group_id: str) -> dict[str, EdgeTypeInfo]:
+async def _query_edge_types(driver, group_id: str, flavour=None) -> dict[str, EdgeTypeInfo]:
     """Query data graph for relationship types and counts."""
-    query = (
-        'MATCH (s:Entity)-[r]->(t:Entity) '
-        'WHERE s.group_id = $group_id AND t.group_id = $group_id '
-        'RETURN type(r) AS relationship_type, count(r) AS count '
-        'ORDER BY count DESC'
-    )
+    flavour = flavour or BaseFlavour()
+    query = flavour.profile_queries()['edge_types']
     try:
         records, _, _ = await driver.execute_query(query, group_id=group_id)
     except Exception as e:
-        logger.warning(f'Failed to query edge types: {e}')
+        _log_probe_failure('edge_types', e, flavour, query)
         return {}
 
     types: dict[str, EdgeTypeInfo] = {}
     for record in records:
         name = record.get('relationship_type', '')
-        count = record.get('count', 0)
+        count = record.get('cnt', 0) or 0
         if name and name not in ('RELATES_TO',):
             types[name] = EdgeTypeInfo(name=name, count=count, description='')
     return types
 
 
-async def _query_sample_names(driver, group_id: str, label: str, limit: int = 5) -> list[str]:
+async def _query_sample_names(
+    driver, group_id: str, label: str, limit: int = 5, flavour=None
+) -> list[str]:
     """Get sample entity names for a given label."""
-    query = (
-        'MATCH (n:Entity) '
-        'WHERE $label IN labels(n) AND n.group_id = $group_id '
-        'RETURN n.name AS name '
-        'LIMIT $limit'
-    )
+    flavour = flavour or BaseFlavour()
+    query = flavour.profile_queries()['sample_names']
     try:
         records, _, _ = await driver.execute_query(
             query, group_id=group_id, label=label, limit=limit
         )
     except Exception as e:
-        logger.warning(f'Failed to query sample names for {label}: {e}')
+        _log_probe_failure(f'sample_names[{label}]', e, flavour, query)
         return []
     return [r['name'] for r in records if r.get('name')]
 
 
-async def _query_time_range(driver, group_id: str) -> tuple[str, str] | None:
+async def _query_time_range(driver, group_id: str, flavour=None) -> tuple[str, str] | None:
     """Get the earliest and latest fact dates in the graph."""
-    query = (
-        'MATCH (s:Entity)-[r]->(t:Entity) '
-        'WHERE s.group_id = $group_id AND r.created_at IS NOT NULL '
-        'RETURN min(r.created_at) AS earliest, max(r.created_at) AS latest'
-    )
+    flavour = flavour or BaseFlavour()
+    query = flavour.profile_queries()['time_range']
     try:
         records, _, _ = await driver.execute_query(query, group_id=group_id)
     except Exception as e:
-        logger.warning(f'Failed to query time range: {e}')
+        _log_probe_failure('time_range', e, flavour, query)
         return None
     if records and records[0].get('earliest') and records[0].get('latest'):
         earliest = str(records[0]['earliest'])[:10]
@@ -213,20 +216,26 @@ async def build_domain_profile(
     client,
     group_id: str,
     ontology_client=None,
+    flavour=None,
 ) -> DomainProfile:
-    """Build a DomainProfile by introspecting data and ontology graphs."""
+    """Build a DomainProfile by introspecting data and ontology graphs.
+
+    ``flavour`` supplies the backend-correct probe Cypher; omitted, the generic openCypher
+    text is used (Neo4j / test callers).
+    """
     driver = client.driver
+    flavour = flavour or BaseFlavour()
 
     # Query data graph
-    entity_types = await _query_entity_types(driver, group_id)
-    edge_types = await _query_edge_types(driver, group_id)
+    entity_types = await _query_entity_types(driver, group_id, flavour)
+    edge_types = await _query_edge_types(driver, group_id, flavour)
 
     # Fetch sample names for each entity type
     for label, info in entity_types.items():
-        info.sample_names = await _query_sample_names(driver, group_id, label)
+        info.sample_names = await _query_sample_names(driver, group_id, label, flavour=flavour)
 
     # Query time range
-    time_range = await _query_time_range(driver, group_id)
+    time_range = await _query_time_range(driver, group_id, flavour)
 
     # Enrich from ontology if available
     if ontology_client is not None:

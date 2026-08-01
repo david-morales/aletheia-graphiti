@@ -2130,7 +2130,7 @@ async def run_cypher(query: str) -> CypherResultResponse:
 
     except Exception as e:
         logger.error(f'Cypher execution error: {e}')
-        error = flavour.classify_execution_error(str(e))
+        error = flavour.classify_execution_error(str(e), query=sanitized.query)
         result = format_error(sanitized.query, error)
         result['auto_fixes'] = sanitized.auto_fixes
         return result
@@ -2356,6 +2356,7 @@ async def initialize_server() -> ServerConfig:
             profile_client,
             group_id=config.graphiti.group_id,
             ontology_client=ontology_client,
+            flavour=graphiti_service.flavour,
         )
         graphiti_service.domain_profile = domain_profile
         register_dynamic_tools(domain_profile)
