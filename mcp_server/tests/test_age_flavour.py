@@ -387,3 +387,34 @@ def test_classify_mixed_case_alias_names_every_offender():
     )
     assert "TipoDelito" in err.suggestion
     assert "nombreCompleto" in err.suggestion
+
+
+# --- internal / operator errors ---
+
+def test_classify_internal_resource_owner_error_is_retryable():
+    # Observed once in the v0.31.0 bench (report line 123); not reproducible on demand.
+    msg = "tupdesc reference 0x7f8b2c0a1234 is not owned by resource owner Portal"
+    err = AgeFlavour().classify_execution_error(msg, query="MATCH (n) RETURN n LIMIT 25")
+    assert err.reason == "internal_resource_owner"
+    assert "retry" in err.suggestion.lower()
+    assert err.doc_hint != ""
+
+
+def test_classify_not_equals_operator():
+    err = AgeFlavour().classify_execution_error(
+        "operator does not exist: agtype != agtype",
+        query="MATCH (n) WHERE n.name != 'zzz' RETURN n.name LIMIT 25",
+    )
+    assert err.reason == "not_equals_operator"
+    assert "<>" in err.suggestion
+
+
+def test_pattern_table_order_puts_specific_fingerprints_before_generic_ones():
+    from flavours.age import _AGE_EXECUTION_ERROR_PATTERNS
+
+    names = [p.name for p in _AGE_EXECUTION_ERROR_PATTERNS]
+    # The two `syntax error at or near ...` patterns must be last, most-specific first.
+    assert names[-1] == "reserved_alias"
+    assert names[-2] == "boolean_label_test"
+    assert names.index("reltype_disjunction_unsupported") < names.index("boolean_label_test")
+    assert len(names) == len(set(names)), "duplicate pattern names"

@@ -293,6 +293,26 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         suggestion_fn=_suggest_lowercase_alias,
     ),
     ExecutionErrorPattern(
+        name="internal_resource_owner",
+        # PostgreSQL resource-owner bookkeeping error surfaced through AGE. Seen once in the
+        # v0.31.0 bench run; not reproducible on demand, so the matcher keys only on the two
+        # stable fragments of the standard PG message.
+        matcher=re.compile(r"tupdesc reference.*is not owned by resource owner", re.IGNORECASE | re.DOTALL),
+        suggestion="This is an internal PostgreSQL/AGE bookkeeping error, not a problem with "
+        "your Cypher. Retry the same query once. If it recurs, simplify the query (fewer "
+        "returned columns, a smaller LIMIT) or split it into two calls.",
+        doc_hint="Apache AGE: transient internal error — retry, then simplify.",
+    ),
+    ExecutionErrorPattern(
+        name="not_equals_operator",
+        matcher=re.compile(r"operator does not exist: agtype != agtype", re.IGNORECASE),
+        suggestion="Apache AGE has no `!=` operator. Use the openCypher canonical form `<>`. "
+        "The stage-2b auto-fix normally rewrites this before execution; seeing it here means "
+        "the `!=` sat somewhere the auto-fixer skips (inside a string-adjacent construct).",
+        doc_hint="Apache AGE openCypher: `<>` is the not-equals operator; `!=` does not exist.",
+        example_fix="MATCH (n) WHERE n.name <> 'zzz' RETURN n.name LIMIT 25",
+    ),
+    ExecutionErrorPattern(
         name="reltype_disjunction_unsupported",
         matcher=re.compile(r'at or near "\|"'),
         suggestion="AGE does not support relationship-type disjunction like [:A|B|C]. "
