@@ -286,3 +286,54 @@ def test_classify_boolean_label_test_not_tripped_by_a_map_key():
         'syntax error at or near ":"', query="MATCH (n {id: 5}) RETURN n LIMIT 25"
     )
     assert err.reason == "query_failed"
+
+
+# --- reserved-word alias (live sweep: count/exists/all/any/none/single/distinct/end/
+#     contains/starts/ends/null/true/false/coalesce all fail as a bare identifier) ---
+
+_RESERVED_ALIAS_QUERY = (
+    "MATCH (n) RETURN label(n) AS type, count(n) AS count ORDER BY count DESC LIMIT 25"
+)
+
+
+def test_classify_reserved_alias_from_desc_token():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near "DESC"', query=_RESERVED_ALIAS_QUERY
+    )
+    assert err.reason == "reserved_alias"
+    assert "count" in err.suggestion
+    assert "cnt" in err.suggestion
+    assert err.doc_hint != ""
+
+
+def test_classify_reserved_alias_from_asc_limit_and_order_tokens():
+    for token in ("ASC", "LIMIT", "ORDER"):
+        err = AgeFlavour().classify_execution_error(
+            f'syntax error at or near "{token}"', query=_RESERVED_ALIAS_QUERY
+        )
+        assert err.reason == "reserved_alias", token
+
+
+def test_classify_reserved_alias_covers_exists():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near "DESC"',
+        query="MATCH (n) RETURN n.name AS nm, count(n) AS exists ORDER BY exists DESC LIMIT 5",
+    )
+    assert err.reason == "reserved_alias"
+    assert "exists" in err.suggestion
+
+
+def test_classify_reserved_alias_requires_a_reserved_alias_in_the_query():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near "DESC"',
+        query="MATCH (n) RETURN label(n) AS type, count(n) AS cnt ORDER BY cnt DESC LIMIT 25",
+    )
+    assert err.reason == "query_failed"
+
+
+def test_classify_reserved_alias_ignores_a_reserved_word_inside_a_string():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near "DESC"',
+        query="MATCH (n) WHERE n.note = 'AS count' RETURN n.name AS nm ORDER BY nm DESC LIMIT 5",
+    )
+    assert err.reason == "query_failed"

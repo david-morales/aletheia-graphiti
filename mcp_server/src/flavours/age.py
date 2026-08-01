@@ -174,6 +174,42 @@ def _suggest_inline_parameters(_message: str, query: str) -> str:
 _LABEL_TEST_RE = re.compile(r"(?<![(\[{,\w.`])\b[A-Za-z_]\w*\s*:\s*`?[A-Za-z_]\w*")
 
 
+# Words AGE's grammar refuses as a bare identifier. Swept live on the :5433 bed with
+# `RETURN label(n) AS t, count(n) AS <w> ORDER BY <w> DESC`: every word below errored,
+# while filter/extract/type/label/keys/size/head/last/min/sum were accepted.
+_AGE_RESERVED_ALIASES: tuple[str, ...] = (
+    "all", "any", "coalesce", "contains", "count", "distinct", "end", "ends",
+    "exists", "false", "none", "null", "single", "starts", "true",
+)
+
+_RESERVED_ALIAS_RE = re.compile(
+    r"\bAS\s+(" + "|".join(_AGE_RESERVED_ALIASES) + r")\b", re.IGNORECASE
+)
+
+
+def _find_reserved_aliases(query: str) -> list[str]:
+    """Ordered, de-duplicated reserved words used as `AS <alias>` in code position."""
+    seen: list[str] = []
+    for m in _RESERVED_ALIAS_RE.finditer(_strip_non_code_spans(query or "")):
+        alias = m.group(1)
+        if alias not in seen:
+            seen.append(alias)
+    return seen
+
+
+def _suggest_rename_reserved_alias(_message: str, query: str) -> str:
+    aliases = _find_reserved_aliases(query)
+    named = ", ".join(f"`{a}`" for a in aliases) if aliases else "the alias"
+    return (
+        f"Apache AGE's grammar reserves {named}, so a bare reference to it (in ORDER BY, in a "
+        "later RETURN, or in a WITH chain) is a syntax error even though the `AS` itself "
+        "parses. Rename the alias to a non-reserved word and update every reference — e.g. "
+        "`count(n) AS cnt ... ORDER BY cnt DESC`. Reserved here: "
+        + ", ".join(_AGE_RESERVED_ALIASES)
+        + "."
+    )
+
+
 # Order matters: specific message fingerprints first, then the patterns that lean on
 # query_check to disambiguate a generic `syntax error at or near "..."`.
 _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
@@ -216,6 +252,17 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         "`(n:Label)`, or written as `label(n) = 'Label'` / `'Label' IN n.labels`.",
         example_fix="MATCH (n) WHERE (n:Persona) OR (n:Ubicacion) RETURN n.name LIMIT 25",
         query_check=_LABEL_TEST_RE,
+    ),
+    ExecutionErrorPattern(
+        name="reserved_alias",
+        matcher=re.compile(r"syntax error at or near", re.IGNORECASE),
+        suggestion="An alias in this query is a word Apache AGE reserves. Rename it "
+        "(e.g. `count(n) AS cnt ... ORDER BY cnt DESC`) and update every reference.",
+        doc_hint="Apache AGE reserves count/exists/all/any/none/single/distinct/end/contains/"
+        "starts/ends/null/true/false/coalesce as bare identifiers — never use them as aliases.",
+        example_fix="MATCH (n) RETURN label(n) AS type, count(n) AS cnt ORDER BY cnt DESC LIMIT 25",
+        query_check=_RESERVED_ALIAS_RE,
+        suggestion_fn=_suggest_rename_reserved_alias,
     ),
 ]
 
