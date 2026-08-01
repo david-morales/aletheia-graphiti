@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
-from utils.cypher import CypherError, _apply_to_code_spans, _strip_non_code_spans
+from utils.cypher import (
+    _NON_CODE_SPAN_RE,
+    CypherError,
+    _apply_to_code_spans,
+    _strip_non_code_spans,
+)
 
 # AGE Cypher dialect reference (single source). Every statement here was verified against a
 # live Apache AGE graph. get_schema surfaces this via flavour.dialect_reference (canonical)
@@ -197,19 +202,51 @@ class ExecutionErrorPattern:
 # self-correct; without it the agent has nothing to diff against.
 _AT_OR_NEAR_RE = re.compile(r'at or near "([^"]+)"')
 
+_WORD_CHAR_RE = re.compile(r"\w")
+
+
+def _token_occurrences(flat: str, token: str) -> list[re.Match]:
+    """Occurrences of ``token`` in ``flat`` that are in CODE position and stand alone.
+
+    Two filters, both needed to land the window on the real failing site:
+
+    * **Word boundaries** — Postgres names the offending token (`DESC`), not its offset, and a
+      naive substring search happily matches the `desc` inside `n.attributes.descripcion`.
+      The guards are applied only on the sides where the token is word-like, so punctuation
+      tokens (`|`, `:`) still match.
+    * **Code position** — an occurrence inside a string literal or a comment is data, not the
+      failing site. Spans come from the same regex the shared pipeline masks with.
+    """
+    if not token:
+        return []
+    prefix_guard = r"(?<!\w)" if _WORD_CHAR_RE.match(token[0]) else ""
+    suffix_guard = r"(?!\w)" if _WORD_CHAR_RE.match(token[-1]) else ""
+    pattern = re.compile(prefix_guard + re.escape(token) + suffix_guard, re.IGNORECASE)
+    non_code = [(s.start(), s.end()) for s in _NON_CODE_SPAN_RE.finditer(flat)]
+    return [
+        hit
+        for hit in pattern.finditer(flat)
+        if not any(start <= hit.start() < end for start, end in non_code)
+    ]
+
 
 def _synthesize_errctx(message: str, query: str | None, width: int = 40) -> str:
-    """Return a short fragment of ``query`` around the failing token, or '' if unavailable."""
+    """Return a short fragment of the query around the failing token, or '' if unavailable.
+
+    When the token occurs several times in code position the LAST one wins: AGE reports the
+    first construct its parser could not accept, and for the alias family that is the trailing
+    `ORDER BY <alias> DESC`, not an earlier innocent mention.
+    """
     if not query:
         return ""
     flat = " ".join(query.split())
     m = _AT_OR_NEAR_RE.search(message or "")
     if m:
-        token = m.group(1)
-        idx = flat.lower().find(token.lower())
-        if idx >= 0:
-            start = max(0, idx - width)
-            end = min(len(flat), idx + len(token) + width)
+        hits = _token_occurrences(flat, m.group(1))
+        if hits:
+            hit = hits[-1]
+            start = max(0, hit.start() - width)
+            end = min(len(flat), hit.end() + width)
             prefix = "..." if start > 0 else ""
             suffix = "..." if end < len(flat) else ""
             return f"{prefix}{flat[start:end]}{suffix}"

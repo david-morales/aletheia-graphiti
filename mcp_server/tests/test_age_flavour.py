@@ -551,3 +551,50 @@ def test_dialect_summary_names_parameters_and_label_tests():
     assert "never name a variable `id`" in s
     assert "$param" in s
     assert "(n:Label)" in s
+
+
+# --- F1: errCtx must centre on the REAL failing site, not the first substring match ---
+
+def _errctx_of(err) -> str:
+    """The synthesized `errCtx:` line of a CypherError explanation ('' when absent)."""
+    for line in err.explanation.splitlines():
+        if line.startswith("errCtx:"):
+            return line[len("errCtx:"):].strip()
+    return ""
+
+
+def test_errctx_skips_a_token_embedded_in_a_longer_word():
+    # Live shape: `DESC` also occurs inside `descripcion`, which is NOT the failing site.
+    query = (
+        "MATCH (n) RETURN n.attributes.descripcion AS descripcion, count(n) AS end "
+        "ORDER BY end DESC LIMIT 5"
+    )
+    err = AgeFlavour().classify_execution_error('syntax error at or near "DESC"', query=query)
+    ctx = _errctx_of(err)
+    assert ctx, "expected a synthesized errCtx"
+    assert "ORDER BY end DESC" in ctx, ctx
+
+
+def test_errctx_ignores_a_token_occurring_only_inside_a_string_literal():
+    query = (
+        "MATCH (n) WHERE n.note = 'DESC ORDER' RETURN n.name AS nm, count(n) AS end "
+        "ORDER BY end DESC LIMIT 5"
+    )
+    err = AgeFlavour().classify_execution_error('syntax error at or near "DESC"', query=query)
+    ctx = _errctx_of(err)
+    assert "ORDER BY end DESC" in ctx, ctx
+
+
+def test_errctx_prefers_the_last_code_occurrence_of_the_token():
+    query = "MATCH (n) RETURN n.a AS a, n.b AS b ORDER BY a DESC, b DESC LIMIT 5"
+    err = AgeFlavour().classify_execution_error('syntax error at or near "DESC"', query=query)
+    ctx = _errctx_of(err)
+    assert ctx.endswith("b DESC LIMIT 5"), ctx
+
+
+def test_errctx_handles_a_token_at_position_zero_without_a_leading_ellipsis():
+    query = "MATCH (n) RETURN n.name AS name LIMIT 5"
+    err = AgeFlavour().classify_execution_error('syntax error at or near "MATCH"', query=query)
+    ctx = _errctx_of(err)
+    assert ctx.startswith("MATCH (n)"), ctx
+    assert not ctx.startswith("..."), ctx
