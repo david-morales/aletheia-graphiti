@@ -535,10 +535,23 @@ _NEQ_RE = re.compile(r"!=")
 # `PROFILE` is a syntax error; `EXPLAIN` is worse — it silently escalates to a SQL-level
 # EXPLAIN and returns a QUERY PLAN column the driver cannot read.
 _PROFILE_EXPLAIN_RE = re.compile(r"^\s*(PROFILE|EXPLAIN)\s+", re.IGNORECASE)
-# `AS count` parses, but every bare reference to it is a syntax error. Rename the alias AND
-# its references; `count(` (the aggregate) and `n.count` / `{count:` are excluded.
+# `AS count` parses, but a bare REFERENCE to that alias is a syntax error. Rename the alias
+# and its references. Excluded by the lookbehind/lookahead: the aggregate call `count(`, the
+# property `n.count`, a map key `{count:`, and — critically — a label or relationship type
+# written `:count`, where renaming would silently change which pattern is matched.
 _AS_COUNT_RE = re.compile(r"\bAS\s+count\b", re.IGNORECASE)
-_BARE_COUNT_RE = re.compile(r"(?<![.\w`])count\b(?!\s*[:(])", re.IGNORECASE)
+_BARE_COUNT_RE = re.compile(r"(?<![.\w`:])count\b(?!\s*[:(])", re.IGNORECASE)
+
+
+def _has_bare_count_reference(code_only: str) -> bool:
+    """True when `count` is referenced somewhere OTHER than its own `AS count` alias.
+
+    `RETURN count(n) AS count` is valid AGE — the alias is never dereferenced, so nothing
+    fails and rewriting it is churn. What breaks is a later bare mention (`ORDER BY count`,
+    `WHERE count > 5`, `RETURN count`), so the alias occurrences are blanked out first and the
+    rename only fires if a reference survives.
+    """
+    return bool(_BARE_COUNT_RE.search(_AS_COUNT_RE.sub(" ", code_only)))
 
 
 def fix_age_dialect(query: str) -> tuple[str, list[str]]:
@@ -565,9 +578,11 @@ def fix_age_dialect(query: str) -> tuple[str, list[str]]:
             "EXPLAIN returns a query plan instead of rows)"
         )
 
-    # 3. Rename the reserved alias `count`. Gated on an actual `AS count` so a bare `count`
-    # reference in an already-broken query is not turned into an unbound variable.
-    if _AS_COUNT_RE.search(_strip_non_code_spans(query)):
+    # 3. Rename the reserved alias `count`. Gated on BOTH an actual `AS count` (so a bare
+    # `count` in an already-broken query is not turned into an unbound variable) AND a
+    # surviving reference to it (so a working `RETURN count(n) AS count` is left alone).
+    code_only = _strip_non_code_spans(query)
+    if _AS_COUNT_RE.search(code_only) and _has_bare_count_reference(code_only):
         new_query = _apply_to_code_spans(query, lambda s: _BARE_COUNT_RE.sub("count_", s))
         if new_query != query:
             query = new_query

@@ -634,3 +634,42 @@ def test_classify_agtype_cast_error_names_the_expected_type():
     )
     assert err.reason == "agtype_cast_error"
     assert "id(" in err.suggestion or "integer" in err.suggestion.lower()
+
+
+# --- F3: the count rename must not touch a label or relationship type named `count` ---
+
+def test_auto_fix_count_rename_leaves_a_relationship_type_named_count_alone():
+    q, _ = AgeFlavour().auto_fix(
+        "MATCH (a)-[r:count]->(b) RETURN type(r) AS t, count(r) AS count ORDER BY count DESC"
+    )
+    assert "[r:count]" in q, q
+    assert "ORDER BY count_ DESC" in q
+
+
+def test_auto_fix_count_rename_leaves_a_label_named_count_alone():
+    q, _ = AgeFlavour().auto_fix(
+        "MATCH (n:count) RETURN label(n) AS t, count(n) AS count ORDER BY count DESC"
+    )
+    assert "(n:count)" in q, q
+    assert "ORDER BY count_ DESC" in q
+
+
+# --- F4: the count rename must not fire on a query that already works ---
+
+def test_auto_fix_leaves_a_working_count_alias_untouched():
+    # Live-verified: `RETURN count(n) AS count` is valid on AGE — nothing references the alias,
+    # so there is no syntax error to fix and rewriting it is pure churn.
+    raw = "MATCH (n) RETURN count(n) AS count"
+    q, fixes = AgeFlavour().auto_fix(raw)
+    assert q == raw, q
+    assert fixes == []
+
+
+def test_auto_fix_still_fires_when_the_alias_is_referenced_in_where_or_with():
+    for raw in (
+        "MATCH (n) WITH n.x AS x, count(n) AS count WHERE count > 5 RETURN x AS x",
+        "MATCH (n) WITH count(n) AS count RETURN count AS total",
+    ):
+        q, fixes = AgeFlavour().auto_fix(raw)
+        assert "count_" in q, raw
+        assert fixes, raw
