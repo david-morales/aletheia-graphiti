@@ -167,6 +167,13 @@ def _suggest_inline_parameters(_message: str, query: str) -> str:
     )
 
 
+# A label test written where AGE's grammar does not accept one: an identifier followed by `:`
+# that is NOT in pattern position. `(n:Persona)` / `[r:KNOWS]` (preceded by `(` or `[`) and map
+# keys `{id: 5}` / `, k: 1` (preceded by `{` or `,`) are excluded, so what remains is the
+# `WHERE n:Persona` / `NOT n:Persona` / `CASE WHEN n:Persona` / `MATCH (n:A OR n:B)` family.
+_LABEL_TEST_RE = re.compile(r"(?<![(\[{,\w.`])\b[A-Za-z_]\w*\s*:\s*`?[A-Za-z_]\w*")
+
+
 # Order matters: specific message fingerprints first, then the patterns that lean on
 # query_check to disambiguate a generic `syntax error at or near "..."`.
 _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
@@ -196,6 +203,19 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         "Match a generic edge and filter: MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C'].",
         doc_hint="AGE has no [:A|B|C]; use WHERE type(r) IN [...].",
         example_fix="MATCH (a)-[r]->(b) WHERE type(r) IN ['DETIENE','INVESTIGA'] RETURN b LIMIT 25",
+    ),
+    ExecutionErrorPattern(
+        name="boolean_label_test",
+        matcher=re.compile(r'at or near "(?::|OR)"', re.IGNORECASE),
+        suggestion="Apache AGE's parser does not accept a bare label test (`n:Label`) in an "
+        "expression, and does not accept a disjunction inside a pattern (`MATCH (n:A OR n:B)`). "
+        "Parenthesise each test — `WHERE (n:Persona) OR (n:Ubicacion)` — or compare the leaf "
+        "label directly: `WHERE label(n) IN ['Persona', 'Ubicacion']`. To test the full "
+        "ontology hierarchy use the stored list instead: `WHERE 'Actor' IN n.labels`.",
+        doc_hint="Apache AGE: a label test outside a MATCH pattern must be parenthesised "
+        "`(n:Label)`, or written as `label(n) = 'Label'` / `'Label' IN n.labels`.",
+        example_fix="MATCH (n) WHERE (n:Persona) OR (n:Ubicacion) RETURN n.name LIMIT 25",
+        query_check=_LABEL_TEST_RE,
     ),
 ]
 

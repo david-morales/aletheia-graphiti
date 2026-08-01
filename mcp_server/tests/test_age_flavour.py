@@ -241,3 +241,48 @@ def test_classify_unbound_parameter_without_a_query_still_classifies():
     err = AgeFlavour().classify_execution_error(_UNBOUND_PARAM_MSG)
     assert err.reason == "unbound_parameter"
     assert "inline" in err.suggestion.lower()
+
+
+# --- bare label test outside a MATCH pattern (live: `at or near ":"` / `at or near "OR"`) ---
+
+def test_classify_boolean_label_test_colon_token():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near ":"',
+        query="MATCH (n) WHERE n:Persona OR n:Ubicacion RETURN n.name LIMIT 25",
+    )
+    assert err.reason == "boolean_label_test"
+    assert "(n:Persona)" in err.suggestion or "parenthes" in err.suggestion.lower()
+    assert "label(n)" in err.suggestion
+    assert err.doc_hint != ""
+
+
+def test_classify_boolean_label_test_or_token_from_in_pattern_disjunction():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near "OR"',
+        query="MATCH (n:Persona OR n:Ubicacion) RETURN n.name LIMIT 25",
+    )
+    assert err.reason == "boolean_label_test"
+
+
+def test_classify_boolean_label_test_covers_not_and_case_forms():
+    for query in (
+        "MATCH (n) WHERE NOT n:Persona RETURN count(n) AS c",
+        "MATCH (n) RETURN CASE WHEN n:Persona THEN 1 ELSE 0 END AS c LIMIT 25",
+    ):
+        err = AgeFlavour().classify_execution_error('syntax error at or near ":"', query=query)
+        assert err.reason == "boolean_label_test", query
+
+
+def test_classify_boolean_label_test_not_tripped_by_a_plain_pattern_label():
+    # `MATCH (n:Persona)` is valid AGE; a colon error on such a query is something else.
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near ":"', query="MATCH (n:Persona) RETURN n.name LIMIT 25"
+    )
+    assert err.reason == "query_failed"
+
+
+def test_classify_boolean_label_test_not_tripped_by_a_map_key():
+    err = AgeFlavour().classify_execution_error(
+        'syntax error at or near ":"', query="MATCH (n {id: 5}) RETURN n LIMIT 25"
+    )
+    assert err.reason == "query_failed"
