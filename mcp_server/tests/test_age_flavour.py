@@ -514,3 +514,40 @@ def test_auto_fix_does_not_touch_count_without_a_reserved_alias():
     )
     assert q == "MATCH (n) WHERE n.count > 5 RETURN n.count AS total ORDER BY total DESC"
     assert fixes == []
+
+
+# --- dialect reference: FalkorDB-style sections, not a prose blob ---
+
+def test_dialect_reference_is_sectioned():
+    ref = AgeFlavour().dialect_reference
+    assert ref.startswith("## Cypher Quick Reference (Apache AGE)")
+    for heading in (
+        "### Labels",
+        "### Parameters",
+        "### Aliases",
+        "### Label Tests",
+        "### Relationship Types",
+        "### Attributes & agtype",
+        "### Projections",
+        "### Known Limitations",
+    ):
+        assert heading in ref, heading
+
+
+def test_dialect_reference_keeps_the_load_bearing_facts():
+    ref = AgeFlavour().dialect_reference
+    assert "Apache AGE" in ref
+    assert "n.attributes" in ref
+    assert "label(n)" in ref
+    assert "n.labels" in ref
+    assert "col0" in ref
+    assert "count" in ref
+
+
+def test_dialect_summary_names_parameters_and_label_tests():
+    s = AgeFlavour().dialect_summary
+    assert "Apache AGE openCypher" in s
+    assert "n.attributes" in s
+    assert "never name a variable `id`" in s
+    assert "$param" in s
+    assert "(n:Label)" in s

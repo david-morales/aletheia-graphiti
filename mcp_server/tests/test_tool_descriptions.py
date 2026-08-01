@@ -108,8 +108,16 @@ class TestFlavourAwareDescriptions:
         assert 'Apache AGE openCypher' in desc
         assert 'n.attributes' in desc
         assert 'never name a variable `id`' in desc
+        assert 'no $param bindings' in desc
+        assert '(n:Label)' in desc
         # NOT the FalkorDB summary
         assert 'FalkorDB openCypher: no APOC' not in desc
+
+    def test_instructions_surface_the_age_parameter_rule(self):
+        from flavours.age import AgeFlavour
+        instr = build_instructions(make_test_profile(), AgeFlavour())
+        assert 'Cypher dialect' in instr
+        assert 'no $param bindings' in instr
 
     def test_run_cypher_description_no_flavour_has_no_dialect_block(self):
         from tool_descriptions import build_run_cypher_description

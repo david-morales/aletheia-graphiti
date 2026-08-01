@@ -15,21 +15,61 @@ from typing import Any
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
 from utils.cypher import CypherError, _apply_to_code_spans, _strip_non_code_spans
 
+# AGE Cypher dialect reference (single source). Every statement here was verified against a
+# live Apache AGE graph. get_schema surfaces this via flavour.dialect_reference (canonical)
+# plus a cypher_reference alias; the run_cypher description and the server instructions
+# surface the short form (dialect_summary).
 _AGE_DIALECT = (
-    "Backend: Apache AGE (openCypher over PostgreSQL) — this is NOT FalkorDB or Neo4j. "
-    "APOC is unavailable and string helpers such as indexOf/split/replace are absent or "
-    "behave differently; do NOT use them. "
-    "Match nodes by a property, e.g. `WHERE n.name = '...'` (see get_schema for the label "
-    "and relationship-type inventory of THIS graph). "
-    "ATTRIBUTES: each node's descriptive fields live in a queryable MAP property `attributes` "
-    "— address members directly, e.g. `n.attributes.<field>`; NEVER string-parse it. See "
-    "`attribute_keys` in get_schema for the fields per label, or `RETURN keys(n.attributes)`. "
-    "Dates are ISO 'YYYY-MM-DD' strings: get the year with "
-    "`toInteger(substring(n.attributes.<field>, 0, 4))` and derive ranges with a CASE. "
-    "PITFALLS (AGE-specific): (1) NEVER name a variable `id` — it collides with AGE's built-in "
-    "id()/graphid and fails ('column notation .id applied to type graphid'); use `ident`/`x`. "
-    "(2) relationship-type disjunction `[:A|B|C]` is NOT supported — match a generic edge and "
-    "filter: `MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C']`. Always include a LIMIT."
+    "## Cypher Quick Reference (Apache AGE)\n\n"
+    "Backend: Apache AGE (openCypher over PostgreSQL) — NOT FalkorDB and NOT Neo4j. "
+    "APOC is unavailable; string helpers such as indexOf/split/replace are absent or behave "
+    "differently. Always include a LIMIT.\n\n"
+    "### Labels\n"
+    "- A vertex carries exactly ONE stored label (its ontology leaf). `label(n)` returns that "
+    "leaf as a string: `RETURN label(n) AS tipo`.\n"
+    "- The FULL ontology hierarchy is kept in a list property `n.labels`, e.g. "
+    "`['Entity', 'Event', 'ParteDeIntervencion']`. Use it to match a supertype: "
+    "`WHERE 'Actor' IN n.labels`.\n"
+    "- `labels(n)` returns only `[leafLabel]` here — it is NOT the hierarchy.\n"
+    "- Do not scope by `:Entity`: only a handful of vertices carry it. Match `(n)` and filter.\n\n"
+    "### Parameters\n"
+    "- There are NO `$param` bindings. `$name` reaches the parser unbound and fails with "
+    "'parameters argument is missing from cypher() function call'.\n"
+    "- Inline literals instead: `WHERE n.name = 'OMAR MOHAMED'`, `WHERE n.edad > 30`.\n"
+    "- A `$$` anywhere in the query is rejected before execution.\n\n"
+    "### Aliases\n"
+    "- These words are RESERVED and cannot be used as an alias: count, exists, all, any, none, "
+    "single, distinct, end, contains, starts, ends, null, true, false, coalesce. "
+    "Use `count(n) AS cnt ... ORDER BY cnt DESC`.\n"
+    "- Aliases are folded to lower case. Use snake_case (`AS tipo_delito`), never camelCase "
+    "(`AS TipoDelito` comes back as `tipodelito` and the lookup fails).\n"
+    "- Every RETURN alias must be UNIQUE — they become SQL column names.\n\n"
+    "### Label Tests\n"
+    "- A bare label test in an expression is a syntax error: `WHERE n:Persona` fails.\n"
+    "- Parenthesise it: `WHERE (n:Persona) OR (n:Ubicacion)`.\n"
+    "- Or compare the leaf: `WHERE label(n) IN ['Persona', 'Ubicacion']`.\n"
+    "- A disjunction inside the pattern (`MATCH (n:A OR n:B)`) is a syntax error.\n\n"
+    "### Relationship Types\n"
+    "- `[:A|B|C]` disjunction is NOT supported. Match a generic edge and filter: "
+    "`MATCH (a)-[r]->(b) WHERE type(r) IN ['A','B','C']`.\n\n"
+    "### Attributes & agtype\n"
+    "- Descriptive fields live in a queryable MAP property `attributes`. Address members "
+    "directly: `n.attributes.<field>`. NEVER string-parse it. See `attribute_keys` in "
+    "get_schema, or `RETURN keys(n.attributes)`.\n"
+    "- Dates are ISO 'YYYY-MM-DD' strings: `toInteger(substring(n.attributes.<field>, 0, 4))` "
+    "for the year; derive ranges with a CASE.\n"
+    "- The not-equals operator is `<>`; `!=` does not exist.\n\n"
+    "### Projections\n"
+    "- Alias EVERY returned expression. An unaliased projection loses its name and comes back "
+    "as `col0`.\n"
+    "- Prefer returning scalars (`n.name AS name`) over whole nodes when you only need fields.\n\n"
+    "### Known Limitations\n"
+    "- No APOC, no `$params`, no `[:A|B|C]`, no bare label tests, no `!=`\n"
+    "- NEVER name a variable `id` — it collides with AGE's built-in id()/graphid and fails "
+    "with 'column notation .id applied to type graphid'; use `ident` or `x`\n"
+    "- `PROFILE` is a syntax error and `EXPLAIN` returns a query plan, not rows (both are "
+    "stripped automatically)\n"
+    "- LIMIT auto-injected (200) if not specified"
 )
 
 # `id` as a node/relationship PATTERN variable — `(id` / `[id` not followed by `.`(property)
@@ -500,9 +540,12 @@ class AgeFlavour(BaseFlavour):
     dialect_id = "age-opencypher"
     dialect_reference = _AGE_DIALECT
     dialect_summary = (
-        "Apache AGE openCypher (NOT FalkorDB/Neo4j): no APOC/indexOf/split; attributes are a "
-        "queryable map (n.attributes.<field>); never name a variable `id`; no [:A|B|C] "
-        "disjunction (use MATCH (a)-[r]->(b) WHERE type(r) IN [...])."
+        "Apache AGE openCypher (NOT FalkorDB/Neo4j): no APOC; no $param bindings — inline "
+        "literals; attributes are a queryable map (n.attributes.<field>); one stored label per "
+        "vertex, `label(n)` for the leaf and `'X' IN n.labels` for the hierarchy; label tests "
+        "must be parenthesised `(n:Label)`; no [:A|B|C] disjunction (use type(r) IN [...]); "
+        "`<>` not `!=`; alias everything in lowercase snake_case and never alias to `count`; "
+        "never name a variable `id`."
     )
 
     def check_dialect(self, query: str) -> CypherError | None:
