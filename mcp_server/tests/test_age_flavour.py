@@ -598,3 +598,39 @@ def test_errctx_handles_a_token_at_position_zero_without_a_leading_ellipsis():
     ctx = _errctx_of(err)
     assert ctx.startswith("MATCH (n)"), ctx
     assert not ctx.startswith("..."), ctx
+
+
+# --- F2: the graphid matcher must not swallow the unrelated agtype cast error ---
+
+def test_classify_graphid_true_positive_still_names_the_id_variable():
+    # Live message from a query that really does bind a variable called `id`.
+    err = AgeFlavour().classify_execution_error(
+        "column notation .id applied to type graphid",
+        query="MATCH (id) RETURN id.name LIMIT 5",
+    )
+    assert err.reason == "reserved_id_variable"
+    assert "ident" in err.suggestion
+
+
+def test_classify_agtype_cast_error_is_not_a_reserved_id_variable():
+    # Live on the :5433 bed: `MATCH (n) WHERE id(n) = 'a' RETURN n` ->
+    # `cannot cast agtype string to type graphid`. No variable named `id` exists here, so the
+    # rename-your-variable hint was actively misleading.
+    err = AgeFlavour().classify_execution_error(
+        "cannot cast agtype string to type graphid",
+        query="MATCH (n) WHERE id(n) = 'a' RETURN n LIMIT 5",
+    )
+    assert err.reason != "reserved_id_variable"
+    assert "Rename the variable" not in err.suggestion
+    # ...and the cast itself is explained.
+    assert "cast" in err.suggestion.lower()
+    assert err.doc_hint != ""
+
+
+def test_classify_agtype_cast_error_names_the_expected_type():
+    err = AgeFlavour().classify_execution_error(
+        "cannot cast agtype string to type graphid",
+        query="MATCH (n) WHERE id(n) = 'a' RETURN n LIMIT 5",
+    )
+    assert err.reason == "agtype_cast_error"
+    assert "id(" in err.suggestion or "integer" in err.suggestion.lower()

@@ -373,11 +373,26 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
     ),
     ExecutionErrorPattern(
         name="reserved_id_variable",
-        matcher=re.compile(r"graphid", re.IGNORECASE),
+        # Anchored on the FULL message, not the bare word `graphid`: several unrelated AGE
+        # errors mention graphid (notably the agtype cast below), and answering those with
+        # "rename your variable" names a variable the query never bound.
+        matcher=re.compile(r"column notation \.id applied to type graphid", re.IGNORECASE),
         suggestion="A variable named `id` collides with AGE's built-in id()/graphid. "
         "Rename the variable (e.g. `ident`, `x`) and retry.",
         doc_hint="AGE reserves id()/graphid; never name a variable `id`.",
         example_fix="MATCH (ident) RETURN ident.name LIMIT 25",
+    ),
+    ExecutionErrorPattern(
+        name="agtype_cast_error",
+        # Live: `MATCH (n) WHERE id(n) = 'a' RETURN n` -> cannot cast agtype string to graphid.
+        matcher=re.compile(r"cannot cast agtype (\w+) to type (\w+)", re.IGNORECASE),
+        suggestion="A value in this query has the wrong agtype for the operation, and Apache "
+        "AGE will not cast between agtype scalars implicitly. Compare like with like: `id(n)` "
+        "yields a graphid, so compare it against an integer id (or another `id(...)` call), "
+        "never against a quoted string. Quote strings only where a string is expected.",
+        doc_hint="Apache AGE: agtype scalars are not auto-coerced; id() returns a graphid, "
+        "not a string.",
+        example_fix="MATCH (n) WHERE n.uuid = 'a' RETURN n.name AS name LIMIT 25",
     ),
     ExecutionErrorPattern(
         name="duplicate_return_column",
