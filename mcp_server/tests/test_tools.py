@@ -440,6 +440,10 @@ class TestExploreNode:
             patch('graphiti_mcp_server.graphiti_service', svc),
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(return_value=target_node),
+            ),
         ):
             result = await explore_node(node_uuid='direct-uuid')
 
@@ -451,6 +455,137 @@ class TestExploreNode:
         assert call_kwargs['bfs_origin_node_uuids'] == ['direct-uuid']
 
     @pytest.mark.asyncio
+    async def test_uuid_path_populates_center_node(self):
+        """Regression: the uuid path returned `center_node: null`, always.
+
+        `center_node` was only ever filled from the neighbourhood results, so a
+        centre that is not among its own neighbours — or a traversal that comes
+        back thin, as on the AGE flavour — produced a confidently null centre.
+        The lookup is direct now, so the returned centre does not depend on what
+        the traversal happens to find.
+        """
+        svc, queue, cfg, client = make_mock_services()
+        centre = make_mock_node(uuid='hub-uuid', name='KHADIJA DAOUD', labels=['Entity', 'Persona'])
+        # The neighbourhood comes back with an UNRELATED node and no edges —
+        # exactly the shape the AGE connector returned for this hub.
+        unrelated = make_mock_node(uuid='other-uuid', name='bolso')
+        client.search_ = AsyncMock(return_value=make_mock_search_results(nodes=[unrelated]))
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid', AsyncMock(return_value=centre)
+            ) as get_by_uuid,
+        ):
+            result = await explore_node(node_uuid='hub-uuid')
+
+        assert 'error' not in result
+        assert result['center_node'] is not None
+        assert result['center_node']['uuid'] == 'hub-uuid'
+        assert result['center_node']['name'] == 'KHADIJA DAOUD'
+        assert result['center_node']['labels'] == ['Entity', 'Persona']
+        assert get_by_uuid.await_args.args[1] == 'hub-uuid'
+
+    @pytest.mark.asyncio
+    async def test_uuid_center_node_strips_embeddings(self):
+        svc, queue, cfg, client = make_mock_services()
+        centre = make_mock_node(
+            uuid='hub-uuid',
+            attributes={'key': 'value', 'name_embedding': [0.1], 'Summary_Embedding': [0.2]},
+        )
+        client.search_ = AsyncMock(return_value=make_mock_search_results())
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch('graphiti_mcp_server.EntityNode.get_by_uuid', AsyncMock(return_value=centre)),
+        ):
+            result = await explore_node(node_uuid='hub-uuid')
+
+        attrs = result['center_node']['attributes']
+        assert attrs == {'key': 'value'}
+
+    @pytest.mark.asyncio
+    async def test_uuid_not_found_says_so(self):
+        """A uuid that is genuinely absent is an answer, not an empty neighbourhood."""
+        from graphiti_core.errors import NodeNotFoundError
+
+        svc, queue, cfg, client = make_mock_services()
+        client.search_ = AsyncMock(return_value=make_mock_search_results())
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(side_effect=NodeNotFoundError('ghost-uuid')),
+            ),
+        ):
+            result = await explore_node(node_uuid='ghost-uuid')
+
+        assert 'error' not in result
+        assert 'No node found' in result['message']
+        assert 'ghost-uuid' in result['message']
+        assert result['center_node'] is None
+        assert result['nodes'] == []
+        # and it must not have gone on to run the traversal
+        assert client.search_.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_uuid_lookup_backend_failure_is_an_error_not_a_missing_node(self):
+        """A dropped pool or a backend error must NOT read as "no such node".
+
+        Reporting an infrastructure failure as an absent uuid tells the agent the
+        entity does not exist — the same confidently-wrong shape as the original
+        bug, one layer up.
+        """
+        svc, queue, cfg, client = make_mock_services()
+        client.search_ = AsyncMock(return_value=make_mock_search_results())
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(side_effect=ConnectionError('pool is closed')),
+            ),
+        ):
+            result = await explore_node(node_uuid='hub-uuid')
+
+        assert 'error' in result
+        assert 'pool is closed' in result['error']
+        assert 'No node found' not in result.get('error', '')
+        assert client.search_.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_name_path_center_node_does_not_lookup_by_uuid(self):
+        """The name branch already has the resolved node; no second round-trip."""
+        svc, queue, cfg, client = make_mock_services()
+        resolved = make_mock_node(uuid='resolved-uuid', name='FoundEntity')
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[resolved]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch('graphiti_mcp_server.EntityNode.get_by_uuid', AsyncMock()) as get_by_uuid,
+        ):
+            result = await explore_node(node_name='FoundEntity')
+
+        assert result['center_node']['uuid'] == 'resolved-uuid'
+        get_by_uuid.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_depth_capped_at_4(self):
         svc, queue, cfg, client = make_mock_services()
         client.search_ = AsyncMock(return_value=make_mock_search_results())
@@ -459,6 +594,10 @@ class TestExploreNode:
             patch('graphiti_mcp_server.graphiti_service', svc),
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(return_value=make_mock_node(uuid='some-uuid')),
+            ),
         ):
             await explore_node(node_uuid='some-uuid', depth=10)
 
@@ -477,6 +616,10 @@ class TestExploreNode:
             patch('graphiti_mcp_server.graphiti_service', svc),
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(return_value=make_mock_node(uuid='some-uuid')),
+            ),
         ):
             await explore_node(node_uuid='some-uuid', edge_types=['OWNERSHIP'])
 

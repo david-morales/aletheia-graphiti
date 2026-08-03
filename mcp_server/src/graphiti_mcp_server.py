@@ -18,7 +18,8 @@ from dotenv import load_dotenv
 from graphiti_core import Graphiti
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.edges import EntityEdge
-from graphiti_core.nodes import EpisodeType, EpisodicNode
+from graphiti_core.errors import NodeNotFoundError
+from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
 from graphiti_core.utils.bulk_utils import RawEpisode
 from graphiti_core.search.search_config import (
     EdgeReranker,
@@ -581,6 +582,26 @@ def resolve_search_config(search_mode: str, reranker: str, limit: int) -> Search
     return config
 
 
+def format_node_result(node: EntityNode) -> dict[str, Any]:
+    """An EntityNode as a wire dict, with every embedding key stripped.
+
+    Companion to `format_edge_result` / `format_community_result`. Embeddings are
+    thousands of floats an analyst never reads and a context window cannot
+    afford, so any key containing 'embedding' is dropped.
+    """
+    return {
+        'uuid': node.uuid,
+        'name': node.name,
+        'labels': node.labels or [],
+        'created_at': node.created_at.isoformat() if node.created_at else None,
+        'summary': node.summary,
+        'group_id': node.group_id,
+        'attributes': {
+            k: v for k, v in (node.attributes or {}).items() if 'embedding' not in k.lower()
+        },
+    }
+
+
 @mcp.tool()
 async def add_memory(
     name: str | None = None,
@@ -921,9 +942,13 @@ async def explore_node(
             else []
         )
 
-        # Resolve node UUID from name if needed
+        # Resolve the center node — by name (search) or by UUID (direct lookup).
+        # The UUID branch MUST look the node up rather than hope it turns up in
+        # the neighbourhood results: a center node is not necessarily its own
+        # neighbour, so relying on the results left `center_node: null` on every
+        # uuid call whose traversal came back thin.
         resolved_uuid = node_uuid
-        center_node_result = None
+        center_node = None
 
         if node_name and not node_uuid:
             resolve_results = await client.search_(
@@ -939,21 +964,32 @@ async def explore_node(
                     edges=[],
                     communities=[],
                 )
-            best_match = resolve_results.nodes[0]
-            resolved_uuid = best_match.uuid
-            center_node_result = {
-                'uuid': best_match.uuid,
-                'name': best_match.name,
-                'labels': best_match.labels or [],
-                'created_at': best_match.created_at.isoformat() if best_match.created_at else None,
-                'summary': best_match.summary,
-                'group_id': best_match.group_id,
-                'attributes': {
-                    k: v
-                    for k, v in (best_match.attributes or {}).items()
-                    if 'embedding' not in k.lower()
-                },
-            }
+            center_node = resolve_results.nodes[0]
+            resolved_uuid = center_node.uuid
+        else:
+            try:
+                center_node = await EntityNode.get_by_uuid(client.driver, node_uuid)
+            except NodeNotFoundError:
+                # ONLY "that uuid is not in the graph" is an answer. A dropped
+                # connection pool or a backend error must NOT be dressed up as a
+                # missing node — it falls through to the outer handler and comes
+                # back as an ErrorResponse the caller can act on.
+                #
+                # Note (recorded divergence, not fixed here): on AGE
+                # `node_get_by_uuid` is not label-scoped, so an EPISODIC uuid
+                # resolves as a centre instead of raising, where Neo4j/FalkorDB
+                # match `(n:Entity …)` and raise. Changing that lookup has other
+                # callers and belongs to its own lane.
+                logger.info(f'explore_node: no node with uuid {node_uuid}')
+                return ExploreResponse(
+                    message=f'No node found with UUID "{node_uuid}"',
+                    center_node=None,
+                    nodes=[],
+                    edges=[],
+                    communities=[],
+                )
+
+        center_node_result = format_node_result(center_node)
 
         # Build a node_distance config with BFS
         explore_config = SearchConfig(
@@ -991,44 +1027,9 @@ async def explore_node(
             search_filter=search_filters,
         )
 
-        node_results = [
-            {
-                'uuid': n.uuid,
-                'name': n.name,
-                'labels': n.labels or [],
-                'created_at': n.created_at.isoformat() if n.created_at else None,
-                'summary': n.summary,
-                'group_id': n.group_id,
-                'attributes': {
-                    k: v
-                    for k, v in (n.attributes or {}).items()
-                    if 'embedding' not in k.lower()
-                },
-            }
-            for n in (results.nodes or [])
-        ]
-
+        node_results = [format_node_result(n) for n in (results.nodes or [])]
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
-
-        # If we only have a UUID, try to find center node in results
-        if node_uuid and not center_node_result:
-            for n in results.nodes or []:
-                if n.uuid == node_uuid:
-                    center_node_result = {
-                        'uuid': n.uuid,
-                        'name': n.name,
-                        'labels': n.labels or [],
-                        'created_at': n.created_at.isoformat() if n.created_at else None,
-                        'summary': n.summary,
-                        'group_id': n.group_id,
-                        'attributes': {
-                            k: v
-                            for k, v in (n.attributes or {}).items()
-                            if 'embedding' not in k.lower()
-                        },
-                    }
-                    break
 
         return ExploreResponse(
             message=f'Explored "{node_name or node_uuid}": {len(node_results)} nodes, {len(edge_results)} edges',

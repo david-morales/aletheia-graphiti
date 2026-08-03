@@ -1,20 +1,66 @@
 """SearchInterface implementation for the PostgreSQL + Apache AGE driver.
 
-Phase 0 spike: implements the fulltext/similarity methods that hybrid `search`
-exercises, in native SQL over pgvector (similarity) and tsvector (fulltext)
-shadow tables. Rerankers and community/BFS search inherit the base
-`raise NotImplementedError` and are out of scope for this phase.
+Implements the fulltext/similarity methods that hybrid `search` exercises, in
+native SQL over pgvector (similarity) and tsvector (fulltext) shadow tables,
+plus the graph-traversal methods (BFS + node-distance reranking) in AGE Cypher.
+Community search inherits documented no-op overrides.
 
 Search runs against the uuid-keyed shadow tables, then hydrates full
 EntityNode/EntityEdge objects from the AGE graph (via the graph_operations
-interface), preserving the shadow-table ranking order. SearchFilters are
-ignored in this spike (broader results are acceptable for the gate).
+interface), preserving the shadow-table ranking order.
+
+SearchFilters support, in full:
+  * `edge_types`   — HONOURED by `edge_bfs_search` (`explore_node(edge_types=…)`
+                     feeds it straight in).
+  * `node_labels`  — DROPPED. The generic constructor emits `n:A|B`, Neo4j
+                     syntax AGE cannot parse, and AGE vertices carry only their
+                     leaf label anyway; a correct version has to read the
+                     `labels` property. Not implemented.
+  * `edge_uuids`   — DROPPED.
+  * temporal filters (`valid_at` / `invalid_at` / `created_at` / `expired_at`)
+                   — DROPPED.
+  * The shadow-table legs (fulltext / similarity) ignore SearchFilters entirely.
+Dropped filters BROADEN results; they never narrow them wrongly. Callers that
+need real filtering must post-filter.
+
+The traversal methods MUST live here rather than fall through to the
+provider-generic Cypher in `search_utils`: that Cypher filters on the `:Entity`
+node label and the `:RELATES_TO` edge type, and AGE — a single-label store —
+carries NEITHER. `age_graph_operations._node_label()` writes each entity vertex
+under its LEAF ontology class (`Persona`, `Identificacion`, …) and
+`_edge_label()` writes each entity edge under its typed relationship name
+(`ES_IDENTIFICADO`, `EN_PARTE`, …). The generic queries parse fine on AGE and
+match zero rows, so the failure was silent (2026-08-03, q5 residual F3).
 """
 
 from typing import Any
 
-from graphiti_core.driver.graph_operations.age_graph_operations import _vec
+from graphiti_core.driver.graph_operations.age_graph_operations import _cy, _vec
 from graphiti_core.driver.search_interface.search_interface import SearchInterface
+
+# "Is an entity vertex" is asked POSITIVELY, of the `labels` property that
+# `node_save` always writes, not by excluding the labels we happen to know about
+# today. Measured equivalent on both live AGE graphs (identical result sets:
+# 1358/1358 on policia_partes_bench, 564/564 on policia_partes_real), and it
+# stays correct if `build_communities` ever writes `:Community` vertices through
+# the generic fallback — those have no `labels` property, so they cannot leak
+# into BFS and produce `HAS_MEMBER` edges that `EntityEdge` cannot even validate.
+_ENTITY_BASE_LABEL = 'Entity'
+
+# Edges get the mirror-image treatment for the opposite reason: AGE edge labels
+# are the ONTOLOGY relationship names, an open set with no shared marker, so
+# there is no positive predicate to write. What IS closed is Graphiti's own
+# structural edge types — the two that are not entity-to-entity facts.
+_NON_ENTITY_EDGE_LABELS = ('MENTIONS', 'HAS_MEMBER')
+
+
+def _cy_list(values: list[str]) -> str:
+    """A Cypher list literal, for inlining into AGE Cypher.
+
+    Delegates to the write path's `_cy` serializer so escaping has exactly one
+    implementation on this driver.
+    """
+    return _cy(list(values))
 
 
 class AGESearch(SearchInterface):
@@ -236,3 +282,133 @@ class AGESearch(SearchInterface):
         NotImplementedError, so return [] to keep combined/hybrid search working.
         """
         return []
+
+    # ---------------------------------------------------------- graph traversal
+    async def node_bfs_search(
+        self,
+        driver: Any,
+        bfs_origin_node_uuids: list[str] | None,
+        search_filter: Any,
+        bfs_max_depth: int,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        """Entity nodes within `bfs_max_depth` OUTGOING hops of the origins.
+
+        Mirrors the generic leg exactly — directed traversal, same-partition
+        targets, entity-only results — with AGE's label model: the generic
+        `(n:Entity)` becomes `'Entity' IN n.labels` (see `_ENTITY_BASE_LABEL`).
+        The direction is not incidental: the generic node leg is directed while
+        the edge leg is not, and the two flavours must agree.
+
+        Returns uuids only, then hydrates through the same path as the other legs.
+        """
+        if not bfs_origin_node_uuids or bfs_max_depth < 1:
+            return []
+
+        where = [
+            f'origin.uuid IN {_cy_list(bfs_origin_node_uuids)}',
+            'n.group_id = origin.group_id',
+            f'{_cy(_ENTITY_BASE_LABEL)} IN n.labels',
+        ]
+        if group_ids:
+            # Both conjuncts mirror the generic leg. The first is logically
+            # redundant here (`n.group_id = origin.group_id` above, plus the
+            # second, already implies it) — a mutation that drops it survives by
+            # equivalence, not for want of a test. Kept so the two flavours read
+            # the same and so a future edit to the same-partition clause cannot
+            # silently widen the partition.
+            where.append(f'n.group_id IN {_cy_list(group_ids)}')
+            where.append(f'origin.group_id IN {_cy_list(group_ids)}')
+
+        records, _, _ = await driver.execute_query(
+            f'MATCH (origin)-[*1..{int(bfs_max_depth)}]->(n) '
+            f'WHERE {" AND ".join(where)} '
+            f'RETURN DISTINCT n.uuid AS uuid LIMIT {int(limit)}',
+            columns=['uuid'],
+        )
+        return await self._hydrate_nodes_in_order(driver, [r['uuid'] for r in records])
+
+    async def edge_bfs_search(
+        self,
+        driver: Any,
+        bfs_origin_node_uuids: list[str] | None,
+        bfs_max_depth: int,
+        search_filter: Any,
+        group_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        """Entity edges lying on any UNDIRECTED path of up to `bfs_max_depth`
+        hops from the origins.
+
+        Direction matches the generic leg: node BFS is directed, edge BFS is not
+        (an edge is "near" the origin whichever way it points). Graphiti's own
+        structural edges are excluded (`_NON_ENTITY_EDGE_LABELS`) because they
+        are not entity-to-entity facts — the generic leg says the same thing as
+        `(n:Entity)-[e]-(m:Entity)`.
+        """
+        if not bfs_origin_node_uuids or bfs_max_depth < 1:
+            return []
+
+        rel_where = [f'NOT type(rel) IN {_cy_list(_NON_ENTITY_EDGE_LABELS)}']
+        if group_ids:
+            rel_where.append(f'rel.group_id IN {_cy_list(group_ids)}')
+        edge_types = getattr(search_filter, 'edge_types', None)
+        if edge_types:
+            # `explore_node(edge_types=[...])` reaches us here; the generic leg
+            # filters the same property (`e.name in $edge_types`).
+            rel_where.append(f'rel.name IN {_cy_list(edge_types)}')
+
+        records, _, _ = await driver.execute_query(
+            f'MATCH p = (origin)-[*1..{int(bfs_max_depth)}]-(m) '
+            f'WHERE origin.uuid IN {_cy_list(bfs_origin_node_uuids)} '
+            f'UNWIND relationships(p) AS rel '
+            f'WITH rel WHERE {" AND ".join(rel_where)} '
+            f'RETURN DISTINCT rel.uuid AS uuid LIMIT {int(limit)}',
+            columns=['uuid'],
+        )
+        return await self._hydrate_edges_in_order(driver, [r['uuid'] for r in records])
+
+    async def node_distance_reranker(
+        self,
+        driver: Any,
+        node_uuids: list[str],
+        center_node_uuid: str,
+        min_score: float = 0,
+    ) -> tuple[list[str], list[float]]:
+        """Rank candidates by adjacency to the center node.
+
+        Same scoring contract as the generic reranker (adjacent -> 1.0, center
+        -> 0.1, unconnected -> 1/inf), which on AGE scored EVERY candidate 0.0
+        because it matched `(:Entity)-[:RELATES_TO]-(:Entity)`. That made
+        `explore_node`'s documented "ranked by proximity to the center node" a
+        no-op, and truncation to `limit` then dropped arbitrary results.
+        """
+        filtered_uuids = [u for u in node_uuids if u != center_node_uuid]
+        scores: dict[str, float] = {center_node_uuid: 0.0}
+
+        if filtered_uuids:
+            records, _, _ = await driver.execute_query(
+                f'MATCH (center)-[rel]-(n) '
+                f'WHERE center.uuid = {_cy(center_node_uuid)} '
+                f'AND n.uuid IN {_cy_list(filtered_uuids)} '
+                f'AND NOT type(rel) IN {_cy_list(_NON_ENTITY_EDGE_LABELS)} '
+                f'RETURN DISTINCT n.uuid AS uuid',
+                columns=['uuid'],
+            )
+            for record in records:
+                scores[record['uuid']] = 1.0
+
+        for uuid in filtered_uuids:
+            scores.setdefault(uuid, float('inf'))
+
+        filtered_uuids.sort(key=lambda cur_uuid: scores[cur_uuid])
+
+        if center_node_uuid in node_uuids:
+            scores[center_node_uuid] = 0.1
+            filtered_uuids = [center_node_uuid] + filtered_uuids
+
+        return (
+            [uuid for uuid in filtered_uuids if (1 / scores[uuid]) >= min_score],
+            [1 / scores[uuid] for uuid in filtered_uuids if (1 / scores[uuid]) >= min_score],
+        )
