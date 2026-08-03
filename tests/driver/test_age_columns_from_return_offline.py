@@ -64,6 +64,65 @@ def test_union_inside_a_string_literal_is_not_a_branch_boundary():
     assert cols == ['nombre', 'etiqueta']
 
 
+# A `union` in a comment or a backticked identifier is not a branch boundary either. Cutting
+# there drops the remaining projections, so the column list comes back SHORT and AGE fails the
+# arity check ("return row and column definition list do not match") on queries the base driver
+# ran fine — all three shapes below were live-reproduced in review.
+
+
+def test_union_inside_a_block_comment_is_not_a_branch_boundary():
+    cols = AGEDriver._columns_from_return(
+        'MATCH (n:Persona) RETURN n.name AS a /* union of things */, n.uuid AS b LIMIT 2'
+    )
+    assert cols == ['col0', 'b']  # base-driver parity: the trailing comment costs `a` its alias
+
+
+def test_union_inside_a_line_comment_is_not_a_branch_boundary():
+    cols = AGEDriver._columns_from_return(
+        'MATCH (n) RETURN n.name AS a, // union of things\n n.uuid AS b LIMIT 2'
+    )
+    assert cols == ['a', 'b']
+
+
+def test_union_inside_a_backticked_identifier_is_not_a_branch_boundary():
+    cols = AGEDriver._columns_from_return('MATCH (n) RETURN n.`credit union` AS a, n.x AS b')
+    assert cols == ['a', 'b']
+
+
+def test_union_as_a_backticked_alias_is_not_a_branch_boundary():
+    cols = AGEDriver._columns_from_return('MATCH (n) RETURN n.a AS `union`, n.x AS b')
+    assert cols == ['col0', 'b']  # backticked aliases are not matched by the alias regex
+
+
+def test_a_real_union_still_cuts_when_the_branch_carries_a_comment():
+    """Skipping comments must not disable the cut itself: arity stays at one branch (2), not 3."""
+    cols = AGEDriver._columns_from_return(
+        'MATCH (a) RETURN a.name AS nm /* first */, a.uuid AS u '
+        'UNION MATCH (b) RETURN b.name AS nm, b.uuid AS u'
+    )
+    # `col0` because the comment trails that projection — the point here is the arity.
+    assert cols == ['col0', 'u']
+
+
+def test_unterminated_comment_and_backtick_do_not_hang_or_cut():
+    assert AGEDriver._columns_from_return('MATCH (n) RETURN n.x AS a /* union') == ['col0']
+    assert AGEDriver._columns_from_return('MATCH (n) RETURN n.x AS a, n.`union') == ['a', 'col1']
+
+
+def test_cut_at_top_level_union_ignores_a_union_nested_in_brackets():
+    """The depth guard: only a UNION at bracket depth 0 separates branches."""
+    clause = ' x AS nm { MATCH (a) RETURN a UNION MATCH (b) RETURN b } trailing'
+    assert AGEDriver._cut_at_top_level_union(clause) == clause
+
+
+def test_call_subquery_union_still_yields_the_projected_alias():
+    cols = AGEDriver._columns_from_return(
+        'MATCH (n) CALL { MATCH (a) RETURN a.name AS nm '
+        'UNION MATCH (b) RETURN b.name AS nm } RETURN nm AS nm'
+    )
+    assert cols == ['nm']
+
+
 def test_word_starting_with_union_is_not_a_branch_boundary():
     cols = AGEDriver._columns_from_return('MATCH (n) RETURN n.unionized AS unionized')
     assert cols == ['unionized']

@@ -192,8 +192,13 @@ class AGEDriver(GraphDriver):
         columns of a set operation after its FIRST arm, so the first branch's
         RETURN is the correct source.
 
-        Scans in the style of ``_split_top_commas`` — bracket depth, plus quote
-        state so a ``UNION`` inside a string literal is never a branch boundary.
+        Scans in the style of ``_split_top_commas`` — bracket depth, plus the
+        three spans where a ``UNION`` is only text and never a branch boundary:
+        string literals (``'…'``, ``"…"``), backtick-quoted identifiers
+        (``n.`credit union```), and comments (``//…``, ``/*…*/``). Cutting inside
+        one of those drops the projections that follow it, and the short column
+        list then fails AGE's own arity check — a regression on queries that
+        worked before, so all three are skipped whole.
         """
         depth = 0
         quote: str | None = None
@@ -202,12 +207,25 @@ class AGEDriver(GraphDriver):
         while i < n:
             ch = clause[i]
             if quote is not None:
-                if ch == '\\':
+                # Backtick-quoted identifiers take no backslash escapes (a literal
+                # backtick is doubled, which closes and immediately reopens here —
+                # harmless, since the span still ends where the identifier does).
+                if quote != '`' and ch == '\\':
                     i += 2
                     continue
                 if ch == quote:
                     quote = None
-            elif ch in '\'"':
+                i += 1
+                continue
+            if ch == '/' and clause[i + 1 : i + 2] == '/':
+                end = clause.find('\n', i + 2)
+                i = n if end == -1 else end + 1
+                continue
+            if ch == '/' and clause[i + 1 : i + 2] == '*':
+                end = clause.find('*/', i + 2)
+                i = n if end == -1 else end + 2
+                continue
+            if ch in '\'"`':
                 quote = ch
             elif ch in '([{':
                 depth += 1
