@@ -123,6 +123,27 @@ async def test_both_writers_emit_the_same_merge_shape():
     'writer', ['episodic_edge_save', '_write_episodic_edge_from_fields']
 )
 @pytest.mark.asyncio
+async def test_the_target_excludes_bookkeeping_vertices(writer):
+    """Dropping the label constraint widens the target to EVERY vertex, including
+    Graphiti's own `:Episodic` bookkeeping ones. `n.labels IS NOT NULL` narrows it
+    back to entities: every entity write persists a `labels` list (verified live for
+    typed, untyped, empty and no-Entity-base shapes, through both writer paths),
+    while `episodic_node_save` never writes one. Same discriminator the MCP AGE
+    flavour uses for its profile probes (mcp_server/src/flavours/age.py:660-673)."""
+    driver = _CapturingDriver()
+    ops = AGEGraphOperations()
+    edge = _episodic_edge('mw-bk', 'mw-ep-bk', 'mw-ent-bk')
+    if writer == 'episodic_edge_save':
+        await ops.episodic_edge_save(edge, driver)
+    else:
+        await ops._write_episodic_edge_from_fields(driver, edge.model_dump())
+    assert 'n.labels IS NOT NULL' in _merge_query(driver), _merge_query(driver)
+
+
+@pytest.mark.parametrize(
+    'writer', ['episodic_edge_save', '_write_episodic_edge_from_fields']
+)
+@pytest.mark.asyncio
 async def test_a_zero_row_merge_is_logged_not_swallowed(writer, caplog):
     """Hardening: this bug class was silent. A MERGE that matched nothing must say so."""
     driver = _CapturingDriver(records=[])
@@ -300,6 +321,68 @@ async def test_a_missing_target_writes_nothing_and_warns(age_driver, caplog):
 
     assert await _count_mentions(age_driver) == 0
     assert 'mw-ent-absent' in caplog.text, caplog.text
+
+
+@pytest.mark.asyncio
+async def test_an_episodic_vertex_is_never_a_mentions_target(age_driver, caplog):
+    """The cost of a label-free target: a corrupt `target_node_uuid` pointing at an
+    EPISODE used to be unreachable (an episode is not `:Entity`), and would now
+    resolve unless the writer excludes bookkeeping vertices. Episode->episode is not
+    a MENTIONS relationship in any reading, so it must be refused and logged."""
+    ops = age_driver.graph_operations_interface
+    await _episode(age_driver, 'mw-ep-g')
+    await _episode(age_driver, 'mw-ep-g2')
+
+    with caplog.at_level(logging.WARNING):
+        await ops.episodic_edge_save(
+            _episodic_edge('mw-me-g', 'mw-ep-g', 'mw-ep-g2'), age_driver
+        )
+
+    assert await _count_mentions(age_driver) == 0
+    assert 'mw-ep-g2' in caplog.text, caplog.text
+
+
+@pytest.mark.asyncio
+async def test_an_episode_cannot_mention_itself(age_driver, caplog):
+    """Degenerate case of the same hole: source uuid == target uuid. The label-free
+    pattern would happily MERGE a self-loop on the episode."""
+    ops = age_driver.graph_operations_interface
+    await _episode(age_driver, 'mw-ep-h')
+
+    with caplog.at_level(logging.WARNING):
+        await ops.episodic_edge_save(
+            _episodic_edge('mw-me-h', 'mw-ep-h', 'mw-ep-h'), age_driver
+        )
+
+    assert await _count_mentions(age_driver) == 0
+    loops, _, _ = await age_driver.execute_query(
+        "MATCH (n)-[r]->(n) WHERE n.uuid = 'mw-ep-h' RETURN r.uuid AS uuid"
+    )
+    assert loops == [], loops
+    assert 'mw-ep-h' in caplog.text, caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_bulk_path_also_refuses_an_episodic_target(age_driver):
+    """`add_episode` writes through the bulk path, so the guard has to hold there too."""
+    ops = age_driver.graph_operations_interface
+    await _episode(age_driver, 'mw-ep-i')
+    await _episode(age_driver, 'mw-ep-i2')
+    await _typed_entity(age_driver, 'mw-ent-i')
+
+    await ops.episodic_edge_save_bulk(
+        None,
+        age_driver,
+        None,
+        [
+            _episodic_edge('mw-me-i-bad', 'mw-ep-i', 'mw-ep-i2').model_dump(),
+            _episodic_edge('mw-me-i-ok', 'mw-ep-i', 'mw-ent-i').model_dump(),
+        ],
+    )
+
+    # The good row still lands: the guard rejects, it does not abort the batch.
+    assert await _mentions_targets(age_driver, 'mw-ep-i') == ['mw-ent-i']
+    assert await _count_mentions(age_driver) == 1
 
 
 @pytest.mark.asyncio

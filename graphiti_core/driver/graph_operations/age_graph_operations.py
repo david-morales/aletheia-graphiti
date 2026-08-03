@@ -537,8 +537,23 @@ class AGEGraphOperations(GraphOperationsInterface):
         (`_write_entity_edge_from_fields`). It used to be `(n:Entity {uuid: ...})`,
         which no typed entity can satisfy: AGE stores exactly one label per vertex
         and `_node_label` makes it the LEAF ontology class, so the MATCH found
-        nothing and the MERGE no-opped for every typed target. uuids are globally
-        unique in the graph, so the label carries no matching information here.
+        nothing and the MERGE no-opped for every typed target. The leaf label is
+        not a stable fact about a node — it varies with the node's ontology class —
+        so it cannot be part of a lookup key; the uuid is what identifies a node
+        here, and the label constraint only ever excluded valid targets. (uuids are
+        *intended* to be unique but are not guaranteed so in practice: duplicate-uuid
+        siblings are a known integrity defect with their own repair CLI. That affects
+        HOW MANY vertices this MERGE can reach, not whether the label belongs in the
+        pattern.)
+
+        `n.labels IS NOT NULL` keeps the widened pattern from reaching Graphiti's own
+        bookkeeping vertices: every entity write persists a `labels` list (verified on
+        the live bed for typed, untyped, empty and no-Entity-base label lists, through
+        both the projection and bulk writers) while `episodic_node_save` never writes
+        one. Without it a corrupt `target_node_uuid` naming an episode — or the source
+        episode itself — would MERGE an episode-to-episode MENTIONS edge, which the old
+        `:Entity` pattern made structurally impossible. Same discriminator the MCP AGE
+        flavour uses to exclude bookkeeping from its profile probes.
 
         The RETURN + warning exist because that failure was SILENT — a MERGE whose
         MATCH is empty writes nothing and raises nothing. A genuine miss (an edge
@@ -549,6 +564,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             f'MATCH (e:Episodic), (n) '
             f'WHERE e.uuid = {_cy(props["source_node_uuid"])} '
             f'AND n.uuid = {_cy(props["target_node_uuid"])} '
+            f'AND n.labels IS NOT NULL '
             f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(props["uuid"])}}}]->(n) '
             f'SET r += {_map(props)} RETURN r.uuid AS uuid'
         )
