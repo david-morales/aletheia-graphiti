@@ -14,6 +14,7 @@ from typing import Any
 
 from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
 from utils.cypher import (
+    _BACKTICK_IDENT_RE,
     _NON_CODE_SPAN_RE,
     CypherError,
     _apply_to_code_spans,
@@ -188,6 +189,13 @@ class ExecutionErrorPattern:
     agent actually wrote. A pattern carrying a ``query_check`` never fires when no query was
     supplied. ``suggestion_fn(message, query)`` overrides the static ``suggestion`` when the
     hint must name concrete tokens from the query.
+
+    ``query_view`` is the masking applied to the query before ``query_check`` runs. The default
+    (``_strip_non_code_spans``) hides string literals and comments; a pattern whose keyword can
+    also appear as a quoted IDENTIFIER — ``n.`credit union``` — sets ``_code_view_no_idents``
+    instead. It is per-pattern because the masking that removes one pattern's false positives
+    removes another's true ones (``_LABEL_TEST_RE`` and ``_RESERVED_ALIAS_RE`` both read
+    backticked identifiers on purpose).
     """
 
     name: str
@@ -197,6 +205,7 @@ class ExecutionErrorPattern:
     example_fix: str | None = None
     query_check: re.Pattern | None = None
     suggestion_fn: Callable[[str, str], str] | None = None
+    query_view: Callable[[str], str] = _strip_non_code_spans
 
 
 # Postgres reports the offending token as `at or near "X"` but never echoes the query, so the
@@ -357,6 +366,16 @@ def _find_mixed_case_aliases(query: str) -> list[str]:
 _UNION_RE = re.compile(r"\bunion\b", re.IGNORECASE)
 
 
+def _code_view_no_idents(query: str) -> str:
+    """``_strip_non_code_spans`` plus backtick-quoted identifiers.
+
+    The base helper masks string literals and comments but leaves backticked identifiers in
+    place, so ``n.`credit union``` still reads as a UNION to a keyword gate. Same placeholder
+    convention as ``_extract_keyword_tokens``.
+    """
+    return _BACKTICK_IDENT_RE.sub(" _BT_ ", _strip_non_code_spans(query))
+
+
 def _suggest_lowercase_alias(_message: str, query: str) -> str:
     aliases = _find_mixed_case_aliases(query)
     named = ", ".join(f"`{a}`" for a in aliases) if aliases else "the aliases"
@@ -423,6 +442,8 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         example_fix="MATCH (a)-[r]->(b)-[:LINKED_TO]->(c) WHERE type(r) IN ['REL_A','REL_B'] "
         "RETURN b.name AS item, c.name AS place LIMIT 25",
         query_check=_UNION_RE,
+        # `union` is also a plausible identifier, so the gate must not see backticked spans.
+        query_view=_code_view_no_idents,
     ),
     ExecutionErrorPattern(
         name="duplicate_return_column",
@@ -518,7 +539,7 @@ def classify_age_execution_error(msg: str, query: str | None = None) -> CypherEr
         if not pattern.matcher.search(msg or ""):
             continue
         if pattern.query_check is not None and (
-            not query or not pattern.query_check.search(_strip_non_code_spans(query))
+            not query or not pattern.query_check.search(pattern.query_view(query))
         ):
             continue
         explanation = f"Apache AGE returned an error: {msg}"

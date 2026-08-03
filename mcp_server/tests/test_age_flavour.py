@@ -415,6 +415,43 @@ def test_classify_duplicate_column_ignores_the_word_union_inside_a_string():
     assert err.suggestion == _DUPLICATE_ALIAS_HINT
 
 
+def test_classify_duplicate_column_ignores_the_word_union_inside_a_backticked_identifier():
+    """`_strip_non_code_spans` masks strings and comments but NOT backticked identifiers."""
+    err = AgeFlavour().classify_execution_error(
+        'column name "a" specified more than once',
+        query="MATCH (n) RETURN n.`credit union` AS a, n.x AS a LIMIT 5",
+    )
+    assert err.reason == "duplicate_return_column"
+    assert err.suggestion == _DUPLICATE_ALIAS_HINT
+
+
+def test_classify_duplicate_column_ignores_a_backticked_union_alias():
+    err = AgeFlavour().classify_execution_error(
+        'column name "a" specified more than once',
+        query="MATCH (n) RETURN n.a AS `union`, n.x AS a, n.y AS a LIMIT 5",
+    )
+    assert err.reason == "duplicate_return_column"
+    assert err.suggestion == _DUPLICATE_ALIAS_HINT
+
+
+def test_classify_duplicate_column_ignores_the_word_union_inside_a_comment():
+    err = AgeFlavour().classify_execution_error(
+        'column name "a" specified more than once',
+        query="MATCH (n) RETURN n.x AS a /* union of things */, n.y AS a LIMIT 5",
+    )
+    assert err.reason == "duplicate_return_column"
+    assert err.suggestion == _DUPLICATE_ALIAS_HINT
+
+
+def test_a_real_union_still_draws_the_union_hint_alongside_backticks_and_comments():
+    err = AgeFlavour().classify_execution_error(
+        'column name "evento" specified more than once',
+        query="MATCH (a) RETURN a.`n` AS evento /* first */ "
+        "UNION MATCH (b) RETURN b.`n` AS evento LIMIT 5",
+    )
+    assert err.reason == "union_column_collision"
+
+
 def test_classify_duplicate_column_without_a_query_keeps_the_alias_hint():
     err = AgeFlavour().classify_execution_error('column name "evento" specified more than once')
     assert err.reason == "duplicate_return_column"
