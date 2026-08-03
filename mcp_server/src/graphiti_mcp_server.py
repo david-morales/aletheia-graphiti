@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from graphiti_core import Graphiti
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.edges import EntityEdge
+from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
 from graphiti_core.utils.bulk_utils import RawEpisode
 from graphiti_core.search.search_config import (
@@ -968,10 +969,18 @@ async def explore_node(
         else:
             try:
                 center_node = await EntityNode.get_by_uuid(client.driver, node_uuid)
-            except Exception as e:
-                # Loud, not silent: an unresolvable uuid is the caller's answer,
-                # not an empty neighbourhood with a null center.
-                logger.warning(f'explore_node could not resolve uuid {node_uuid}: {e}')
+            except NodeNotFoundError:
+                # ONLY "that uuid is not in the graph" is an answer. A dropped
+                # connection pool or a backend error must NOT be dressed up as a
+                # missing node — it falls through to the outer handler and comes
+                # back as an ErrorResponse the caller can act on.
+                #
+                # Note (recorded divergence, not fixed here): on AGE
+                # `node_get_by_uuid` is not label-scoped, so an EPISODIC uuid
+                # resolves as a centre instead of raising, where Neo4j/FalkorDB
+                # match `(n:Entity …)` and raise. Changing that lookup has other
+                # callers and belongs to its own lane.
+                logger.info(f'explore_node: no node with uuid {node_uuid}')
                 return ExploreResponse(
                     message=f'No node found with UUID "{node_uuid}"',
                     center_node=None,

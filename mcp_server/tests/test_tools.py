@@ -510,7 +510,9 @@ class TestExploreNode:
 
     @pytest.mark.asyncio
     async def test_uuid_not_found_says_so(self):
-        """An unresolvable uuid is an answer, not an empty neighbourhood."""
+        """A uuid that is genuinely absent is an answer, not an empty neighbourhood."""
+        from graphiti_core.errors import NodeNotFoundError
+
         svc, queue, cfg, client = make_mock_services()
         client.search_ = AsyncMock(return_value=make_mock_search_results())
 
@@ -520,7 +522,7 @@ class TestExploreNode:
             patch('graphiti_mcp_server.config', cfg, create=True),
             patch(
                 'graphiti_mcp_server.EntityNode.get_by_uuid',
-                AsyncMock(side_effect=Exception('node does not exist')),
+                AsyncMock(side_effect=NodeNotFoundError('ghost-uuid')),
             ),
         ):
             result = await explore_node(node_uuid='ghost-uuid')
@@ -531,6 +533,33 @@ class TestExploreNode:
         assert result['center_node'] is None
         assert result['nodes'] == []
         # and it must not have gone on to run the traversal
+        assert client.search_.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_uuid_lookup_backend_failure_is_an_error_not_a_missing_node(self):
+        """A dropped pool or a backend error must NOT read as "no such node".
+
+        Reporting an infrastructure failure as an absent uuid tells the agent the
+        entity does not exist — the same confidently-wrong shape as the original
+        bug, one layer up.
+        """
+        svc, queue, cfg, client = make_mock_services()
+        client.search_ = AsyncMock(return_value=make_mock_search_results())
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(side_effect=ConnectionError('pool is closed')),
+            ),
+        ):
+            result = await explore_node(node_uuid='hub-uuid')
+
+        assert 'error' in result
+        assert 'pool is closed' in result['error']
+        assert 'No node found' not in result.get('error', '')
         assert client.search_.call_count == 0
 
     @pytest.mark.asyncio
