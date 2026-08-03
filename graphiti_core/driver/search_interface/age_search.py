@@ -7,9 +7,21 @@ Community search inherits documented no-op overrides.
 
 Search runs against the uuid-keyed shadow tables, then hydrates full
 EntityNode/EntityEdge objects from the AGE graph (via the graph_operations
-interface), preserving the shadow-table ranking order. SearchFilters are
-ignored in the shadow-table legs (broader results are acceptable for the gate);
-the traversal legs honour `edge_types`, which `explore_node` exposes directly.
+interface), preserving the shadow-table ranking order.
+
+SearchFilters support, in full:
+  * `edge_types`   — HONOURED by `edge_bfs_search` (`explore_node(edge_types=…)`
+                     feeds it straight in).
+  * `node_labels`  — DROPPED. The generic constructor emits `n:A|B`, Neo4j
+                     syntax AGE cannot parse, and AGE vertices carry only their
+                     leaf label anyway; a correct version has to read the
+                     `labels` property. Not implemented.
+  * `edge_uuids`   — DROPPED.
+  * temporal filters (`valid_at` / `invalid_at` / `created_at` / `expired_at`)
+                   — DROPPED.
+  * The shadow-table legs (fulltext / similarity) ignore SearchFilters entirely.
+Dropped filters BROADEN results; they never narrow them wrongly. Callers that
+need real filtering must post-filter.
 
 The traversal methods MUST live here rather than fall through to the
 provider-generic Cypher in `search_utils`: that Cypher filters on the `:Entity`
@@ -26,12 +38,20 @@ from typing import Any
 from graphiti_core.driver.graph_operations.age_graph_operations import _cy, _vec
 from graphiti_core.driver.search_interface.search_interface import SearchInterface
 
-# AGE vertices/edges written by this driver's graph_operations layer. Episodic
-# nodes keep Graphiti's `:Episodic` label and episode->entity edges keep
-# `:MENTIONS`; everything else is a typed ontology label, so "is an entity" is
-# expressed by EXCLUDING these two rather than by matching `:Entity`.
-_EPISODIC_LABEL = 'Episodic'
-_MENTIONS_LABEL = 'MENTIONS'
+# "Is an entity vertex" is asked POSITIVELY, of the `labels` property that
+# `node_save` always writes, not by excluding the labels we happen to know about
+# today. Measured equivalent on both live AGE graphs (identical result sets:
+# 1358/1358 on policia_partes_bench, 564/564 on policia_partes_real), and it
+# stays correct if `build_communities` ever writes `:Community` vertices through
+# the generic fallback — those have no `labels` property, so they cannot leak
+# into BFS and produce `HAS_MEMBER` edges that `EntityEdge` cannot even validate.
+_ENTITY_BASE_LABEL = 'Entity'
+
+# Edges get the mirror-image treatment for the opposite reason: AGE edge labels
+# are the ONTOLOGY relationship names, an open set with no shared marker, so
+# there is no positive predicate to write. What IS closed is Graphiti's own
+# structural edge types — the two that are not entity-to-entity facts.
+_NON_ENTITY_EDGE_LABELS = ('MENTIONS', 'HAS_MEMBER')
 
 
 def _cy_list(values: list[str]) -> str:
@@ -273,12 +293,15 @@ class AGESearch(SearchInterface):
         group_ids: list[str] | None = None,
         limit: int = 100,
     ) -> list[Any]:
-        """Entity nodes within `bfs_max_depth` outgoing hops of the origins.
+        """Entity nodes within `bfs_max_depth` OUTGOING hops of the origins.
 
-        Mirrors the generic leg's semantics (outgoing traversal, same-partition
-        targets, non-episodic results) with AGE's label model: no `:Entity`
-        filter, `label(n) <> 'Episodic'` instead. Returns uuids only, then
-        hydrates through the same path as the other legs.
+        Mirrors the generic leg exactly — directed traversal, same-partition
+        targets, entity-only results — with AGE's label model: the generic
+        `(n:Entity)` becomes `'Entity' IN n.labels` (see `_ENTITY_BASE_LABEL`).
+        The direction is not incidental: the generic node leg is directed while
+        the edge leg is not, and the two flavours must agree.
+
+        Returns uuids only, then hydrates through the same path as the other legs.
         """
         if not bfs_origin_node_uuids or bfs_max_depth < 1:
             return []
@@ -286,9 +309,15 @@ class AGESearch(SearchInterface):
         where = [
             f'origin.uuid IN {_cy_list(bfs_origin_node_uuids)}',
             'n.group_id = origin.group_id',
-            f'label(n) <> {_cy(_EPISODIC_LABEL)}',
+            f'{_cy(_ENTITY_BASE_LABEL)} IN n.labels',
         ]
         if group_ids:
+            # Both conjuncts mirror the generic leg. The first is logically
+            # redundant here (`n.group_id = origin.group_id` above, plus the
+            # second, already implies it) — a mutation that drops it survives by
+            # equivalence, not for want of a test. Kept so the two flavours read
+            # the same and so a future edit to the same-partition clause cannot
+            # silently widen the partition.
             where.append(f'n.group_id IN {_cy_list(group_ids)}')
             where.append(f'origin.group_id IN {_cy_list(group_ids)}')
 
@@ -309,18 +338,19 @@ class AGESearch(SearchInterface):
         group_ids: list[str] | None = None,
         limit: int = 100,
     ) -> list[Any]:
-        """Entity edges lying on any undirected path of up to `bfs_max_depth`
+        """Entity edges lying on any UNDIRECTED path of up to `bfs_max_depth`
         hops from the origins.
 
         Direction matches the generic leg: node BFS is directed, edge BFS is not
-        (an edge is "near" the origin whichever way it points). `MENTIONS` is
-        excluded because it is the episode->entity edge, not an entity edge —
-        the generic leg expresses the same thing as `(:Entity)-[e]-(:Entity)`.
+        (an edge is "near" the origin whichever way it points). Graphiti's own
+        structural edges are excluded (`_NON_ENTITY_EDGE_LABELS`) because they
+        are not entity-to-entity facts — the generic leg says the same thing as
+        `(n:Entity)-[e]-(m:Entity)`.
         """
         if not bfs_origin_node_uuids or bfs_max_depth < 1:
             return []
 
-        rel_where = [f'type(rel) <> {_cy(_MENTIONS_LABEL)}']
+        rel_where = [f'NOT type(rel) IN {_cy_list(_NON_ENTITY_EDGE_LABELS)}']
         if group_ids:
             rel_where.append(f'rel.group_id IN {_cy_list(group_ids)}')
         edge_types = getattr(search_filter, 'edge_types', None)
@@ -362,7 +392,7 @@ class AGESearch(SearchInterface):
                 f'MATCH (center)-[rel]-(n) '
                 f'WHERE center.uuid = {_cy(center_node_uuid)} '
                 f'AND n.uuid IN {_cy_list(filtered_uuids)} '
-                f'AND type(rel) <> {_cy(_MENTIONS_LABEL)} '
+                f'AND NOT type(rel) IN {_cy_list(_NON_ENTITY_EDGE_LABELS)} '
                 f'RETURN DISTINCT n.uuid AS uuid',
                 columns=['uuid'],
             )

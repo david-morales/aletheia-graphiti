@@ -17,6 +17,13 @@ Each test asserts BOTH halves: the graph really is traversable (unlabelled
 probe finds the neighbours) AND the search leg returns them. Without the
 second half a future label regression would look the same as a data problem.
 
+The fixture is built to make every predicate in the implementation LOAD-BEARING
+— mutation testing on the first version showed 5 of 6 mutants surviving because
+the graph had no Episodic vertex, no structural edge and no incoming edge, so
+`'Entity' IN n.labels`, the `MENTIONS`/`HAS_MEMBER` exclusions and both
+traversal directions were all untested. Every one of those now has a test that
+fails when the predicate is removed.
+
 Live-gated through the shared `age_driver` fixture (tests/driver/conftest.py):
 a per-test throwaway graph on AGE_TEST_DSN, dropped in teardown, skipped when
 the store is unreachable.
@@ -26,6 +33,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from graphiti_core.driver.graph_operations.age_graph_operations import _cy
 from graphiti_core.driver.search_interface.age_search import AGESearch
 from graphiti_core.driver.search_interface.search_interface import SearchInterface
 from graphiti_core.search.search_filters import SearchFilters
@@ -73,13 +81,54 @@ def _edge(driver, uuid, source, target, name):
     return e
 
 
-async def _chain(driver):
-    """centre -[ES_IDENTIFICADO]-> ident -[EN_PARTE]-> parte -[OCURRE_EN]-> ubicacion.
+async def _structural_edge(driver, uuid, source, target, label):
+    """Write a Graphiti STRUCTURAL edge (`MENTIONS` / `HAS_MEMBER`) by hand.
 
-    Every vertex carries a leaf ontology label, i.e. none of them is stored
-    under the plain `:Entity` label the generic Cypher filters on — the exact
-    shape the policia AGE graphs have.
+    Two reasons this is raw Cypher rather than `episodic_edge_save`:
+
+    1. `episodic_edge_save` matches `(n:Entity {uuid: …})`, and on AGE a typed
+       entity vertex is labelled `Persona` / `Identificacion` / … — so its MERGE
+       silently writes nothing. (Separate write-path bug, its own lane; the live
+       bench graph has 24 MENTIONS edges for 101 episodes and 1358 entities.)
+    2. `HAS_MEMBER` has no AGE writer at all — `build_communities` would reach
+       AGE through the generic fallback.
+
+    The props mirror an entity edge's so that a MUTANT which stops excluding
+    these edges hydrates them cleanly and fails on the assertion, rather than
+    blowing up in `_hydrate_edge` and passing for the wrong reason.
     """
+    props = {
+        'uuid': uuid,
+        'group_id': GROUP,
+        'source_node_uuid': source,
+        'target_node_uuid': target,
+        'name': label,
+        'fact': f'{source} {label} {target}',
+        'episodes': [],
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    assignments = ', '.join(f'r.{k} = {_cy(v)}' for k, v in props.items())
+    await driver.execute_query(
+        f'MATCH (a), (b) WHERE a.uuid = {_cy(source)} AND b.uuid = {_cy(target)} '
+        f'MERGE (a)-[r:{label} {{uuid: {_cy(uuid)}}}]->(b) SET {assignments}'
+    )
+
+
+async def _chain(driver):
+    """The policia AGE shape, with every predicate's counter-example present.
+
+        src  -[CONOCE]->        c            (INCOMING to the centre)
+        ep   -[MENTIONS]->      c            (structural, episode -> entity)
+        com  -[HAS_MEMBER]->    c            (structural, community -> entity)
+        c    -[ES_IDENTIFICADO]-> n1 -[EN_PARTE]-> n2 -[OCURRE_EN]-> n3
+
+    Every entity vertex carries a leaf ontology label, i.e. none is stored under
+    the plain `:Entity` label the generic Cypher filters on. `ep` is a real
+    `:Episodic` vertex and `com` a `:Community` one — neither carries a `labels`
+    property, which is what `'Entity' IN n.labels` actually tests.
+    """
+    from graphiti_core.nodes import EpisodeType, EpisodicNode
+
     ops = driver.graph_operations_interface
     await ops.node_save(_entity(driver, 'c', 'KHADIJA DAOUD', ['Entity', 'Persona']), driver)
     await ops.node_save(
@@ -90,9 +139,39 @@ async def _chain(driver):
     )
     await ops.node_save(_entity(driver, 'n2', 'Parte 1', ['Entity', 'ParteDeIntervencion']), driver)
     await ops.node_save(_entity(driver, 'n3', 'LOGRONO', ['Entity', 'Ubicacion']), driver)
+    await ops.node_save(_entity(driver, 'src', 'JOSE TORRES', ['Entity', 'Persona']), driver)
+
     await ops.edge_save(_edge(driver, 'e1', 'c', 'n1', 'ES_IDENTIFICADO'), driver)
     await ops.edge_save(_edge(driver, 'e2', 'n1', 'n2', 'EN_PARTE'), driver)
     await ops.edge_save(_edge(driver, 'e3', 'n2', 'n3', 'OCURRE_EN'), driver)
+    await ops.edge_save(_edge(driver, 'ein', 'src', 'c', 'CONOCE'), driver)
+
+    await ops.episodic_node_save(
+        EpisodicNode(
+            uuid='ep',
+            name='parte-20260000100001',
+            group_id=GROUP,
+            source=EpisodeType.text,
+            source_description='parte',
+            content='…',
+            created_at=datetime.now(timezone.utc),
+            valid_at=datetime.now(timezone.utc),
+            entity_edges=[],
+        ),
+        driver,
+    )
+    await _structural_edge(driver, 'me', 'ep', 'c', 'MENTIONS')
+
+    await driver.execute_query(
+        f'MERGE (n:Community {{uuid: {_cy("com")}}}) '
+        f'SET n.name = {_cy("comunidad")}, n.group_id = {_cy(GROUP)}'
+    )
+    await _structural_edge(driver, 'hm', 'com', 'c', 'HAS_MEMBER')
+
+
+# ---------------------------------------------------------------------------
+# The original defect: the legs returned nothing at all
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -118,9 +197,129 @@ async def test_edge_bfs_search_finds_typed_edges(age_driver):
     await _chain(age_driver)
 
     found = await edge_bfs_search(age_driver, ['c'], 3, SearchFilters(), [GROUP], 20)
-    assert sorted(e.uuid for e in found) == ['e1', 'e2', 'e3']
+    assert sorted(e.uuid for e in found) == ['e1', 'e2', 'e3', 'ein']
     # hydration must survive the uuid round-trip, not just the traversal
     assert {e.uuid: e.name for e in found}['e1'] == 'ES_IDENTIFICADO'
+
+
+# ---------------------------------------------------------------------------
+# Each predicate in the implementation, made load-bearing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_node_bfs_returns_only_entity_vertices(age_driver):
+    """`'Entity' IN n.labels` must actually filter.
+
+    Reached through an entity -> non-entity edge, which Graphiti does not write
+    today (`MENTIONS` and `HAS_MEMBER` both point AT entities). The predicate is
+    therefore defence-in-depth — against exactly the case the review flagged: if
+    `build_communities` ever writes `:Community` vertices through the generic
+    fallback, an unfiltered BFS would feed them to `EntityNode` hydration. This
+    test constructs that reachability explicitly so the predicate is not free.
+    """
+    from graphiti_core.search.search_utils import node_bfs_search
+
+    await _chain(age_driver)
+    await _structural_edge(age_driver, 'hm2', 'n3', 'com', 'HAS_MEMBER')
+
+    # the non-entity vertex IS now reachable outgoing from the centre
+    probe, _, _ = await age_driver.execute_query(
+        "MATCH (o)-[*1..4]->(n) WHERE o.uuid = 'c' AND n.uuid = 'com' RETURN count(n) AS c",
+        columns=['c'],
+    )
+    assert probe[0]['c'] == 1
+
+    found = await node_bfs_search(age_driver, ['c'], SearchFilters(), 4, [GROUP], 20)
+    assert 'com' not in {n.uuid for n in found}
+    assert sorted(n.uuid for n in found) == ['n1', 'n2', 'n3']
+
+
+@pytest.mark.asyncio
+async def test_node_bfs_is_directed_like_the_generic_leg(age_driver):
+    """The generic node leg is `(origin)-[*1..N]->(n)`. Undirected here would
+    pull in the incoming neighbour and both structural vertices, and the two
+    flavours would stop agreeing."""
+    from graphiti_core.search.search_utils import node_bfs_search
+
+    await _chain(age_driver)
+
+    # all three are 1 hop from the centre — but only on an UNDIRECTED traversal
+    probe, _, _ = await age_driver.execute_query(
+        "MATCH (o)-[*1..1]-(n) WHERE o.uuid = 'c' RETURN count(n) AS c", columns=['c']
+    )
+    assert probe[0]['c'] == 4  # n1 (out) + src, ep, com (in)
+
+    found = await node_bfs_search(age_driver, ['c'], SearchFilters(), 1, [GROUP], 20)
+    assert [n.uuid for n in found] == ['n1']
+
+
+@pytest.mark.asyncio
+async def test_edge_bfs_is_undirected_like_the_generic_leg(age_driver):
+    """The generic edge leg is `(origin)-[*1..N]-(:Entity)` — an edge is near the
+    centre whichever way it points. Directed here would silently drop every
+    inbound fact."""
+    from graphiti_core.search.search_utils import edge_bfs_search
+
+    await _chain(age_driver)
+
+    found = await edge_bfs_search(age_driver, ['c'], 1, SearchFilters(), [GROUP], 20)
+    assert 'ein' in {e.uuid for e in found}
+    assert sorted(e.uuid for e in found) == ['e1', 'ein']
+
+
+@pytest.mark.asyncio
+async def test_edge_bfs_excludes_structural_edges(age_driver):
+    """`MENTIONS` and `HAS_MEMBER` are not entity-to-entity facts. Both touch the
+    centre here, so dropping either exclusion changes the result."""
+    from graphiti_core.search.search_utils import edge_bfs_search
+
+    await _chain(age_driver)
+
+    probe, _, _ = await age_driver.execute_query(
+        "MATCH (o)-[r]-(n) WHERE o.uuid = 'c' AND r.uuid IN ['me', 'hm'] RETURN count(r) AS c",
+        columns=['c'],
+    )
+    assert probe[0]['c'] == 2  # both structural edges really are adjacent
+
+    found = await edge_bfs_search(age_driver, ['c'], 2, SearchFilters(), [GROUP], 20)
+    uuids = {e.uuid for e in found}
+    assert {'me', 'hm'} & uuids == set()
+    # positive half: the real facts around the same centre ARE returned, so a leg
+    # that returns [] unconditionally cannot pass this test either
+    assert {'e1', 'e2', 'ein'} <= uuids
+
+
+@pytest.mark.asyncio
+async def test_reranker_excludes_structural_edges(age_driver):
+    """Adjacency via a structural edge is not adjacency: `ep` and `com` touch the
+    centre only through `MENTIONS` / `HAS_MEMBER`, so they must not outrank a
+    real neighbour."""
+    from graphiti_core.search.search_utils import node_distance_reranker
+
+    await _chain(age_driver)
+
+    # control: both structural vertices really are one hop from the centre, so
+    # scoring them 0.0 is a decision the predicate makes, not an accident of the
+    # fixture not containing them
+    probe, _, _ = await age_driver.execute_query(
+        "MATCH (o)-[r]-(n) WHERE o.uuid = 'c' AND n.uuid IN ['ep', 'com'] RETURN count(n) AS c",
+        columns=['c'],
+    )
+    assert probe[0]['c'] == 2
+
+    uuids, scores = await node_distance_reranker(age_driver, ['ep', 'com', 'n1'], 'c')
+    by_uuid = dict(zip(uuids, scores, strict=True))
+    assert by_uuid['n1'] == 1.0
+    assert by_uuid['ep'] == 0.0
+    assert by_uuid['com'] == 0.0
+    assert uuids[0] == 'n1'
+
+
+# ---------------------------------------------------------------------------
+# Scoping and edge cases — each paired with its positive half so the assertion
+# cannot pass on an implementation that returns [] for everything
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -128,6 +327,11 @@ async def test_bfs_is_scoped_to_the_requested_group(age_driver):
     from graphiti_core.search.search_utils import edge_bfs_search, node_bfs_search
 
     await _chain(age_driver)
+
+    # positive half: the same call in the RIGHT group must find the chain, so a
+    # leg that returns [] unconditionally cannot pass this test
+    assert await node_bfs_search(age_driver, ['c'], SearchFilters(), 3, [GROUP], 20) != []
+    assert await edge_bfs_search(age_driver, ['c'], 3, SearchFilters(), [GROUP], 20) != []
 
     assert await node_bfs_search(age_driver, ['c'], SearchFilters(), 3, ['other_group'], 20) == []
     assert await edge_bfs_search(age_driver, ['c'], 3, SearchFilters(), ['other_group'], 20) == []
@@ -139,6 +343,9 @@ async def test_edge_bfs_honours_the_edge_types_filter(age_driver):
     from graphiti_core.search.search_utils import edge_bfs_search
 
     await _chain(age_driver)
+
+    unfiltered = await edge_bfs_search(age_driver, ['c'], 3, SearchFilters(), [GROUP], 20)
+    assert len(unfiltered) > 1
 
     found = await edge_bfs_search(
         age_driver, ['c'], 3, SearchFilters(edge_types=['EN_PARTE']), [GROUP], 20
@@ -152,9 +359,10 @@ async def test_bfs_respects_depth(age_driver):
 
     await _chain(age_driver)
 
-    assert sorted(
-        n.uuid for n in await node_bfs_search(age_driver, ['c'], SearchFilters(), 1, [GROUP], 20)
-    ) == ['n1']
+    deep = await node_bfs_search(age_driver, ['c'], SearchFilters(), 3, [GROUP], 20)
+    shallow = await node_bfs_search(age_driver, ['c'], SearchFilters(), 1, [GROUP], 20)
+    assert sorted(n.uuid for n in deep) == ['n1', 'n2', 'n3']
+    assert sorted(n.uuid for n in shallow) == ['n1']
 
 
 @pytest.mark.asyncio
@@ -163,8 +371,17 @@ async def test_bfs_with_no_origins_returns_empty(age_driver):
 
     await _chain(age_driver)
 
+    # positive half first: with an origin the same call is non-empty
+    assert await node_bfs_search(age_driver, ['c'], SearchFilters(), 2, [GROUP], 20) != []
+    assert await edge_bfs_search(age_driver, ['c'], 2, SearchFilters(), [GROUP], 20) != []
+
     assert await node_bfs_search(age_driver, [], SearchFilters(), 2, [GROUP], 20) == []
     assert await edge_bfs_search(age_driver, None, 2, SearchFilters(), [GROUP], 20) == []
+
+
+# ---------------------------------------------------------------------------
+# Reranker contract + the end-to-end seam
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -255,8 +472,8 @@ async def test_explore_node_search_config_returns_the_neighbourhood(age_driver_e
         bfs_origin_node_uuids=['c'],
     )
 
-    # depth 2 from the centre: n1, n2 and the two edges on those paths (e3 is
-    # the third hop). Pre-fix this call returned nothing but noise.
+    # depth 2 from the centre: n1, n2 outgoing; the edges on those paths plus the
+    # inbound CONOCE (edge BFS is undirected), and no structural edge.
     assert sorted(n.uuid for n in results.nodes) == ['n1', 'n2']
-    assert sorted(e.uuid for e in results.edges) == ['e1', 'e2']
+    assert sorted(e.uuid for e in results.edges) == ['e1', 'e2', 'ein']
     assert results.nodes[0].uuid == 'n1'  # node_distance rerank: adjacent first
