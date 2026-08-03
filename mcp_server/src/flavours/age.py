@@ -349,6 +349,14 @@ def _find_mixed_case_aliases(query: str) -> list[str]:
     return seen
 
 
+# A UNION between query branches. Used to tell the two duplicate-column cases apart: a
+# UNION's branches MUST project the same aliases (that is what makes the UNION well-formed),
+# so "rename them" is an impossible repair there — it is only the right answer when one
+# branch repeats an alias on its own. Tested against the code-only view of the query, so a
+# `union` inside a string literal never fires it.
+_UNION_RE = re.compile(r"\bunion\b", re.IGNORECASE)
+
+
 def _suggest_lowercase_alias(_message: str, query: str) -> str:
     aliases = _find_mixed_case_aliases(query)
     named = ", ".join(f"`{a}`" for a in aliases) if aliases else "the aliases"
@@ -396,6 +404,25 @@ _AGE_EXECUTION_ERROR_PATTERNS: list[ExecutionErrorPattern] = [
         doc_hint="Apache AGE: agtype scalars are not auto-coerced; id() returns a graphid, "
         "not a string.",
         example_fix="MATCH (n) WHERE n.uuid = 'a' RETURN n.name AS name LIMIT 25",
+    ),
+    # Must precede duplicate_return_column: same message, opposite repair.
+    ExecutionErrorPattern(
+        name="union_column_collision",
+        matcher=re.compile(r'column name "([^"]+)" specified more than once', re.IGNORECASE),
+        suggestion="This query is a UNION, and its branches project the same aliases — as they "
+        "must. Apache AGE builds ONE SQL column-definition list for the whole statement, so the "
+        "branch columns land in it more than once and PostgreSQL rejects the repeated name. "
+        "Renaming the aliases is NOT the fix: a UNION whose branches disagree on their columns "
+        "is invalid Cypher. Drop the UNION instead — run each branch as a separate query, or fold "
+        "the branches into a single MATCH over a generic relationship and filter the type: "
+        "`MATCH (a)-[r]->(b)-[:LINKED_TO]->(c) WHERE type(r) IN ['REL_A','REL_B'] "
+        "RETURN b.name AS item, c.name AS place`. (If instead ONE branch repeats an alias on "
+        "its own, rename that one.)",
+        doc_hint="Apache AGE: the branches of a UNION share a single SQL column-definition "
+        "list — prefer separate queries, or one MATCH with a `type(r) IN [...]` filter.",
+        example_fix="MATCH (a)-[r]->(b)-[:LINKED_TO]->(c) WHERE type(r) IN ['REL_A','REL_B'] "
+        "RETURN b.name AS item, c.name AS place LIMIT 25",
+        query_check=_UNION_RE,
     ),
     ExecutionErrorPattern(
         name="duplicate_return_column",

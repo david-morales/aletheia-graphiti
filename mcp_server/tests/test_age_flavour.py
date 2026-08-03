@@ -356,6 +356,71 @@ def test_classify_duplicate_return_column():
     assert err.doc_hint != ""
 
 
+# The non-UNION hint, pinned verbatim: the UNION carve-out below must not change it.
+_DUPLICATE_ALIAS_HINT = (
+    "Two RETURN columns share the same alias. Apache AGE turns the RETURN aliases into SQL "
+    "column names, which must be unique. Give every projected column a distinct alias "
+    "(e.g. `p.uuid AS parte_uuid, r.uuid AS rol_uuid`)."
+)
+
+_UNION_QUERY = (
+    "MATCH (p)-[:ES_IDENTIFICADO]->(ident)-[:OCURRE_EN]->(u) "
+    "RETURN ident.name AS evento, u.name AS ubicacion "
+    "UNION "
+    "MATCH (p)-[:ES_DETENIDO]->(det)-[:OCURRE_EN]->(u) "
+    "RETURN det.name AS evento, u.name AS ubicacion LIMIT 25"
+)
+
+
+def test_classify_duplicate_return_column_hint_is_verbatim_for_a_non_union_query():
+    err = AgeFlavour().classify_execution_error(
+        'column name "parte_uuid" specified more than once',
+        query="MATCH (p)-[]->(r) RETURN p.uuid AS parte_uuid, r.uuid AS parte_uuid LIMIT 25",
+    )
+    assert err.suggestion == _DUPLICATE_ALIAS_HINT
+
+
+def test_classify_duplicate_column_on_a_union_does_not_prescribe_distinct_aliases():
+    """UNION branches MUST share aliases — 'rename them' is an impossible repair."""
+    err = AgeFlavour().classify_execution_error(
+        'column name "evento" specified more than once', query=_UNION_QUERY
+    )
+    assert err.reason == "union_column_collision"
+    assert err.suggestion != _DUPLICATE_ALIAS_HINT
+    assert "distinct alias" not in err.suggestion.lower()
+    assert "union" in err.suggestion.lower()
+    # names the real mechanism (one column-definition list for the whole statement)
+    assert "column-definition list" in err.suggestion.lower()
+    # and points at the two repairs that actually work
+    assert "separate" in err.suggestion.lower()
+    assert "match" in err.suggestion.lower()
+    assert err.doc_hint != ""
+    assert "evento" in err.explanation
+
+
+def test_classify_duplicate_column_on_a_union_all_query():
+    err = AgeFlavour().classify_execution_error(
+        'column name "evento" specified more than once',
+        query=_UNION_QUERY.replace("UNION ", "UNION ALL "),
+    )
+    assert err.reason == "union_column_collision"
+
+
+def test_classify_duplicate_column_ignores_the_word_union_inside_a_string():
+    err = AgeFlavour().classify_execution_error(
+        'column name "nota" specified more than once',
+        query="MATCH (n) WHERE n.nota = 'union europea' RETURN n.nota AS nota, n.x AS nota LIMIT 5",
+    )
+    assert err.reason == "duplicate_return_column"
+    assert err.suggestion == _DUPLICATE_ALIAS_HINT
+
+
+def test_classify_duplicate_column_without_a_query_keeps_the_alias_hint():
+    err = AgeFlavour().classify_execution_error('column name "evento" specified more than once')
+    assert err.reason == "duplicate_return_column"
+    assert err.suggestion == _DUPLICATE_ALIAS_HINT
+
+
 def test_classify_projection_column_mismatch():
     err = AgeFlavour().classify_execution_error(
         "return row and column definition list do not match",
