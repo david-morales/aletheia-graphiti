@@ -7,14 +7,19 @@ the base `raise NotImplementedError` and is out of scope for this phase
 
 Write strategy (avoids AGE's cypher() parameter friction):
   * Graph mutations inline a safely-escaped Cypher map literal (`_map`/`_cy`).
-    Node/edge labels collapse to AGE's single-label model — the ontology type
-    is kept in a `labels` property and the base label is `:Entity`/`:Episodic`;
-    multi-label traversal is a later (Phase 1) concern.
+    Node/edge labels collapse to AGE's single-label model — the full ontology
+    list is kept in a `labels` property, and the ONE stored label is the LEAF
+    class (`_node_label`), NOT `:Entity`; `:Entity` is only the fallback for a
+    node with no typed class. Episodes are the exception: they are always
+    `:Episodic`. So a pattern may pin an episode by label but must reach an
+    entity by uuid alone — matching a typed entity as `(n:Entity {uuid: ...})`
+    silently finds nothing. Multi-label traversal is a later (Phase 1) concern.
   * Embeddings + keyword content go to the uuid-keyed pgvector/tsvector shadow
     tables via typed asyncpg parameters.
 """
 
 import json
+import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable
@@ -22,6 +27,8 @@ from datetime import datetime
 from typing import Any
 
 from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+
+logger = logging.getLogger(__name__)
 
 # Property keys handled explicitly during hydration; anything else in a node's
 # stored map is treated as a custom attribute.
@@ -523,6 +530,50 @@ class AGEGraphOperations(GraphOperationsInterface):
         return {k: v for k, v in by_uuid.items() if v is not None}
 
     # ------------------------------------------------------------ episodic edges
+    async def _merge_mentions_edge(self, driver: Any, props: dict[str, Any]) -> None:
+        """MERGE one MENTIONS edge from `props`; shared by both episodic-edge writers.
+
+        The target is matched LABEL-FREE by uuid, mirroring the entity-edge writer
+        (`_write_entity_edge_from_fields`). It used to be `(n:Entity {uuid: ...})`,
+        which no typed entity can satisfy: AGE stores exactly one label per vertex
+        and `_node_label` makes it the LEAF ontology class, so the MATCH found
+        nothing and the MERGE no-opped for every typed target. The leaf label is
+        not a stable fact about a node — it varies with the node's ontology class —
+        so it cannot be part of a lookup key; the uuid is what identifies a node
+        here, and the label constraint only ever excluded valid targets. (uuids are
+        *intended* to be unique but are not guaranteed so in practice: duplicate-uuid
+        siblings are a known integrity defect with their own repair CLI. That affects
+        HOW MANY vertices this MERGE can reach, not whether the label belongs in the
+        pattern.)
+
+        `n.labels IS NOT NULL` keeps the widened pattern from reaching Graphiti's own
+        bookkeeping vertices: every entity write persists a `labels` list (verified on
+        the live bed for typed, untyped, empty and no-Entity-base label lists, through
+        both the projection and bulk writers) while `episodic_node_save` never writes
+        one. Without it a corrupt `target_node_uuid` naming an episode — or the source
+        episode itself — would MERGE an episode-to-episode MENTIONS edge, which the old
+        `:Entity` pattern made structurally impossible. Same discriminator the MCP AGE
+        flavour uses to exclude bookkeeping from its profile probes.
+
+        The RETURN + warning exist because that failure was SILENT — a MERGE whose
+        MATCH is empty writes nothing and raises nothing. A genuine miss (an edge
+        pointing at an episode or entity that was never persisted) is a real
+        integrity problem, so it belongs in the logs rather than in a later count.
+        """
+        records, _, _ = await driver.execute_query(
+            f'MATCH (e:Episodic), (n) '
+            f'WHERE e.uuid = {_cy(props["source_node_uuid"])} '
+            f'AND n.uuid = {_cy(props["target_node_uuid"])} '
+            f'AND n.labels IS NOT NULL '
+            f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(props["uuid"])}}}]->(n) '
+            f'SET r += {_map(props)} RETURN r.uuid AS uuid'
+        )
+        if not records:
+            logger.warning(
+                'MENTIONS edge %s not written: no match for episode %s -> entity %s',
+                props['uuid'], props['source_node_uuid'], props['target_node_uuid'],
+            )
+
     async def episodic_edge_save(self, edge: Any, driver: Any) -> None:
         props = {
             'uuid': edge.uuid,
@@ -531,11 +582,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'target_node_uuid': edge.target_node_uuid,
             'created_at': edge.created_at.isoformat(),
         }
-        await driver.execute_query(
-            f'MATCH (e:Episodic {{uuid: {_cy(edge.source_node_uuid)}}}), '
-            f'(n:Entity {{uuid: {_cy(edge.target_node_uuid)}}}) '
-            f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(edge.uuid)}}}]->(n) SET r += {_map(props)}'
-        )
+        await self._merge_mentions_edge(driver, props)
 
     async def get_mentioned_nodes(self, driver: Any, episodes: list[Any]) -> list[Any]:
         from graphiti_core.nodes import EntityNode
@@ -688,11 +735,7 @@ class AGEGraphOperations(GraphOperationsInterface):
             'target_node_uuid': d['target_node_uuid'],
             'created_at': self._iso(d.get('created_at')),
         }
-        await driver.execute_query(
-            f'MATCH (e:Episodic {{uuid: {_cy(d["source_node_uuid"])}}}), '
-            f'(n:Entity {{uuid: {_cy(d["target_node_uuid"])}}}) '
-            f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(d["uuid"])}}}]->(n) SET r += {_map(props)}'
-        )
+        await self._merge_mentions_edge(driver, props)
 
     async def node_save_bulk(
         self, _cls: Any, driver: Any, transaction: Any, nodes: list[Any], batch_size: int = 100
