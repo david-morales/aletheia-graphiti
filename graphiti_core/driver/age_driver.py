@@ -55,6 +55,11 @@ def _inline_cypher_params(query: str, params: dict[str, Any]) -> str:
     return _PARAM_RE.sub(_repl, query)
 
 
+def _is_word_char(ch: str) -> bool:
+    """True for identifier characters — used for keyword word-boundary checks."""
+    return bool(ch) and (ch.isalnum() or ch == '_')
+
+
 def _dollar_quote_tag(query: str) -> str:
     """A dollar-quote tag (``$q<hex8>$``) that does not occur inside ``query``.
 
@@ -175,19 +180,65 @@ class AGEDriver(GraphDriver):
             parts.append(''.join(buf))
         return parts
 
+    @staticmethod
+    def _cut_at_top_level_union(clause: str) -> str:
+        """Truncate ``clause`` at the first top-level ``UNION`` keyword.
+
+        A UNION query has one RETURN per branch, and the branches MUST share their
+        aliases — that is what makes a UNION well-formed. Capturing past the first
+        branch would therefore repeat every alias in the generated
+        ``AS (col agtype, …)`` list, which PostgreSQL rejects with
+        ``column name "…" specified more than once``. PostgreSQL itself names the
+        columns of a set operation after its FIRST arm, so the first branch's
+        RETURN is the correct source.
+
+        Scans in the style of ``_split_top_commas`` — bracket depth, plus quote
+        state so a ``UNION`` inside a string literal is never a branch boundary.
+        """
+        depth = 0
+        quote: str | None = None
+        i = 0
+        n = len(clause)
+        while i < n:
+            ch = clause[i]
+            if quote is not None:
+                if ch == '\\':
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            elif ch in '\'"':
+                quote = ch
+            elif ch in '([{':
+                depth += 1
+            elif ch in ')]}':
+                depth -= 1
+            elif depth == 0 and ch in 'uU' and clause[i : i + 5].lower() == 'union':
+                before = clause[i - 1] if i else ''
+                after = clause[i + 5 : i + 6]
+                if not _is_word_char(before) and not _is_word_char(after):
+                    return clause[:i]
+            i += 1
+        return clause
+
     @classmethod
     def _columns_from_return(cls, cypher: str) -> list[str] | None:
         """Best-effort extraction of output column names from a RETURN clause.
 
-        Phase 0: handles the simple, controlled queries this driver issues.
-        Robust parsing for arbitrary user Cypher is deferred to the run_cypher
-        MCP phase.
+        Phase 0: handles the simple, controlled queries this driver issues, plus
+        UNION queries (columns come from the first branch — see
+        ``_cut_at_top_level_union``). Robust parsing for arbitrary user Cypher is
+        deferred to the run_cypher MCP phase.
         """
         m = re.search(r'\breturn\b(.*)$', cypher, re.IGNORECASE | re.DOTALL)
         if not m:
             return None
+        # Cut at UNION *before* stripping ORDER BY / LIMIT / SKIP: those may sit on a
+        # later branch, in which case stripping first would leave the branch text in.
         clause = re.split(
-            r'\b(order\s+by|limit|skip)\b', m.group(1), flags=re.IGNORECASE
+            r'\b(order\s+by|limit|skip)\b',
+            cls._cut_at_top_level_union(m.group(1)),
+            flags=re.IGNORECASE,
         )[0]
         cols: list[str] = []
         for i, part in enumerate(cls._split_top_commas(clause)):
