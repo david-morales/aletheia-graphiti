@@ -50,8 +50,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-group dev --extra providers --extra azure
 
 # Force correct graphiti fork version (CLAUDE.md rule #1: never upstream PyPI)
+# redis capped <8.1: redis 8.1.0 injects himport_registry into the async pool's
+# connection_kwargs, which falkordb<=1.6.2 Is_Cluster forwards verbatim to the
+# sync Redis constructor — every async FalkorDB() init dies (aletheia BUG-35).
 RUN uv pip install --no-cache-dir --force-reinstall \
-    "graphiti-core[falkordb,age] @ git+https://github.com/david-morales/aletheia-graphiti.git@aletheia"
+    "graphiti-core[falkordb,age] @ git+https://github.com/david-morales/aletheia-graphiti.git@aletheia" \
+    "redis<8.1"
 
 # Store graphiti-core version
 RUN echo "${GRAPHITI_CORE_VERSION}" > /app/mcp/.graphiti-core-version
