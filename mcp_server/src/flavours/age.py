@@ -720,6 +720,21 @@ class AgeFlavour(BaseFlavour):
     def profile_queries(self) -> dict[str, str]:
         return dict(_AGE_PROFILE_QUERIES)
 
+    def census_queries(self) -> dict[str, str]:
+        # The stored n.labels list is the hierarchy; labels(n) would hide every
+        # abstract supertype from the census. IS NOT NULL excludes Episodic.
+        return {
+            "label_counts": (
+                "MATCH (n) WHERE n.labels IS NOT NULL "
+                "RETURN n.labels AS lbls, count(n) AS cnt"
+            ),
+            "rel_patterns": (
+                "MATCH (s)-[r:`{rel_type}`]->(t) "
+                "WHERE s.labels IS NOT NULL AND t.labels IS NOT NULL "
+                "RETURN DISTINCT s.labels AS source_labels, t.labels AS target_labels LIMIT 20"
+            ),
+        }
+
     def subgraph_node_query(self) -> str:
         # No :Entity scope (only a handful of AGE vertices carry it); the stored
         # n.labels list is the hierarchy; `IS NOT NULL` excludes Episodic.

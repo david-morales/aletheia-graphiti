@@ -1779,14 +1779,18 @@ async def get_schema() -> SchemaResponse:
         driver = client.driver
         group_id = graphiti_service.config.graphiti.group_id
         internal_labels = {'Entity', 'Episodic', 'Community'}
+        # The FLAVOUR owns every dialect-sensitive query text below (censuses,
+        # attribute_keys); the parsing is shared because the variants project the
+        # same aliases. On AGE `labels(n)` returns only the ontology leaf, so a
+        # hardcoded base census hid every abstract supertype from the schema.
+        flavour = graphiti_service.flavour
+        census = flavour.census_queries()
 
         # 1. Label counts (single-pass)
-        label_records, _, _ = await driver.execute_query(
-            'MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt'
-        )
+        label_records, _, _ = await driver.execute_query(census['label_counts'])
         label_counts: dict[str, int] = {}
         for rec in label_records:
-            for label in rec.get('lbls', []):
+            for label in rec.get('lbls') or []:
                 if label not in internal_labels:
                     label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
@@ -1795,7 +1799,6 @@ async def get_schema() -> SchemaResponse:
         #    documented aletheia-extraction contract (kept unchanged). `attribute_keys` = the
         #    canonical ADR-019 R5 domain-queryable keys, flavour-specific (FalkorDB: top-level
         #    minus reserved bookkeeping; AGE: keys of the nested `attributes` agtype map).
-        flavour = graphiti_service.flavour
         node_labels: dict[str, dict] = {}
         for label in label_counts:
             # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
@@ -1828,12 +1831,12 @@ async def get_schema() -> SchemaResponse:
         relationship_types: dict[str, dict] = {}
         for rel_type in rel_counts:
             pattern_records, _, _ = await driver.execute_query(
-                f'MATCH (s)-[r:`{rel_type}`]->(t) RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20'
+                census['rel_patterns'].format(rel_type=rel_type)
             )
             patterns = []
             for rec in pattern_records:
-                src = [l for l in rec.get('source_labels', []) if l not in internal_labels]
-                tgt = [l for l in rec.get('target_labels', []) if l not in internal_labels]
+                src = [l for l in rec.get('source_labels') or [] if l not in internal_labels]
+                tgt = [l for l in rec.get('target_labels') or [] if l not in internal_labels]
                 if src and tgt:
                     patterns.append([src[0], tgt[0]])
 

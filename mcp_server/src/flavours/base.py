@@ -76,6 +76,7 @@ class Flavour(Protocol):
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
     def classify_execution_error(self, message: str, query: str | None = None) -> CypherError: ...
     def profile_queries(self) -> dict[str, str]: ...
+    def census_queries(self) -> dict[str, str]: ...
     def subgraph_node_query(self) -> str: ...
     def subgraph_edge_query(self, uuids: list[str]) -> str: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
@@ -111,6 +112,21 @@ class BaseFlavour:
     def profile_queries(self) -> dict[str, str]:
         """Cypher for the four startup domain-profile probes, keyed by probe name."""
         return dict(_BASE_PROFILE_QUERIES)
+
+    def census_queries(self) -> dict[str, str]:
+        """get_schema's structural censuses. `rel_patterns` carries a {rel_type}
+        placeholder (str.format) — rel_type values come from the graph itself.
+
+        Both variants MUST project the same aliases (`lbls`/`cnt`,
+        `source_labels`/`target_labels`): get_schema parses either flavour's rows
+        with one shared loop."""
+        return {
+            "label_counts": "MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt",
+            "rel_patterns": (
+                "MATCH (s)-[r:`{rel_type}`]->(t) "
+                "RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20"
+            ),
+        }
 
     def subgraph_node_query(self) -> str:
         """Node sample for the UI Knowledge view. Columns are the wire contract:
