@@ -78,6 +78,7 @@ class Flavour(Protocol):
     def profile_queries(self) -> dict[str, str]: ...
     def census_queries(self) -> dict[str, str]: ...
     def census_notes(self) -> list[str]: ...
+    def ontology_queries(self) -> dict[str, str]: ...
     def subgraph_node_query(self) -> str: ...
     def subgraph_edge_query(self, uuids: list[str]) -> str: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
@@ -142,6 +143,75 @@ class BaseFlavour:
         Empty here: on openCypher/FalkorDB every censused label is matchable with
         `(n:Label)`, so the schema needs no reading instructions."""
         return []
+
+    def ontology_queries(self) -> dict[str, str]:
+        """Read path for the three ontology tiers, keyed by tier.
+
+        `class_context` serves get_ontology_documentation and explore_ontology
+        (the full projection); `structure` serves get_ontology_structure (the
+        lightweight map tier, whose shape is frozen — no uuid, no
+        properties/identity); `relates` serves the edge-derived relationships
+        both full tiers union in.
+
+        Both variants MUST project the same aliases — `_ontology_full_entry`,
+        `_combine_relationship_entries` and the structure loop are shared across
+        flavours, and they read rows by key:
+            class_context -> uuid, name, ontology_type, inherits_from, summary,
+                             alt_labels, source_entity, target_entity, examples,
+                             properties, identity
+            structure     -> the same, minus uuid / properties / identity
+            relates       -> source, name, fact, target
+
+        These texts are FalkorDB-shaped: every descriptive ontology field is a
+        TOP-LEVEL node property, and relationships are RELATES_TO edges whose
+        `name` property carries the real relation name. Apache AGE stores both
+        differently (nested `attributes` map; the relation name becomes the edge
+        LABEL), which is why the text lives behind the flavour at all.
+
+        `relates` deliberately does NOT filter SUBCLASS_OF. Hierarchy edges are
+        part of this row set on every flavour, and `_combine_relationship_entries`
+        drops them downstream — ONE filter shared by both arms. Moving that
+        decision into a flavour would make the two arms disagree about what the
+        query returns, which the shared parsing cannot survive.
+        """
+        return {
+            # `properties` (a JSON string) and `identity` (a bool) may be
+            # null/absent on graphs built before v1.0.3 — the parsing defaults.
+            "class_context": (
+                "MATCH (n:OntologyClass) "
+                "RETURN n.uuid AS uuid, "
+                "n.name AS name, "
+                "n.ontology_type AS ontology_type, "
+                "n.inherits_from AS inherits_from, "
+                "n.summary AS summary, "
+                "n.alt_labels AS alt_labels, "
+                "n.source_entity AS source_entity, "
+                "n.target_entity AS target_entity, "
+                "n.examples AS examples, "
+                "n.properties AS properties, "
+                "n.identity AS identity"
+            ),
+            "structure": (
+                "MATCH (n:OntologyClass) "
+                "RETURN n.name AS name, "
+                "n.ontology_type AS ontology_type, "
+                "n.inherits_from AS inherits_from, "
+                "n.summary AS summary, "
+                "n.alt_labels AS alt_labels, "
+                "n.source_entity AS source_entity, "
+                "n.target_entity AS target_entity, "
+                "n.examples AS examples"
+            ),
+            # Ontology families that model relationships as owl:ObjectProperty
+            # store them as edges between OntologyClass nodes (no
+            # relationship_class nodes at all). The edges carry `name`
+            # (e.g. ES_DETENIDO) and `fact`
+            # (e.g. "Persona ES_DETENIDO Detencion: <prose>").
+            "relates": (
+                "MATCH (a:OntologyClass)-[r:RELATES_TO]->(b:OntologyClass) "
+                "RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target"
+            ),
+        }
 
     def subgraph_node_query(self) -> str:
         """Node sample for the UI Knowledge view. Columns are the wire contract:

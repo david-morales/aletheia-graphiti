@@ -1443,33 +1443,13 @@ async def search_ontology(
         return ErrorResponse(error=f'Ontology search error: {e}')
 
 
-# Shared projection for the full-detail ontology tiers
-# (get_ontology_documentation and explore_ontology). Includes the Task-1
-# attributes `properties` (JSON string) and `identity` (bool) — both may be
-# null/absent on graphs built before v1.0.3.
-_ONTOLOGY_CLASS_CONTEXT_QUERY = (
-    'MATCH (n:OntologyClass) '
-    'RETURN n.uuid AS uuid, '
-    'n.name AS name, '
-    'n.ontology_type AS ontology_type, '
-    'n.inherits_from AS inherits_from, '
-    'n.summary AS summary, '
-    'n.alt_labels AS alt_labels, '
-    'n.source_entity AS source_entity, '
-    'n.target_entity AS target_entity, '
-    'n.examples AS examples, '
-    'n.properties AS properties, '
-    'n.identity AS identity'
-)
-
-# Ontology families that model relationships as owl:ObjectProperty store them
-# as RELATES_TO EDGES between OntologyClass nodes (no relationship_class nodes
-# at all). The edges carry `name` (e.g. ES_DETENIDO) and `fact`
-# (e.g. "Persona ES_DETENIDO Detencion: <prose>").
-_ONTOLOGY_RELATES_TO_QUERY = (
-    'MATCH (a:OntologyClass)-[r:RELATES_TO]->(b:OntologyClass) '
-    'RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target'
-)
+# The three ontology tiers read their rows through `flavour.ontology_queries()`
+# (keys: class_context / structure / relates). The FLAVOUR owns the query text
+# because the storage shape is dialect-specific — FalkorDB keeps every
+# descriptive ontology field as a top-level node property and stores
+# relationships as RELATES_TO edges; Apache AGE nests the fields in an
+# `attributes` map and materializes the relation name as the edge LABEL. The
+# parsing below is shared, because every variant projects the same aliases.
 
 
 def _parse_properties(raw: str | None) -> list[dict[str, Any]]:
@@ -1615,10 +1595,13 @@ async def explore_ontology(
     try:
         ontology_client = graphiti_service.ontology_client
         ontology_group_id = graphiti_service.config.graphiti.ontology_graph
+        ontology_queries = graphiti_service.flavour.ontology_queries()
 
         # ONE query: every ontology class, full projection, held in memory
         # (ontology graphs are small).
-        rows, _, _ = await ontology_client.driver.execute_query(_ONTOLOGY_CLASS_CONTEXT_QUERY)
+        rows, _, _ = await ontology_client.driver.execute_query(
+            ontology_queries['class_context']
+        )
         by_name: dict[str, dict[str, Any]] = {
             r.get('name'): r for r in rows if r.get('name')
         }
@@ -1659,7 +1642,7 @@ async def explore_ontology(
             r for r in rows if (r.get('ontology_type') or '') == 'relationship_class'
         ]
         edge_records, _, _ = await ontology_client.driver.execute_query(
-            _ONTOLOGY_RELATES_TO_QUERY
+            ontology_queries['relates']
         )
         rel_rows = _combine_relationship_entries(node_rel_rows, edge_records)
         outgoing = [
@@ -2128,17 +2111,11 @@ async def get_ontology_structure() -> dict[str, Any]:
         driver = ontology_client.driver
         ontology_graph_name = graphiti_service.config.graphiti.ontology_graph or ''
 
-        # Query 1: all ontology classes
+        # Query 1: all ontology classes. Flavour-owned text, frozen SHAPE: the
+        # map tier stays lightweight (no uuid, no properties/identity) on every
+        # flavour — see Flavour.ontology_queries().
         class_records, _, _ = await driver.execute_query(
-            'MATCH (n:OntologyClass) '
-            'RETURN n.name AS name, '
-            'n.ontology_type AS ontology_type, '
-            'n.inherits_from AS inherits_from, '
-            'n.summary AS summary, '
-            'n.alt_labels AS alt_labels, '
-            'n.source_entity AS source_entity, '
-            'n.target_entity AS target_entity, '
-            'n.examples AS examples'
+            graphiti_service.flavour.ontology_queries()['structure']
         )
 
         entity_classes = []
@@ -2202,8 +2179,11 @@ async def get_ontology_documentation() -> dict[str, Any]:
     try:
         driver = graphiti_service.ontology_client.driver
         ontology_graph_name = graphiti_service.config.graphiti.ontology_graph or ''
+        ontology_queries = graphiti_service.flavour.ontology_queries()
 
-        class_records, _, _ = await driver.execute_query(_ONTOLOGY_CLASS_CONTEXT_QUERY)
+        class_records, _, _ = await driver.execute_query(
+            ontology_queries['class_context']
+        )
 
         entity_classes = []
         relationship_classes = []
@@ -2215,10 +2195,10 @@ async def get_ontology_documentation() -> dict[str, Any]:
                 # class, abstract_class, or any other entity-level type
                 entity_classes.append(entry)
 
-        # Object-property ontologies store relationships as RELATES_TO edges
-        # between OntologyClass nodes instead of reified relationship_class
-        # nodes. Union both sources; node-derived entries win on duplicates.
-        edge_records, _, _ = await driver.execute_query(_ONTOLOGY_RELATES_TO_QUERY)
+        # Object-property ontologies store relationships as edges between
+        # OntologyClass nodes instead of reified relationship_class nodes.
+        # Union both sources; node-derived entries win on duplicates.
+        edge_records, _, _ = await driver.execute_query(ontology_queries['relates'])
         relationship_classes = _combine_relationship_entries(
             relationship_classes, edge_records
         )

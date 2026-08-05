@@ -136,6 +136,12 @@ async def test_get_schema_canonical_falkordb(monkeypatch):
 
     assert "ES_DETENIDO" in schema["relationship_types"]
     assert schema["relationship_types"]["ES_DETENIDO"]["count"] == 2
+    # The POSITIONAL fallback in _pick_endpoint, pinned on the arm that uses it.
+    # FalkorDB announces no `source_leaf` column, so the endpoint comes from the
+    # filtered label list — ["Entity","Persona"] -> "Persona". Nothing covered this
+    # on the falkor side: a _pick_endpoint that returned None with no leaf column
+    # left `patterns` EMPTY here and only the AGE test noticed.
+    assert schema["relationship_types"]["ES_DETENIDO"]["patterns"] == [["Persona", "Detencion"]]
 
 
 @pytest.mark.asyncio

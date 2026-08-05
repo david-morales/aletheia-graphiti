@@ -759,6 +759,65 @@ class AgeFlavour(BaseFlavour):
             "the LEAF label.",
         ]
 
+    def ontology_queries(self) -> dict[str, str]:
+        # Two AGE storage facts, both proven on the live bench ontology graph:
+        #
+        # (a) NESTED ATTRIBUTES. Only uuid/name/summary/group_id/labels/created_at
+        #     are top-level node properties; every descriptive ontology field lives
+        #     in the queryable `attributes` agtype map (dialect_reference,
+        #     "Attributes & agtype"). The base text read them top-level, so
+        #     `n.ontology_type` was NULL on 30/30 classes while
+        #     `n.attributes.ontology_type` was populated on 30/30 — the whole
+        #     structured payload came back empty and NOTHING errored.
+        #
+        # (b) TYPED EDGES. AGE materializes the relationship NAME as the edge
+        #     LABEL (graphiti_core age_graph_operations._edge_label), so this graph
+        #     has ZERO `RELATES_TO` edges: `[r:RELATES_TO]` between OntologyClass
+        #     nodes matched 0 rows while a generic match found 918 typed edges.
+        #     `type(r)` is the relation name here.
+        #
+        # Aliases are IDENTICAL to the base variant's (the parsing is shared), all
+        # lowercase snake_case and unique, as AGE requires.
+        #
+        # LIMITATION: `_edge_label` falls back to `RELATES_TO` for a relation name
+        # that is not identifier-safe, and `type(r)` then reports the fallback
+        # rather than the stored `r.name`. Ontology object-property names are
+        # identifier-safe by construction, so this cannot bite the ontology graph;
+        # it would matter only if this query were ever pointed at narrative-
+        # extracted edges.
+        nested = (
+            "n.attributes.ontology_type AS ontology_type, "
+            "n.attributes.inherits_from AS inherits_from, "
+            "n.summary AS summary, "
+            "n.attributes.alt_labels AS alt_labels, "
+            "n.attributes.source_entity AS source_entity, "
+            "n.attributes.target_entity AS target_entity, "
+            "n.attributes.examples AS examples"
+        )
+        return {
+            "class_context": (
+                "MATCH (n:OntologyClass) "
+                "RETURN n.uuid AS uuid, "
+                "n.name AS name, "
+                f"{nested}, "
+                "n.attributes.properties AS properties, "
+                "n.attributes.identity AS identity"
+            ),
+            "structure": (
+                "MATCH (n:OntologyClass) "
+                "RETURN n.name AS name, "
+                f"{nested}"
+            ),
+            # No SUBCLASS_OF filter: hierarchy edges are in the base row set too,
+            # and _combine_relationship_entries drops them for both arms.
+            # `fact` is a top-level EDGE property on AGE (edge_save writes it into
+            # the edge props; only custom `attributes` nest), so it reads plainly.
+            "relates": (
+                "MATCH (a:OntologyClass)-[r]->(b:OntologyClass) "
+                "RETURN a.name AS source, type(r) AS name, r.fact AS fact, b.name AS target"
+            ),
+        }
+
     def subgraph_node_query(self) -> str:
         # No :Entity scope (only a handful of AGE vertices carry it); the stored
         # n.labels list is the hierarchy; `IS NOT NULL` excludes Episodic.
