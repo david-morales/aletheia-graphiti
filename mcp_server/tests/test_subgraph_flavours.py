@@ -224,8 +224,31 @@ def test_age_ontology_queries_read_the_nested_attributes_map_and_typed_edges():
     q = AgeFlavour().ontology_queries()
     assert "n.attributes.ontology_type AS ontology_type" in q["class_context"]
     assert "n.attributes.inherits_from AS inherits_from" in q["class_context"]
-    assert "RELATES_TO" not in q["relates"]
-    assert "type(r)" in q["relates"]
+    # The edge pattern loses its TYPE CONSTRAINT (AGE materializes the relation
+    # name as the label, so `[r:RELATES_TO]` reaches almost nothing)...
+    assert "[r:RELATES_TO]" not in q["relates"]
+    assert "-[r]->" in q["relates"]
+
+
+def test_age_relates_reads_the_stored_name_not_the_edge_label():
+    """`r.name`, not `type(r)` — the label is lossy and the property never is.
+
+    `_edge_label`'s `_IDENT_RE` is ASCII-only (`^[A-Za-z_][A-Za-z0-9_]*$`) and the
+    ontology loader does no accent folding, so an accented relation
+    (INVOLUCRA_MUNICIÓN) is stored under the RELATES_TO FALLBACK label while
+    `r.name` keeps the true name — which BOTH AGE edge write paths persist
+    top-level, in the same props dict the `fact` read relies on. Reading `type(r)`
+    would rename that relation to "RELATES_TO" and, because
+    _edge_relationship_entry rebuilds the fact prefix from this name, also leave
+    its summary unstripped.
+
+    It also makes the AGE text a token-for-token mirror of the base: the ONLY
+    difference between the two `relates` queries is the edge type constraint.
+    """
+    q = AgeFlavour().ontology_queries()["relates"]
+    assert "r.name AS name" in q, q
+    assert "type(r)" not in q, q
+    assert q == BASE_RELATES_QUERY.replace("[r:RELATES_TO]", "[r]"), q
 
 
 def test_base_ontology_queries_are_byte_identical_to_the_shipped_texts():

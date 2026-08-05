@@ -774,17 +774,20 @@ class AgeFlavour(BaseFlavour):
         #     LABEL (graphiti_core age_graph_operations._edge_label), so this graph
         #     has ZERO `RELATES_TO` edges: `[r:RELATES_TO]` between OntologyClass
         #     nodes matched 0 rows while a generic match found 918 typed edges.
-        #     `type(r)` is the relation name here.
+        #     So the edge pattern drops its TYPE CONSTRAINT — and only that. The
+        #     relation NAME still comes from `r.name`, exactly as on the base
+        #     flavour: both AGE edge write paths persist `name` top-level (the same
+        #     props dict the `fact` read below relies on), and `r.name` is the ONE
+        #     source that is never lossy. `type(r)` is NOT a general substitute for
+        #     it here: `_edge_label`'s identifier test is ASCII-only, so a relation
+        #     whose name carries an accent (INVOLUCRA_MUNICIÓN — the ontology loader
+        #     does no accent folding) is stored under the `RELATES_TO` FALLBACK
+        #     label. Reading `type(r)` would rename that relation to "RELATES_TO"
+        #     and, because _edge_relationship_entry rebuilds the fact prefix from
+        #     the name, leave its summary unstripped as well.
         #
         # Aliases are IDENTICAL to the base variant's (the parsing is shared), all
         # lowercase snake_case and unique, as AGE requires.
-        #
-        # LIMITATION: `_edge_label` falls back to `RELATES_TO` for a relation name
-        # that is not identifier-safe, and `type(r)` then reports the fallback
-        # rather than the stored `r.name`. Ontology object-property names are
-        # identifier-safe by construction, so this cannot bite the ontology graph;
-        # it would matter only if this query were ever pointed at narrative-
-        # extracted edges.
         nested = (
             "n.attributes.ontology_type AS ontology_type, "
             "n.attributes.inherits_from AS inherits_from, "
@@ -808,13 +811,17 @@ class AgeFlavour(BaseFlavour):
                 "RETURN n.name AS name, "
                 f"{nested}"
             ),
+            # A token-for-token mirror of the base text; the ONLY difference is
+            # the dropped `:RELATES_TO` type constraint.
             # No SUBCLASS_OF filter: hierarchy edges are in the base row set too,
-            # and _combine_relationship_entries drops them for both arms.
-            # `fact` is a top-level EDGE property on AGE (edge_save writes it into
-            # the edge props; only custom `attributes` nest), so it reads plainly.
+            # and _combine_relationship_entries drops them for both arms — that
+            # shared filter keys on this same `name` value, which is another reason
+            # it must be the stored name and not the label.
+            # `name` and `fact` are top-level EDGE properties on AGE (edge_save
+            # writes them into the edge props; only custom `attributes` nest).
             "relates": (
                 "MATCH (a:OntologyClass)-[r]->(b:OntologyClass) "
-                "RETURN a.name AS source, type(r) AS name, r.fact AS fact, b.name AS target"
+                "RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target"
             ),
         }
 
