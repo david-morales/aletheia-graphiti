@@ -54,6 +54,17 @@ _BASE_PROFILE_QUERIES: dict[str, str] = {
 }
 
 
+_UUID_SAFE = frozenset("0123456789abcdefABCDEF-")
+
+
+def _uuid_list_literal(uuids: list[str]) -> str:
+    """Inline a sanitized, quoted uuid list. Inlined (not a $param) because AGE's
+    param path is proven for scalars only (_AGE_PROFILE_QUERIES); values come from
+    our own node query, sanitization is defense in depth."""
+    safe = [u for u in uuids if u and set(u) <= _UUID_SAFE]
+    return "[" + ", ".join(f'"{u}"' for u in safe) + "]"
+
+
 @runtime_checkable
 class Flavour(Protocol):
     name: str
@@ -65,6 +76,8 @@ class Flavour(Protocol):
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
     def classify_execution_error(self, message: str, query: str | None = None) -> CypherError: ...
     def profile_queries(self) -> dict[str, str]: ...
+    def subgraph_node_query(self) -> str: ...
+    def subgraph_edge_query(self, uuids: list[str]) -> str: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
     async def execute_graph_query(
         self, driver: Any, query: str
@@ -98,6 +111,28 @@ class BaseFlavour:
     def profile_queries(self) -> dict[str, str]:
         """Cypher for the four startup domain-profile probes, keyed by probe name."""
         return dict(_BASE_PROFILE_QUERIES)
+
+    def subgraph_node_query(self) -> str:
+        """Node sample for the UI Knowledge view. Columns are the wire contract:
+        uuid, name, labels (the hierarchy), created_at, summary, group_id."""
+        return (
+            "MATCH (n:Entity) "
+            "RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, "
+            "n.created_at AS created_at, n.summary AS summary, n.group_id AS group_id "
+            "LIMIT $limit"
+        )
+
+    def subgraph_edge_query(self, uuids: list[str]) -> str:
+        """Edges among the sampled nodes. Columns: uuid, name, fact,
+        source_node_uuid, target_node_uuid, created_at."""
+        lit = _uuid_list_literal(uuids)
+        return (
+            f"MATCH (s:Entity)-[r]->(t:Entity) "
+            f"WHERE s.uuid IN {lit} AND t.uuid IN {lit} "
+            "RETURN r.uuid AS uuid, type(r) AS name, r.fact AS fact, "
+            "s.uuid AS source_node_uuid, t.uuid AS target_node_uuid, "
+            "r.created_at AS created_at LIMIT $limit"
+        )
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Top-level property keys for a label, minus reserved bookkeeping keys."""

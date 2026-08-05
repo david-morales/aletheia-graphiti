@@ -154,6 +154,38 @@ class SchemaResponse(TypedDict, total=False):
     error: str | None                   # ADR-015 R4 error path
 
 
+class SubgraphNode(TypedDict, total=False):
+    uuid: str | None
+    name: str | None
+    labels: list[str] | None   # full logical hierarchy on BOTH flavours (internal labels included)
+    created_at: str | None
+    summary: str | None
+    group_id: str | None
+
+
+class SubgraphEdge(TypedDict, total=False):
+    uuid: str | None
+    name: str | None           # type(r)
+    fact: str | None
+    source_node_uuid: str | None
+    target_node_uuid: str | None
+    created_at: str | None
+
+
+class SubgraphResponse(TypedDict, total=False):
+    """sample_subgraph payload (Step 2 UI alignment): a flavour-normalized node/edge sample.
+
+    `labels` carries the full logical hierarchy on both flavours (FalkorDB:
+    labels(n); AGE: the stored n.labels list). Same nullability rule as the
+    module note above — every field `X | None`.
+    """
+    type: str | None           # always "subgraph"
+    graph_name: str | None
+    nodes: list[SubgraphNode] | None
+    edges: list[SubgraphEdge] | None
+    error: str | None          # ADR-015 R4 error path
+
+
 class CypherResultResponse(TypedDict, total=False):
     """run_cypher envelope (ADR-019 R2) — success + error keys in one type.
 

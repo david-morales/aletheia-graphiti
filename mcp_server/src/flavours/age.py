@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
+from flavours.base import BaseFlavour, RESERVED_KEYS, _uuid_list_literal  # noqa: F401
 from utils.cypher import (
     _BACKTICK_IDENT_RE,
     _NON_CODE_SPAN_RE,
@@ -719,6 +719,28 @@ class AgeFlavour(BaseFlavour):
 
     def profile_queries(self) -> dict[str, str]:
         return dict(_AGE_PROFILE_QUERIES)
+
+    def subgraph_node_query(self) -> str:
+        # No :Entity scope (only a handful of AGE vertices carry it); the stored
+        # n.labels list is the hierarchy; `IS NOT NULL` excludes Episodic.
+        return (
+            "MATCH (n) WHERE n.labels IS NOT NULL "
+            "RETURN n.uuid AS uuid, n.name AS name, n.labels AS labels, "
+            "n.created_at AS created_at, n.summary AS summary, n.group_id AS group_id "
+            "LIMIT $limit"
+        )
+
+    def subgraph_edge_query(self, uuids: list[str]) -> str:
+        # Unlabelled endpoints; the uuid IN-list already restricts both ends to
+        # sampled entity nodes, which is what excludes MENTIONS/Episodic edges.
+        lit = _uuid_list_literal(uuids)
+        return (
+            f"MATCH (s)-[r]->(t) "
+            f"WHERE s.uuid IN {lit} AND t.uuid IN {lit} "
+            "RETURN r.uuid AS uuid, type(r) AS name, r.fact AS fact, "
+            "s.uuid AS source_node_uuid, t.uuid AS target_node_uuid, "
+            "r.created_at AS created_at LIMIT $limit"
+        )
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Keys of the nested `attributes` agtype map, UNIONED across a small sample."""
