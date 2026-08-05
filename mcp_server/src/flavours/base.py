@@ -81,6 +81,9 @@ class Flavour(Protocol):
     def ontology_queries(self) -> dict[str, str]: ...
     def subgraph_node_query(self) -> str: ...
     def subgraph_edge_query(self, uuids: list[str]) -> str: ...
+    def node_sample_query(self) -> str: ...
+    def flatten_node_props(self, props: dict[str, Any]) -> dict[str, Any]: ...
+    def property_accessor(self, prop: str) -> str: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
     async def execute_graph_query(
         self, driver: Any, query: str
@@ -234,6 +237,30 @@ class BaseFlavour:
             "s.uuid AS source_node_uuid, t.uuid AS target_node_uuid, "
             "r.created_at AS created_at LIMIT $limit"
         )
+
+    def node_sample_query(self) -> str:
+        """Per-label node sample for the profiler. `{label}` / `{limit}` (str.format).
+
+        The projection MUST land in a column the caller can read back as `n`: AGE
+        names an unaliased variable projection `col0`, so a flavour that needs an
+        explicit alias says so here."""
+        return 'MATCH (n:`{label}`) RETURN n LIMIT {limit}'
+
+    def flatten_node_props(self, props: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one sampled node's properties to a flat domain-field mapping.
+
+        Identity here: on openCypher/FalkorDB every domain field is already a
+        top-level property. A flavour that nests them (AGE's `attributes` agtype
+        map) merges them up — see AgeFlavour for the collision rule."""
+        return props
+
+    def property_accessor(self, prop: str) -> str:
+        """Cypher expression reading `prop` off the node bound to `n`.
+
+        Pairs with :meth:`flatten_node_props`: whatever that surfaces as a domain
+        field, this must be able to probe on a full scan, or the scan silently
+        reports 0 rows and overwrites the sample-based coverage with 0.0."""
+        return f'n.`{prop}`'
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Top-level property keys for a label, minus reserved bookkeeping keys."""

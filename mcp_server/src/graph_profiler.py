@@ -113,7 +113,7 @@ async def _profile_entities(
         # via `sampled`. Same rule as get_schema's label-scoped probe.
         try:
             sample_records, _, _ = await driver.execute_query(
-                f'MATCH (n:`{label}`) RETURN n LIMIT {sample_size * 2}'
+                flavour.node_sample_query().format(label=label, limit=sample_size * 2)
             )
         except Exception as probe_error:  # noqa: BLE001 — one label must not break the profile
             logger.warning(
@@ -132,10 +132,10 @@ async def _profile_entities(
             continue
 
         # Extract property profiles from samples
-        property_profiles = _extract_property_profiles(sample_records, sample_size)
+        property_profiles = _extract_property_profiles(sample_records, sample_size, flavour)
 
         # Enrich with full-scan value statistics
-        await _enrich_value_stats(driver, label, count, property_profiles)
+        await _enrich_value_stats(driver, label, count, property_profiles, flavour=flavour)
 
         profiles[label] = {
             'count': count,
@@ -149,8 +149,16 @@ async def _profile_entities(
 def _extract_property_profiles(
     sample_records: list[dict[str, Any]],
     sample_size: int,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
-    """Extract property coverage, samples, and language detection from node samples."""
+    """Extract property coverage, samples, and language detection from node samples.
+
+    The FLAVOUR owns where a domain field lives on the node: AGE nests every one
+    of them inside a `attributes` agtype map, so walking the top level alone found
+    NO domain fields at all (live: `properties: {}` on all 23 AGE entity types).
+    `flatten_node_props` is the identity on FalkorDB/openCypher.
+    """
+    flavour = flavour or BaseFlavour()
     # Collect all property values across samples
     property_values: dict[str, list[Any]] = {}
 
@@ -159,6 +167,7 @@ def _extract_property_profiles(
         if not isinstance(node, dict):
             # FalkorDB returns node objects — convert via properties
             node = _node_to_dict(node)
+        node = flavour.flatten_node_props(node)
 
         for key, value in node.items():
             if key == 'name_embedding' or key.endswith('_embedding'):
@@ -217,6 +226,7 @@ async def _enrich_value_stats(
     total_count: int,
     property_profiles: dict[str, Any],
     top_n: int = 10,
+    flavour: Any | None = None,
 ) -> None:
     """Enrich property profiles with full-scan value statistics.
 
@@ -226,22 +236,33 @@ async def _enrich_value_stats(
 
     Categorical heuristic: distinct_count < 20 OR distinct_count / total_count < 0.1.
 
+    The FLAVOUR owns the property path (`property_accessor`), and it MUST be the
+    mirror of the one `flatten_node_props` read the sample through. On AGE a domain
+    field probed at the top level is valid Cypher that matches nothing: it returns
+    0/0 and step 3 below then overwrites a real sample-based coverage with 0.0 —
+    silently wrong, which is worse than the guarded failure the try/except handles.
+    The base accessor renders this query text byte-identical to its historic form.
+
     Args:
         driver: Graphiti database driver.
         label: Entity label to scan.
         total_count: Total number of nodes with this label.
         property_profiles: Mutable dict of property profiles to enrich in-place.
         top_n: Number of top frequent values to retrieve (default 10).
+        flavour: Backend flavour; ``None`` resolves to BaseFlavour (identity path).
     """
     if total_count == 0:
         return
 
+    flavour = flavour or BaseFlavour()
+
     for prop_name, profile in property_profiles.items():
+        accessor = flavour.property_accessor(prop_name)
         # 1. Get distinct count and exact non-null count
         try:
             records, _, _ = await driver.execute_query(
-                f'MATCH (n:`{label}`) WHERE n.`{prop_name}` IS NOT NULL '
-                f'RETURN COUNT(DISTINCT n.`{prop_name}`) AS distinct_count, '
+                f'MATCH (n:`{label}`) WHERE {accessor} IS NOT NULL '
+                f'RETURN COUNT(DISTINCT {accessor}) AS distinct_count, '
                 f'COUNT(n) AS non_null_count'
             )
             if not records:
@@ -266,8 +287,8 @@ async def _enrich_value_stats(
         if is_categorical:
             try:
                 top_records, _, _ = await driver.execute_query(
-                    f'MATCH (n:`{label}`) WHERE n.`{prop_name}` IS NOT NULL '
-                    f'RETURN n.`{prop_name}` AS val, COUNT(*) AS freq '
+                    f'MATCH (n:`{label}`) WHERE {accessor} IS NOT NULL '
+                    f'RETURN {accessor} AS val, COUNT(*) AS freq '
                     f'ORDER BY freq DESC LIMIT {top_n}'
                 )
                 profile['top_values'] = [

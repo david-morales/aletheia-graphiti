@@ -686,6 +686,13 @@ _AGE_PROFILE_QUERIES: dict[str, str] = {
 }
 
 
+# The ONLY properties an AGE vertex stores at the top level — Graphiti's own
+# bookkeeping columns. Everything else a domain writes lands inside the nested
+# `attributes` agtype map, which is what flatten_node_props / property_accessor
+# reconcile. `attributes` itself is listed so it is never treated as a domain field.
+_AGE_TOP_LEVEL_KEYS: frozenset[str] = RESERVED_KEYS | {"attributes"}
+
+
 class AgeFlavour(BaseFlavour):
     """AGE flavour — reject-with-hint for AGE-unsupported constructs, nested-map attribute_keys.
 
@@ -828,10 +835,33 @@ class AgeFlavour(BaseFlavour):
     def subgraph_node_query(self) -> str:
         # No :Entity scope (only a handful of AGE vertices carry it); the stored
         # n.labels list is the hierarchy; `IS NOT NULL` excludes Episodic.
+        #
+        # ORDER BY n.created_at is a DIVERSIFIER, not a sort the caller asked for.
+        # AGE keeps ONE TABLE PER LABEL, so an unordered `MATCH (n)` scan is
+        # label-sequential: live on policia_partes_bench_v1 the first hundreds of
+        # vertices were all ParteDeIntervencion, giving 1 label set and 0 edges at
+        # limit 25 where falkor gave 10 sets and 26 edges.
+        #
+        # created_at is ingestion time, and a parte is written together with its
+        # roles and actors — so ordering by it breaks the per-label grouping while
+        # PRESERVING that cluster locality, which is what puts both endpoints of an
+        # edge in the same sample. Measured live against the alternatives:
+        #
+        #     limit 25   label_sets   edges
+        #     none            1         0
+        #     n.uuid          9         0     <- max diversity, locality destroyed
+        #     n.name          1         0
+        #     n.created_at    6        23     <- falkor for comparison: 10 / 26
+        #
+        # A uuid4 sort is the better pseudo-random draw and the worse SAMPLE: 25
+        # nodes scattered over ~1400 contain ~0.6 edges by expectation, so the view
+        # renders unconnected dots. Base and FalkorDB keep storage order (already
+        # interleaved) and stay byte-identical.
         return (
             "MATCH (n) WHERE n.labels IS NOT NULL "
             "RETURN n.uuid AS uuid, n.name AS name, n.labels AS labels, "
             "n.created_at AS created_at, n.summary AS summary, n.group_id AS group_id "
+            "ORDER BY n.created_at "
             "LIMIT $limit"
         )
 
@@ -846,6 +876,59 @@ class AgeFlavour(BaseFlavour):
             "s.uuid AS source_node_uuid, t.uuid AS target_node_uuid, "
             "r.created_at AS created_at LIMIT $limit"
         )
+
+    def node_sample_query(self) -> str:
+        # `RETURN n` is an UNALIASED variable projection and AGE names those
+        # `col0` (live: the driver returned header ['col0']), so the profiler's
+        # `rec.get('n')` found nothing while rows still existed — which is exactly
+        # how 19 AGE leaves came back `sampled: true` with `properties: {}`.
+        # Same fix as get_schema's `RETURN DISTINCT key AS key`.
+        return 'MATCH (n:`{label}`) RETURN n AS n LIMIT {limit}'
+
+    def flatten_node_props(self, props: dict[str, Any]) -> dict[str, Any]:
+        """Unwrap AGE's vertex envelope, then merge the nested `attributes` map up.
+
+        Two layers of transport sit between the query and the domain fields, both
+        confirmed against the live driver:
+
+        1. The value is the whole VERTEX — `{'id', 'label', 'properties': {...}}` —
+           not a flat property dict.
+        2. Inside it, only Graphiti's own columns (`_AGE_TOP_LEVEL_KEYS`) are real
+           properties; every DOMAIN field lives in the queryable `attributes` map.
+
+        A reader that walks neither layer finds no domain fields at all — live,
+        `properties: {}` on all 23 entity types, including the 19 the profiler
+        flags `sampled: true`.
+
+        Collision rule: the TOP LEVEL WINS. `name`/`summary` are Graphiti's own
+        columns and stay authoritative, so a same-named field inside the map can
+        never overwrite them. The `attributes` container itself is dropped — it is
+        the transport, not a domain property.
+        """
+        # Unwrap only a real vertex envelope: a `properties` MAP alongside the
+        # vertex identity. A domain field named `properties` cannot be mistaken
+        # for it — domain fields live under `attributes`, one level further down.
+        inner = props.get("properties")
+        if isinstance(inner, dict) and ("id" in props or "label" in props):
+            props = inner
+        nested = props.get("attributes")
+        if not isinstance(nested, dict):
+            return props
+        flat = dict(nested)
+        flat.update({k: v for k, v in props.items() if k != "attributes"})
+        return flat
+
+    def property_accessor(self, prop: str) -> str:
+        """Read `prop` through the nested map unless it is one of Graphiti's own
+        top-level columns — the mirror of :meth:`flatten_node_props`.
+
+        A full scan on the TOP-level path for a domain field is valid Cypher that
+        matches nothing: it returns 0/0 and silently overwrites a real sample-based
+        coverage with 0.0, which is worse than failing.
+        """
+        if prop in _AGE_TOP_LEVEL_KEYS:
+            return f"n.`{prop}`"
+        return f"n.attributes.`{prop}`"
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Keys of the nested `attributes` agtype map, UNIONED across a small sample."""

@@ -31,6 +31,128 @@ def test_falkordb_inherits_the_base_subgraph_queries():
     assert FalkorDbFlavour().subgraph_node_query() == BaseFlavour().subgraph_node_query()
 
 
+def test_age_node_query_diversifies_the_sample_with_an_order_by():
+    """AGE keeps ONE TABLE PER LABEL, so an unordered scan is label-sequential:
+    live at limit 25 that was 1 label set and 0 edges (falkor: 10 sets, 26 edges).
+
+    The diversifier is `created_at`, NOT the uuid. Both break the per-label
+    grouping, but ingestion time also PRESERVES cluster locality — a parte is
+    written with its roles and actors — which is what puts both endpoints of an
+    edge in the sample. Measured live at limit 25: uuid -> 9 label sets but 0
+    edges; created_at -> 6 sets and 23 edges."""
+    q = AgeFlavour().subgraph_node_query()
+    assert "ORDER BY n.created_at" in q, q
+    # Before the LIMIT, or it orders the already-truncated page — i.e. nothing.
+    assert q.index("ORDER BY n.created_at") < q.index("$limit"), q
+
+
+def test_base_node_query_keeps_storage_order():
+    """Byte-identical pin: falkor's storage order already interleaves types (10 label
+    sets at limit 25 live), so it needs no ORDER BY — and a sort would cost a scan."""
+    for flavour in (BaseFlavour(), FalkorDbFlavour()):
+        assert "ORDER BY" not in flavour.subgraph_node_query(), flavour.name
+    assert BaseFlavour().subgraph_node_query() == (
+        "MATCH (n:Entity) "
+        "RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, "
+        "n.created_at AS created_at, n.summary AS summary, n.group_id AS group_id "
+        "LIMIT $limit"
+    )
+
+
+# ---------------------------------------------------------------------------
+# flatten_node_props / property_accessor — the AGE nested `attributes` map
+# ---------------------------------------------------------------------------
+
+
+def test_age_node_sample_query_aliases_the_projection():
+    """`RETURN n` is an UNALIASED variable projection, and AGE names those `col0`
+    — live: header `['col0']`, so a reader keyed on `n` gets nothing while rows
+    still exist (that is `sampled: true` beside `properties: {}`). Same class as
+    get_schema's `RETURN DISTINCT key AS key`."""
+    q = AgeFlavour().node_sample_query()
+    assert "RETURN n AS n" in q, q
+    assert "{label}" in q and "{limit}" in q, q
+
+
+def test_base_node_sample_query_is_byte_identical():
+    for flavour in (BaseFlavour(), FalkorDbFlavour()):
+        assert flavour.node_sample_query() == "MATCH (n:`{label}`) RETURN n LIMIT {limit}"
+
+
+def test_age_flatten_node_props_unwraps_the_vertex_envelope():
+    """AGE hands back the whole vertex — `{'id', 'label', 'properties': {...}}` —
+    not a flat property dict (live repr from the driver)."""
+    flat = AgeFlavour().flatten_node_props(
+        {
+            "id": 2814749767106562,
+            "label": "Persona",
+            "properties": {
+                "name": "OMAR MOHAMED",
+                "uuid": "365fd6da",
+                "attributes": {"documento": "NIE Z8217547C", "filiacion": "hijo de IBRAHIM"},
+            },
+        }
+    )
+    assert flat["documento"] == "NIE Z8217547C"
+    assert flat["filiacion"] == "hijo de IBRAHIM"
+    assert flat["name"] == "OMAR MOHAMED"
+    assert "properties" not in flat and "attributes" not in flat, flat
+
+
+def test_base_flatten_node_props_is_identity():
+    props = {"name": "OMAR", "documento": "X1234567L", "attributes": {"ignored": 1}}
+    # Base keeps every key exactly as stored — including a literal `attributes`
+    # property, which on openCypher/FalkorDB is just another top-level field.
+    assert BaseFlavour().flatten_node_props(props) == props
+    assert FalkorDbFlavour().flatten_node_props(props) == props
+
+
+def test_age_flatten_node_props_merges_the_nested_attributes_map():
+    """On AGE the descriptive fields live in a queryable `attributes` MAP, so a
+    reader that only walks the top level sees no domain properties at all."""
+    flat = AgeFlavour().flatten_node_props(
+        {
+            "uuid": "u1",
+            "name": "OMAR MOHAMED",
+            "attributes": {"documento": "X1234567L", "edad": 34},
+        }
+    )
+    assert flat["documento"] == "X1234567L"
+    assert flat["edad"] == 34
+    assert flat["name"] == "OMAR MOHAMED"
+    # The container itself is not a domain property — it is the transport.
+    assert "attributes" not in flat, flat
+
+
+def test_age_flatten_node_props_lets_the_top_level_win_on_collision():
+    """Non-destructive: a nested field never overwrites a stored top-level one.
+    `name`/`summary` are Graphiti's own columns and stay authoritative."""
+    flat = AgeFlavour().flatten_node_props(
+        {"name": "top-level", "attributes": {"name": "nested", "documento": "X1"}}
+    )
+    assert flat["name"] == "top-level", flat
+    assert flat["documento"] == "X1"
+
+
+def test_age_flatten_node_props_tolerates_a_missing_or_scalar_attributes():
+    for props in ({"name": "a"}, {"name": "a", "attributes": None}, {"attributes": "str"}):
+        assert AgeFlavour().flatten_node_props(props) == props
+
+
+def test_base_property_accessor_is_the_plain_top_level_path():
+    assert BaseFlavour().property_accessor("documento") == "n.`documento`"
+    assert FalkorDbFlavour().property_accessor("name") == "n.`name`"
+
+
+def test_age_property_accessor_reaches_into_the_attributes_map():
+    """A full-scan probe on the TOP-level path is valid Cypher that matches nothing
+    — it returns 0/0 and silently overwrites the sample-based coverage with 0.0."""
+    assert AgeFlavour().property_accessor("documento") == "n.attributes.`documento`"
+    # ...but Graphiti's own columns really are top-level on AGE.
+    for bookkeeping in ("name", "summary", "labels", "uuid", "group_id", "created_at"):
+        assert AgeFlavour().property_accessor(bookkeeping) == f"n.`{bookkeeping}`", bookkeeping
+
+
 def test_edge_query_inlines_only_sanitized_uuids():
     uuids = ["abc-123", 'evil"uuid', "def-456"]
     q = BaseFlavour().subgraph_edge_query(uuids)

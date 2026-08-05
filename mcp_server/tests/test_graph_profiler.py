@@ -534,12 +534,33 @@ class _AgeStubDriver:
         if 'count(n) AS cnt' in query:
             lbls = self._HIERARCHY if 'n.labels AS lbls' in query else self._LEAF
             return [{'lbls': lbls, 'cnt': 5}, {'lbls': None, 'cnt': 7}], None, None
-        if 'COUNT(DISTINCT' in query:
-            return [{'distinct_count': 2, 'non_null_count': 5}], None, None
-        if 'AS val, COUNT(*)' in query:
+        if 'COUNT(DISTINCT' in query or 'AS val, COUNT(*)' in query:
+            # A domain field probed at the TOP level is valid Cypher on AGE that
+            # matches nothing: 0/0, which silently overwrites the sample-based
+            # coverage with 0.0. Only the nested path finds the value.
+            if 'n.`documento`' in query:
+                return [{'distinct_count': 0, 'non_null_count': 0}], None, None
+            if 'COUNT(DISTINCT' in query:
+                return [{'distinct_count': 2, 'non_null_count': 5}], None, None
             return [{'val': 'OMAR MOHAMED', 'freq': 3}], None, None
-        if 'RETURN n LIMIT' in query:
-            return [{'n': {'name': 'OMAR MOHAMED', 'documento': 'X1234567L'}}], None, None
+        if 'RETURN n LIMIT' in query or 'RETURN n AS n LIMIT' in query:
+            # AGE hands back the whole VERTEX ENVELOPE, with Graphiti's own
+            # columns inside `properties` and every DOMAIN field one level
+            # deeper, in the queryable `attributes` agtype map (live driver repr).
+            vertex = {
+                'id': 2814749767106562,
+                'label': 'Persona',
+                'properties': {
+                    'name': 'OMAR MOHAMED',
+                    'uuid': '365fd6da',
+                    'attributes': {'documento': 'X1234567L'},
+                },
+            }
+            if 'RETURN n AS n' in query:
+                return [{'n': vertex}], None, None
+            # UNALIASED: AGE names the column `col0`, so a reader keyed on `n`
+            # sees nothing — rows exist, so the label still reports sampled: true.
+            return [{'col0': vertex}], None, None
         if 'type(r) AS rel_type' in query:
             return [{'rel_type': 'ES_DETENIDO', 'cnt': 2}], None, None
         if 'AS source_labels' in query:
@@ -621,6 +642,98 @@ class TestFlavourAwareEntityCensus:
 
         assert profiles['Actor'] == {'count': 5, 'properties': {}, 'sampled': False}
         assert profiles['Persona']['sampled'] is True
+
+
+class TestFlavourAwareNodeProperties:
+    """Overview parity: an AGE leaf flagged `sampled: true` must carry real
+    properties, not an empty dict beside a positive assertion that it sampled."""
+
+    @pytest.mark.asyncio
+    async def test_age_shaped_samples_yield_real_property_profiles(self):
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_entities(driver, sample_size=5, flavour=AgeFlavour())
+
+        persona = profiles['Persona']
+        assert persona['sampled'] is True
+        # The domain field lives in the nested map; a top-level-only reader
+        # returned `properties: {}` for all 23 AGE types live.
+        assert 'documento' in persona['properties'], persona['properties']
+        assert persona['properties']['documento']['sample_values'] == ['X1234567L']
+        assert 'name' in persona['properties']
+        # The transport container is not itself a domain property.
+        assert 'attributes' not in persona['properties'], persona['properties']
+
+    @pytest.mark.asyncio
+    async def test_age_enrichment_reads_the_nested_path(self):
+        """The full-scan probe must follow the same path as the sample, or it
+        overwrites a real 1.0 coverage with a silent 0.0."""
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_entities(driver, sample_size=5, flavour=AgeFlavour())
+
+        probes = [q for q in driver.queries if 'COUNT(DISTINCT' in q and 'documento' in q]
+        assert probes, driver.queries
+        assert all('n.attributes.`documento`' in q for q in probes), probes
+        documento = profiles['Persona']['properties']['documento']
+        assert documento['distinct_count'] == 2, documento
+        assert documento['coverage'] == 1.0, documento
+
+    @pytest.mark.asyncio
+    async def test_falkordb_shaped_samples_are_untouched(self):
+        """No flavour → identity normalizer → today's behaviour byte for byte,
+        including the enrichment query text."""
+        driver = _make_driver({
+            'labels(n) AS lbls': [{'lbls': ['Persona', 'Entity'], 'cnt': 5}],
+            'MATCH (n:`Persona`) RETURN n LIMIT': [
+                {'n': {'name': 'OMAR MOHAMED', 'documento': 'X1234567L'}},
+            ],
+            'COUNT(DISTINCT n.`documento`)': [{'distinct_count': 2, 'non_null_count': 5}],
+            'n.`documento` AS val, COUNT(*)': [{'val': 'X1234567L', 'freq': 3}],
+        })
+
+        profiles = await _profile_entities(driver, sample_size=5)
+
+        persona = profiles['Persona']
+        assert persona['sampled'] is True
+        assert persona['properties']['documento']['sample_values'] == ['X1234567L']
+        assert persona['properties']['documento']['distinct_count'] == 2
+        assert persona['properties']['documento']['coverage'] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_the_base_enrichment_query_text_is_byte_identical(self):
+        """The accessor seam must render the historic literals verbatim on the
+        base path — this is the whole back-compat claim for FalkorDB."""
+        seen: list[str] = []
+
+        class _Recorder:
+            async def execute_query(self, query: str, *a, **k):
+                seen.append(query)
+                return [{'distinct_count': 2, 'non_null_count': 5}], None, None
+
+        await _enrich_value_stats(
+            _Recorder(), 'Occurrence', 10, {'ataChapter': {'coverage': 1.0, 'sample_values': []}}
+        )
+
+        assert seen[0] == (
+            'MATCH (n:`Occurrence`) WHERE n.`ataChapter` IS NOT NULL '
+            'RETURN COUNT(DISTINCT n.`ataChapter`) AS distinct_count, '
+            'COUNT(n) AS non_null_count'
+        ), seen[0]
+        assert seen[1] == (
+            'MATCH (n:`Occurrence`) WHERE n.`ataChapter` IS NOT NULL '
+            'RETURN n.`ataChapter` AS val, COUNT(*) AS freq '
+            'ORDER BY freq DESC LIMIT 10'
+        ), seen[1]
+
+    def test_extract_property_profiles_without_a_flavour_is_the_historic_reader(self):
+        """Back-compat pin: the nested map stays an opaque value on the base path."""
+        records = [{'n': {'name': 'OMAR', 'attributes': {'documento': 'X1'}}}]
+
+        profiles = _extract_property_profiles(records, sample_size=5)
+
+        assert 'documento' not in profiles
+        assert 'attributes' in profiles
 
 
 class TestFlavourAwareRelationshipPatterns:
