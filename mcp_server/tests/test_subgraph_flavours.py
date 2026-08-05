@@ -36,6 +36,13 @@ def test_edge_query_inlines_only_sanitized_uuids():
     q = BaseFlavour().subgraph_edge_query(uuids)
     assert '"abc-123"' in q and '"def-456"' in q
     assert "evil" not in q  # non-uuid charset dropped, not escaped
+    # The offending uuid is DROPPED WHOLE, never char-stripped: a stripping impl would
+    # keep its safe chars as a third entry ("ed") and still satisfy `"evil" not in q`.
+    # Pin the exact literal so only whole-entry rejection passes.
+    assert '["abc-123", "def-456"]' in q
+    # ...and exactly two quoted entries overall. 8, not 4: the literal is inlined twice
+    # (once per endpoint), 4 quotes each.
+    assert q.count('"') == 8
     assert "$limit" in q
 
 
@@ -44,6 +51,17 @@ def test_age_edge_query_matches_unlabelled_endpoints():
     assert ":Entity" not in q
     assert "MATCH (s)-[r]->(t)" in q
     assert "s.uuid IN" in q and "t.uuid IN" in q
+
+
+def test_both_node_queries_project_the_same_columns():
+    # The per-flavour tests above pin only the MATCH scope and the labels source, so a
+    # column dropped from ONE flavour's projection (e.g. `n.group_id AS group_id` on AGE)
+    # would slip through and silently None that SubgraphNode field on that flavour alone.
+    cols = ("AS uuid", "AS name", "AS labels", "AS created_at", "AS summary", "AS group_id")
+    for flavour in (BaseFlavour(), AgeFlavour()):
+        q = flavour.subgraph_node_query()
+        for c in cols:
+            assert c in q, (flavour.name, c)
 
 
 def test_both_edge_queries_project_the_same_columns():

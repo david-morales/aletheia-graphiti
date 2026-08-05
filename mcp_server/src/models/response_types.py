@@ -157,7 +157,9 @@ class SchemaResponse(TypedDict, total=False):
 class SubgraphNode(TypedDict, total=False):
     uuid: str | None
     name: str | None
-    labels: list[str] | None   # full logical hierarchy on BOTH flavours (internal labels included)
+    # Full logical hierarchy on BOTH flavours (internal labels included). UNORDERED —
+    # see the SubgraphResponse docstring: set-filter, never index positionally.
+    labels: list[str] | None
     created_at: str | None
     summary: str | None
     group_id: str | None
@@ -176,8 +178,16 @@ class SubgraphResponse(TypedDict, total=False):
     """sample_subgraph payload (Step 2 UI alignment): a flavour-normalized node/edge sample.
 
     `labels` carries the full logical hierarchy on both flavours (FalkorDB:
-    labels(n); AGE: the stored n.labels list). Same nullability rule as the
-    module note above — every field `X | None`.
+    labels(n); AGE: the stored n.labels list).
+
+    The list is UNORDERED — its order is NOT a contract on either flavour, and
+    position carries no meaning. Live bench evidence: most rows come back
+    ['Entity', 'Actor', 'Persona'] (internal label first), but ['Droga', 'Entity']
+    puts the domain label first. Consumers MUST set-filter the internal labels
+    (Entity, Episodic, ...) to find the domain type — never index positionally
+    (`labels[0]`, `labels[-1]`) and never assume general-to-specific ordering.
+
+    Same nullability rule as the module note above — every field `X | None`.
     """
     type: str | None           # always "subgraph"
     graph_name: str | None
