@@ -390,6 +390,29 @@ def test_falkordb_inherits_the_base_ontology_queries():
     assert FalkorDbFlavour().ontology_queries() == BaseFlavour().ontology_queries()
 
 
+def test_base_ontology_summaries_is_byte_identical_to_the_shipped_text():
+    """The domain-profile description probe, moved behind the seam unchanged."""
+    for flavour in (BaseFlavour(), FalkorDbFlavour()):
+        assert flavour.ontology_queries()["summaries"] == (
+            "MATCH (n:Entity) "
+            "WHERE n.summary IS NOT NULL "
+            "RETURN n.name AS name, n.summary AS summary"
+        ), flavour.name
+
+
+def test_age_ontology_summaries_scopes_by_ontology_class():
+    """On AGE an ontology vertex carries the LEAF label `OntologyClass`, not
+    `:Entity` — the base text matched ~nothing there, so every
+    `entity_types[*].description` stayed empty and get_schema's description /
+    sample_names enrichment never fired: blank Overview cards."""
+    q = AgeFlavour().ontology_queries()["summaries"]
+    assert "MATCH (n:OntologyClass)" in q, q
+    assert ":Entity" not in q, q
+    # summary/name are genuinely top-level on AGE (same as class_context).
+    assert "n.summary IS NOT NULL" in q, q
+    assert "n.attributes.summary" not in q, q
+
+
 def test_age_reads_every_attribute_backed_column_from_the_nested_map():
     """Not just the two the spike named: EVERY field AGE nests must move.
 
@@ -432,6 +455,8 @@ def test_both_ontology_queries_project_the_same_aliases():
             assert f"AS {col}" in q["structure"], (flavour.name, col)
         for col in ("source", "name", "fact", "target"):
             assert f"AS {col}" in q["relates"], (flavour.name, col)
+        for col in ("name", "summary"):
+            assert f"AS {col}" in q["summaries"], (flavour.name, col)
 
 
 def test_both_relates_queries_scope_both_endpoints_to_ontology_classes():

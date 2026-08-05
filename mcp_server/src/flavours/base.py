@@ -164,6 +164,7 @@ class BaseFlavour:
                              properties, identity
             structure     -> the same, minus uuid / properties / identity
             relates       -> source, name, fact, target
+            summaries     -> name, summary  (domain_profile's description probe)
 
         These texts are FalkorDB-shaped: every descriptive ontology field is a
         TOP-LEVEL node property, and relationships are RELATES_TO edges whose
@@ -213,6 +214,15 @@ class BaseFlavour:
             "relates": (
                 "MATCH (a:OntologyClass)-[r:RELATES_TO]->(b:OntologyClass) "
                 "RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target"
+            ),
+            # domain_profile's description probe. Scoped by `:Entity` here because
+            # a FalkorDB ontology vertex carries BOTH labels and this is the text
+            # that arm has always issued — kept byte-identical. AGE's ontology
+            # vertices carry only the leaf `OntologyClass`, so it overrides.
+            "summaries": (
+                "MATCH (n:Entity) "
+                "WHERE n.summary IS NOT NULL "
+                "RETURN n.name AS name, n.summary AS summary"
             ),
         }
 

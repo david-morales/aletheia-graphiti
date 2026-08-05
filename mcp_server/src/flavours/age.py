@@ -830,6 +830,19 @@ class AgeFlavour(BaseFlavour):
                 "MATCH (a:OntologyClass)-[r]->(b:OntologyClass) "
                 "RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target"
             ),
+            # Same swap as the three tiers above: an AGE ontology vertex carries
+            # the LEAF label `OntologyClass`, and `:Entity` matches ~nothing on
+            # this graph. The base text therefore returned ZERO rows here, so
+            # every `entity_types[*].description` stayed empty and get_schema's
+            # description / sample_names enrichment never fired — blank Overview
+            # cards on the AGE arm. `name`/`summary` are genuinely top-level (the
+            # only two fields the AGE ontology payload ever populated), so the
+            # projection is the base one unchanged.
+            "summaries": (
+                "MATCH (n:OntologyClass) "
+                "WHERE n.summary IS NOT NULL "
+                "RETURN n.name AS name, n.summary AS summary"
+            ),
         }
 
     def subgraph_node_query(self) -> str:
