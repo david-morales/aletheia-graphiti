@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from flavours.base import BaseFlavour
+
 logger = logging.getLogger(__name__)
 
 # Internal labels to skip when profiling
@@ -19,6 +21,7 @@ async def profile_graph(
     driver: Any,
     *,
     sample_size: int = 5,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
     """Profile entity properties and relationship patterns.
 
@@ -26,16 +29,20 @@ async def profile_graph(
     For each relationship type: count, source/target patterns, sample paths.
 
     Args:
-        driver: Graphiti database driver (FalkorDB or Neo4j).
+        driver: Graphiti database driver (FalkorDB, AGE or Neo4j).
         group_id: The graph group_id to profile.
         sample_size: Number of sample values per property (default 5).
+        flavour: Backend flavour owning the dialect-sensitive census texts.
+            ``None`` resolves to the generic openCypher :class:`BaseFlavour`, which
+            is today's behaviour byte for byte — existing callers are unaffected.
 
     Returns:
         Structured profile dict with entity_profiles, relationship_profiles,
         and language_summary.
     """
-    entity_profiles = await _profile_entities(driver, sample_size)
-    relationship_profiles = await _profile_relationships(driver, sample_size)
+    flavour = flavour or BaseFlavour()
+    entity_profiles = await _profile_entities(driver, sample_size, flavour)
+    relationship_profiles = await _profile_relationships(driver, sample_size, flavour)
     episodic_languages = await _sample_episodic_languages(driver)
     language_summary = _build_language_summary(entity_profiles, episodic_languages)
 
@@ -49,15 +56,23 @@ async def profile_graph(
 async def _profile_entities(
     driver: Any,
     sample_size: int,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
-    """Profile all entity labels: properties, coverage, samples, languages."""
+    """Profile all entity labels: properties, coverage, samples, languages.
+
+    The FLAVOUR owns the census text: on AGE ``labels(n)`` returns only the
+    ontology leaf, so the hardcoded base literal hid every abstract supertype
+    from the Overview tab. The parsing is shared — both variants project the
+    same ``lbls``/``cnt`` aliases.
+    """
+    flavour = flavour or BaseFlavour()
     # Get label counts
-    label_records, _, _ = await driver.execute_query(
-        'MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt'
-    )
+    label_records, _, _ = await driver.execute_query(flavour.census_queries()['label_counts'])
     label_counts: dict[str, int] = {}
     for rec in label_records:
-        for label in rec.get('lbls', []):
+        # `or []`, not a .get default: AGE returns label-less vertices with an
+        # explicit null labels list, which a default never covers.
+        for label in rec.get('lbls') or []:
             if label not in _INTERNAL_LABELS:
                 label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
@@ -67,13 +82,29 @@ async def _profile_entities(
         if count == 0:
             continue
 
-        # Sample nodes for this label
-        sample_records, _, _ = await driver.execute_query(
-            f'MATCH (n:`{label}`) RETURN n LIMIT {sample_size * 2}'
-        )
+        # Sample nodes for this label. A censused label need not be MATCHable: on
+        # AGE the hierarchy (abstract) labels have no label table at all, so this
+        # probe answers with no rows — or raises. Neither may take the whole
+        # profile down; a probe that cannot answer degrades ONE entry and says so
+        # via `sampled`. Same rule as get_schema's label-scoped probe.
+        try:
+            sample_records, _, _ = await driver.execute_query(
+                f'MATCH (n:`{label}`) RETURN n LIMIT {sample_size * 2}'
+            )
+        except Exception as probe_error:  # noqa: BLE001 — one label must not break the profile
+            logger.warning(
+                'profile_graph: label-scoped probe failed for `%s`, '
+                'reporting it unsampled: %s',
+                label,
+                probe_error,
+            )
+            sample_records = []
 
         if not sample_records:
-            profiles[label] = {'count': count, 'properties': {}}
+            # Honest: an entry whose probe raised or returned nothing was never
+            # sampled, and a consumer must not read its empty `properties` as
+            # "this type has no properties". The census count always survives.
+            profiles[label] = {'count': count, 'properties': {}, 'sampled': False}
             continue
 
         # Extract property profiles from samples
@@ -85,6 +116,7 @@ async def _profile_entities(
         profiles[label] = {
             'count': count,
             'properties': property_profiles,
+            'sampled': True,
         }
 
     return profiles
@@ -225,8 +257,16 @@ async def _enrich_value_stats(
 async def _profile_relationships(
     driver: Any,
     sample_size: int,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
-    """Profile all relationship types: counts, patterns, sample paths."""
+    """Profile all relationship types: counts, patterns, sample paths.
+
+    The endpoint-pattern census is the flavour's (same reason as the label
+    census: ``labels(s)`` is leaf-only on AGE). Both variants project
+    ``source_labels``/``target_labels``, so the parsing below is shared.
+    """
+    flavour = flavour or BaseFlavour()
+    census = flavour.census_queries()
     # Get relationship counts
     rel_records, _, _ = await driver.execute_query(
         'MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS cnt'
@@ -242,14 +282,18 @@ async def _profile_relationships(
     for rel_type, count in sorted(rel_counts.items()):
         # Get source->target patterns
         pattern_records, _, _ = await driver.execute_query(
-            f'MATCH (s)-[r:`{rel_type}`]->(t) '
-            f'RETURN DISTINCT labels(s) AS src, labels(t) AS tgt LIMIT 20'
+            census['rel_patterns'].format(rel_type=rel_type)
         )
         patterns = []
         for rec in pattern_records:
-            src_labels = [l for l in rec.get('src', []) if l not in _INTERNAL_LABELS]
-            tgt_labels = [l for l in rec.get('tgt', []) if l not in _INTERNAL_LABELS]
+            # The seam's aliases (`source_labels`/`target_labels`), shared by both
+            # variants — get_schema parses the same rows with the same names.
+            src_labels = [l for l in rec.get('source_labels') or [] if l not in _INTERNAL_LABELS]
+            tgt_labels = [l for l in rec.get('target_labels') or [] if l not in _INTERNAL_LABELS]
             if src_labels and tgt_labels:
+                # RECORDED LIMITATION: the `[0]` endpoint pick is hierarchy-arbitrary
+                # (the label list is explicitly unordered). Pre-existing behaviour,
+                # shared with get_schema; unchanged here on purpose.
                 pair = [src_labels[0], tgt_labels[0]]
                 if pair not in patterns:
                     patterns.append(pair)
@@ -264,17 +308,30 @@ async def _profile_relationships(
             for rec in sample_records
         ]
 
-        # Calculate average out-degree for first pattern
+        # Calculate average out-degree for first pattern. Label-scoped, so it
+        # carries the same AGE hazard as the entity probe: the endpoint may be a
+        # hierarchy label with no label table. Degrade this one number rather
+        # than sink every relationship profile.
         avg_out_degree = 0.0
         if patterns:
             src_label = patterns[0][0]
-            degree_records, _, _ = await driver.execute_query(
-                f'MATCH (s:`{src_label}`)-[r:`{rel_type}`]->() '
-                f'WITH s, count(r) AS deg '
-                f'RETURN avg(deg) AS avg_deg'
-            )
+            try:
+                degree_records, _, _ = await driver.execute_query(
+                    f'MATCH (s:`{src_label}`)-[r:`{rel_type}`]->() '
+                    f'WITH s, count(r) AS deg '
+                    f'RETURN avg(deg) AS avg_deg'
+                )
+            except Exception as probe_error:  # noqa: BLE001 — one probe must not break the profile
+                logger.warning(
+                    'profile_graph: out-degree probe failed for `%s`-[:%s], '
+                    'reporting 0.0: %s',
+                    src_label,
+                    rel_type,
+                    probe_error,
+                )
+                degree_records = []
             if degree_records:
-                avg_out_degree = round(float(degree_records[0].get('avg_deg', 0)), 1)
+                avg_out_degree = round(float(degree_records[0].get('avg_deg', 0) or 0), 1)
 
         profiles[rel_type] = {
             'count': count,

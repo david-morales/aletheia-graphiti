@@ -2277,7 +2277,11 @@ async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
 
     try:
         client = await graphiti_service.get_client()
-        return await _run_profile_graph(client.driver, sample_size=sample_size)
+        # The flavour owns the census texts (same seam as get_schema): without it
+        # the profiler runs FalkorDB-shaped `labels(n)` censuses on every backend.
+        return await _run_profile_graph(
+            client.driver, sample_size=sample_size, flavour=graphiti_service.flavour
+        )
     except Exception as e:
         logger.error(f'Error in profile_graph: {e}')
         return {'error': f'Failed to profile graph: {e}'}
