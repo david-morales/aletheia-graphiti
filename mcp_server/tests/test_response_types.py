@@ -134,8 +134,8 @@ def test_query_and_schema_tools_publish_output_schema():
 
 
 def test_typed_tool_outputs_survive_fastmcp_output_validation():
-    """Regression: run_cypher / get_schema success AND error payloads must pass
-    FastMCP's structured-output path over the wire.
+    """Regression: run_cypher / get_schema / sample_subgraph success AND error payloads
+    must pass FastMCP's structured-output path over the wire.
 
     FastMCP builds a pydantic model from each total=False TypedDict with every
     optional field defaulted to None, then convert_result dumps it WITHOUT
@@ -154,6 +154,7 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
     m = FastMCP("t")
     m.add_tool(srv.run_cypher)
     m.add_tool(srv.get_schema)
+    m.add_tool(srv.sample_subgraph)
     tools = m._tool_manager._tools
 
     get_schema_success = {
@@ -170,12 +171,24 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
                           "columns": ["n"], "rows": [[1]], "row_count": 1}
     run_cypher_error = {"error": "syntax error", "hint": "use <>",
                         "error_detail": {"code": "SYNTAX"}}
+    sample_subgraph_success = {
+        "type": "subgraph", "graph_name": "g",
+        "nodes": [{"uuid": "n1", "name": "Ada", "labels": ["Entity", "Persona"],
+                   "created_at": "2026-01-01T00:00:00Z", "summary": None,
+                   "group_id": "g"}],
+        "edges": [{"uuid": "e1", "name": "ES_DETENIDO", "fact": "f",
+                   "source_node_uuid": "n1", "target_node_uuid": "n2",
+                   "created_at": None}],
+    }
+    sample_subgraph_error = {"error": "boom"}
 
     cases = [
         ("get_schema", get_schema_success),
         ("get_schema", get_schema_error),
         ("run_cypher", run_cypher_success),
         ("run_cypher", run_cypher_error),
+        ("sample_subgraph", sample_subgraph_success),
+        ("sample_subgraph", sample_subgraph_error),
     ]
     for name, payload in cases:
         meta = tools[name].fn_metadata

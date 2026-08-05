@@ -77,6 +77,7 @@ from models.response_types import (
     SchemaResponse,
     SearchResponse,
     StatusResponse,
+    SubgraphResponse,
     SuccessResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
@@ -1947,6 +1948,91 @@ async def get_schema() -> SchemaResponse:
     except Exception as e:
         logger.error(f'Error in get_schema: {e}')
         return {'error': f'Failed to retrieve schema: {e}'}
+
+
+def _dedup_rows_by_uuid(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop repeated uuids, first row wins.
+
+    Two independent sources of duplicates: AGE can hold duplicate-uuid sibling
+    vertices (BUG-38 reintroduces them under concurrent ingestion), and an edge
+    query can return the same edge row twice when both endpoints match more than
+    once. A graph view would draw each twice. Rows with no uuid are not
+    addressable, so they cannot be deduplicated by key and pass through.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        uuid = row.get('uuid')
+        if uuid is None:
+            out.append(row)
+            continue
+        if uuid in seen:
+            continue
+        seen.add(uuid)
+        out.append(row)
+    return out
+
+
+@mcp.tool()
+async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
+    """Flavour-normalized node/edge sample of the knowledge graph.
+
+    Returns up to `limit` entity nodes (uuid, name, labels — the FULL logical
+    hierarchy on every backend — created_at, summary, group_id) and the edges
+    among them (edge limit = 2.5x node limit). Intended for graph-view
+    consumers; replaces client-composed Cypher, which cannot be
+    dialect-correct across backends.
+
+    `labels` is UNORDERED on every backend: set-filter the internal labels
+    (Entity, Episodic, ...) to find the domain type, never index positionally.
+
+    Args:
+        limit: Maximum entity nodes to sample (clamped to 1..1000, default 100).
+    """
+    if graphiti_service is None:
+        return {'error': 'Service not initialized. Please wait for startup to complete.'}
+    try:
+        client = await graphiti_service.get_client()
+        driver = client.driver
+        flavour = graphiti_service.flavour
+        limit = max(1, min(int(limit), 1000))
+
+        node_q = flavour.subgraph_node_query().replace('$limit', str(limit))
+        node_records, _ = await flavour.execute_graph_query(driver, node_q)
+        nodes = [
+            {
+                'uuid': r.get('uuid'), 'name': r.get('name'),
+                'labels': r.get('labels') or [],
+                'created_at': r.get('created_at'), 'summary': r.get('summary'),
+                'group_id': r.get('group_id'),
+            }
+            for r in _dedup_rows_by_uuid(list(node_records))
+        ]
+
+        edges = []
+        uuids = [n['uuid'] for n in nodes if n['uuid']]
+        if uuids:
+            edge_q = flavour.subgraph_edge_query(uuids).replace('$limit', str(round(limit * 2.5)))
+            edge_records, _ = await flavour.execute_graph_query(driver, edge_q)
+            edges = [
+                {
+                    'uuid': r.get('uuid'), 'name': r.get('name'), 'fact': r.get('fact'),
+                    'source_node_uuid': r.get('source_node_uuid'),
+                    'target_node_uuid': r.get('target_node_uuid'),
+                    'created_at': r.get('created_at'),
+                }
+                for r in _dedup_rows_by_uuid(list(edge_records))
+            ]
+
+        return {
+            'type': 'subgraph',
+            'graph_name': graphiti_service.config.graphiti.group_id,
+            'nodes': nodes,
+            'edges': edges,
+        }
+    except Exception as e:
+        logger.error(f'Error in sample_subgraph: {e}')
+        return {'error': str(e)}
 
 
 async def get_ontology_structure() -> dict[str, Any]:
