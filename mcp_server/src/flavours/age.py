@@ -735,6 +735,20 @@ class AgeFlavour(BaseFlavour):
             ),
         }
 
+    def census_notes(self) -> list[str]:
+        # The census counts the hierarchy, so node_labels now advertises abstract
+        # supertypes that NO vertex carries as its stored label. `MATCH (n:Actor)`
+        # returns zero rows for those — silently, which reads as "no Actors exist".
+        # Announce the working form instead of leaving the agent to infer it.
+        return [
+            "IMPORTANT: `node_labels` counts the FULL ontology hierarchy on this backend, "
+            "so it includes abstract supertypes (e.g. Actor) that no vertex carries as its "
+            "stored label. `MATCH (n:Actor)` matches ZERO rows for those — it silently looks "
+            "like the type is empty. Match a hierarchy label with "
+            "`MATCH (n) WHERE 'Actor' IN n.labels`; `(n:X)` and `label(n)` only ever address "
+            "the LEAF label.",
+        ]
+
     def subgraph_node_query(self) -> str:
         # No :Entity scope (only a handful of AGE vertices carry it); the stored
         # n.labels list is the hierarchy; `IS NOT NULL` excludes Episodic.

@@ -109,6 +109,23 @@ def test_both_censuses_project_the_same_aliases():
         assert "AS target_labels" in q["rel_patterns"], flavour.name
 
 
+def test_base_announces_no_census_caveat():
+    # Nothing to warn about: on FalkorDB/Neo4j every censused label is matchable.
+    assert BaseFlavour().census_notes() == []
+    assert FalkorDbFlavour().census_notes() == []
+
+
+def test_age_announces_that_hierarchy_labels_are_not_matchable():
+    notes = AgeFlavour().census_notes()
+    assert notes, "AGE must announce that censused supertypes are not (n:X)-matchable"
+    joined = " ".join(notes)
+    assert "n.labels" in joined     # the form that works
+    assert "(n:" in joined          # the form that silently returns 0 rows
+    # Same convention as the description-derived notes get_schema already emits,
+    # so a consumer filtering on the prefix sees this one too.
+    assert all(n.startswith("IMPORTANT:") for n in notes), notes
+
+
 def test_rel_patterns_placeholder_formats_with_the_rel_type():
     # The placeholder is the only substitution get_schema makes; if a flavour
     # dropped or renamed it, .format() would raise or return an unfiltered probe.

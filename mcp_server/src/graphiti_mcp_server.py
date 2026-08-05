@@ -1801,20 +1801,39 @@ async def get_schema() -> SchemaResponse:
         #    minus reserved bookkeeping; AGE: keys of the nested `attributes` agtype map).
         node_labels: dict[str, dict] = {}
         for label in label_counts:
-            # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
-            # (openCypher variable projections lose their name), so `r['key']`
-            # would KeyError on AGE. The explicit alias makes the column `key` on
-            # both flavours (FalkorDB already returns `key`). Regression: AGE
-            # get_schema live test.
-            prop_records, _, _ = await driver.execute_query(
-                f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
-            )
+            # A censused label need not be MATCHable. On AGE the hierarchy
+            # (abstract) labels have no label table at all, so a label-scoped probe
+            # against one answers with no rows — or raises. Neither may take the
+            # whole schema down: an unhandled raise here returns {'error': ...} for
+            # the entire call, i.e. a total get_schema outage on AGE. Same rule as
+            # AgeFlavour.attribute_keys ("a non-map label must not break schema") —
+            # a probe that cannot answer degrades ONE entry, and says so via
+            # `sampled`. The census count is independent and always survives.
+            try:
+                # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
+                # (openCypher variable projections lose their name), so `r['key']`
+                # would KeyError on AGE. The explicit alias makes the column `key` on
+                # both flavours (FalkorDB already returns `key`). Regression: AGE
+                # get_schema live test.
+                prop_records, _, _ = await driver.execute_query(
+                    f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
+                )
+                attribute_keys = await flavour.attribute_keys(driver, label)
+            except Exception as probe_error:  # noqa: BLE001 — one label must not break schema
+                logger.warning(
+                    f'get_schema: label-scoped probe failed for `{label}`, '
+                    f'reporting it unsampled: {probe_error}'
+                )
+                prop_records, attribute_keys = [], []
             props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
             node_labels[label] = {
                 'count': label_counts[label],
-                'attribute_keys': await flavour.attribute_keys(driver, label),
+                'attribute_keys': attribute_keys,
                 'properties': sorted(props),
-                'sampled': True,
+                # Honest: an entry whose probe raised or returned nothing was never
+                # sampled, and a consumer must not read its empty `properties` as
+                # "this type has no properties".
+                'sampled': bool(prop_records),
             }
 
         # 3. Relationship counts (single-pass)
@@ -1873,7 +1892,9 @@ async def get_schema() -> SchemaResponse:
 
         # Extract IMPORTANT: notes from entity/relationship descriptions
         # into a top-level field so they're prominent, not buried in type details.
-        analysis_notes: list[str] = []
+        # Seeded with the flavour's census caveats (ADR-019 R6): those govern how to
+        # read EVERY entry above, so they lead.
+        analysis_notes: list[str] = list(flavour.census_notes())
         for label, info in node_labels.items():
             desc = info.get('description', '')
             for line in desc.split('\n'):
