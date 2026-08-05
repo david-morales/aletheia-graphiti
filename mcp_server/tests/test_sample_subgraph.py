@@ -6,6 +6,7 @@ service/client/driver — same fixture idiom as test_get_schema_canonical.py —
 the wire contract is pinned without a live backend.
 """
 import inspect
+from datetime import datetime, timezone
 
 import pytest
 
@@ -134,6 +135,47 @@ async def test_sample_subgraph_substitutes_limit_and_scales_edge_limit(monkeypat
     assert "$limit" not in edge_q
     # The edge query is scoped to the sampled uuids, not re-matched over the graph.
     assert f'"{N1}"' in edge_q
+
+
+@pytest.mark.asyncio
+async def test_sample_subgraph_clamps_the_limit_into_range(monkeypatch):
+    """The clamp is what makes textual `$limit` substitution safe — it is the reason
+    the value inlined into the query text can only ever be a bounded int."""
+    svc, driver = _service(node_rows=[dict(NODE_ROW)], edge_rows=[dict(EDGE_ROW)])
+    monkeypatch.setattr(srv, "graphiti_service", svc)
+
+    await srv.sample_subgraph(limit=5000)
+    node_q, edge_q = driver.queries
+    # endswith, not `in`: "LIMIT 5000" also contains "LIMIT 5", so a substring
+    # assertion would pass against an unclamped value.
+    assert node_q.endswith("LIMIT 1000")
+    assert edge_q.endswith("LIMIT 2500")
+
+    driver.queries.clear()
+    await srv.sample_subgraph(limit=0)
+    assert driver.queries[0].endswith("LIMIT 1")
+
+
+@pytest.mark.asyncio
+async def test_sample_subgraph_normalizes_datetime_created_at(monkeypatch):
+    """FalkorDB and AGE hand back strings, but the generic/Neo4j path returns a
+    neo4j.time.DateTime. Unnormalized it dies in FastMCP output validation —
+    OUTSIDE this tool's try/except, so it escapes the ADR-015 error envelope as a
+    protocol error rather than an `error` payload."""
+    dt = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
+    node = dict(NODE_ROW)
+    node["created_at"] = dt
+    edge = dict(EDGE_ROW)
+    edge["created_at"] = dt
+    svc, _ = _service(node_rows=[node], edge_rows=[edge])
+    monkeypatch.setattr(srv, "graphiti_service", svc)
+
+    payload = await srv.sample_subgraph()
+
+    assert payload["nodes"][0]["created_at"] == "2026-01-01T12:30:00+00:00"
+    assert payload["edges"][0]["created_at"] == "2026-01-01T12:30:00+00:00"
+    assert isinstance(payload["nodes"][0]["created_at"], str)
+    assert isinstance(payload["edges"][0]["created_at"], str)
 
 
 @pytest.mark.asyncio

@@ -181,6 +181,20 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
                    "created_at": None}],
     }
     sample_subgraph_error = {"error": "boom"}
+    # Every field None. The success fixture above only nulls `summary` and the edge's
+    # `created_at`, so it pins nullability for those two alone — making SubgraphNode.name
+    # non-nullable would leave it green while a real `name=None` row (Graphiti permits it)
+    # dies in convert_result. That failure happens OUTSIDE the tool's try/except, so it
+    # escapes the ADR-015 error envelope as a protocol error. total=False: nothing required.
+    sample_subgraph_all_null = {
+        "type": None, "graph_name": None,
+        "nodes": [{"uuid": None, "name": None, "labels": None,
+                   "created_at": None, "summary": None, "group_id": None}],
+        "edges": [{"uuid": None, "name": None, "fact": None,
+                   "source_node_uuid": None, "target_node_uuid": None,
+                   "created_at": None}],
+        "error": None,
+    }
 
     cases = [
         ("get_schema", get_schema_success),
@@ -189,6 +203,7 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
         ("run_cypher", run_cypher_error),
         ("sample_subgraph", sample_subgraph_success),
         ("sample_subgraph", sample_subgraph_error),
+        ("sample_subgraph", sample_subgraph_all_null),
     ]
     for name, payload in cases:
         meta = tools[name].fn_metadata

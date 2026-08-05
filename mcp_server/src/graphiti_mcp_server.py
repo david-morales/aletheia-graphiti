@@ -1973,6 +1973,19 @@ def _dedup_rows_by_uuid(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _iso_or_raw(value: Any) -> Any:
+    """Datetime-like values to ISO strings; everything else through untouched.
+
+    FalkorDB and AGE deliver `created_at` as a string, but the generic/Neo4j path
+    returns a neo4j.time.DateTime, which FastMCP's output validation rejects. That
+    failure happens in convert_result — OUTSIDE this tool's try/except — so it escapes
+    the ADR-015 error envelope as a protocol error instead of an `error` payload.
+    Every sibling tool normalizes the same way (format_node_result, explore_node,
+    get_episode_context). None has no isoformat and passes straight through.
+    """
+    return value.isoformat() if hasattr(value, 'isoformat') else value
+
+
 @mcp.tool()
 async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
     """Flavour-normalized node/edge sample of the knowledge graph.
@@ -2003,7 +2016,7 @@ async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
             {
                 'uuid': r.get('uuid'), 'name': r.get('name'),
                 'labels': r.get('labels') or [],
-                'created_at': r.get('created_at'), 'summary': r.get('summary'),
+                'created_at': _iso_or_raw(r.get('created_at')), 'summary': r.get('summary'),
                 'group_id': r.get('group_id'),
             }
             for r in _dedup_rows_by_uuid(list(node_records))
@@ -2019,7 +2032,7 @@ async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
                     'uuid': r.get('uuid'), 'name': r.get('name'), 'fact': r.get('fact'),
                     'source_node_uuid': r.get('source_node_uuid'),
                     'target_node_uuid': r.get('target_node_uuid'),
-                    'created_at': r.get('created_at'),
+                    'created_at': _iso_or_raw(r.get('created_at')),
                 }
                 for r in _dedup_rows_by_uuid(list(edge_records))
             ]
