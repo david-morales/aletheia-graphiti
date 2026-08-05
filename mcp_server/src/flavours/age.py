@@ -728,10 +728,20 @@ class AgeFlavour(BaseFlavour):
                 "MATCH (n) WHERE n.labels IS NOT NULL "
                 "RETURN n.labels AS lbls, count(n) AS cnt"
             ),
+            # `source_labels`/`target_labels` are the whole HIERARCHY here, so a
+            # consumer picking positionally from them lands on an abstract
+            # supertype: not `(n:X)`-matchable, and it merges genuinely distinct
+            # leaf patterns (Actor->X swallows both Persona->X and Empresa->X).
+            # `label(n)` returns exactly the stored leaf (dialect_reference,
+            # "Labels"), so announce it as the optional extra columns the shared
+            # parsing prefers. Aliases are lowercase snake_case and unique, as AGE
+            # requires; the leaf is functionally determined by the labels list, so
+            # DISTINCT returns no more rows than before.
             "rel_patterns": (
                 "MATCH (s)-[r:`{rel_type}`]->(t) "
                 "WHERE s.labels IS NOT NULL AND t.labels IS NOT NULL "
-                "RETURN DISTINCT s.labels AS source_labels, t.labels AS target_labels LIMIT 20"
+                "RETURN DISTINCT s.labels AS source_labels, t.labels AS target_labels, "
+                "label(s) AS source_leaf, label(t) AS target_leaf LIMIT 20"
             ),
         }
 

@@ -84,12 +84,14 @@ class _AgeStubDriver:
         if "type(r) AS rel_type" in query:
             return [{"rel_type": "ES_DETENIDO", "cnt": 2}], None, None
         if "AS source_labels" in query:
+            # Leaf columns only when the census asked for them, so this one stub
+            # exercises both the leaf-preferring path and the positional fallback.
             src = self._HIERARCHY if "s.labels AS source_labels" in query else self._LEAF
-            return (
-                [{"source_labels": src, "target_labels": ["Detencion"]}],
-                None,
-                None,
-            )
+            row = {"source_labels": src, "target_labels": ["Detencion"]}
+            if "AS source_leaf" in query:
+                row["source_leaf"] = src[-1]
+                row["target_leaf"] = "Detencion"
+            return [row], None, None
         return [], None, None
 
 
@@ -178,19 +180,18 @@ async def test_get_schema_age_census_surfaces_abstract_supertypes(monkeypatch):
     assert census and all("n.labels AS lbls" in q for q in census), census
 
     # ...and the relationship-pattern probe, whose rows the SHARED loop parses.
-    # Assert MEMBERSHIP, not position: the hierarchy list is explicitly unordered
-    # (SubgraphResponse in models/response_types.py), so which non-internal label
-    # `src[0]` lands on is arbitrary. RECORDED LIMITATION: the endpoint pick is
-    # hierarchy-arbitrary — a pattern may name the supertype where the leaf would
-    # read better. A leaf-preferring pick is a possible future improvement; it is
-    # pre-existing behaviour shared with FalkorDB and out of scope here.
+    # EQUALITY, not membership: the hierarchy list is explicitly unordered
+    # (SubgraphResponse in models/response_types.py), so a positional pick over it
+    # could name any non-internal member — including the abstract supertype, which
+    # is not `(n:X)`-matchable and which merges distinct leaf patterns. The census
+    # now ALSO announces `label(s) AS source_leaf`, and the leaf is what makes this
+    # endpoint deterministic. The positional pick survives as the fallback for
+    # flavours that announce no leaf column (FalkorDB / openCypher).
     patterns = schema["relationship_types"]["ES_DETENIDO"]["patterns"]
-    assert len(patterns) == 1, patterns
-    src_endpoint, tgt_endpoint = patterns[0]
-    assert src_endpoint in {"Actor", "Persona"}, patterns
-    assert tgt_endpoint in {"Detencion"}, patterns
+    assert patterns == [["Persona", "Detencion"]], patterns
     probes = [q for q in driver.queries if "AS source_labels" in q]
     assert probes and all("s.labels AS source_labels" in q for q in probes), probes
+    assert probes and all("label(s) AS source_leaf" in q for q in probes), probes
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,30 @@ logger = logging.getLogger(__name__)
 _INTERNAL_LABELS = frozenset({'Entity', 'Episodic', 'Community'})
 
 
+def _pick_endpoint(rec: dict[str, Any], side: str, internal: frozenset[str] | set[str]) -> str | None:
+    """The endpoint label to advertise for one side of a relationship-pattern row.
+
+    Prefer the flavour's announced LEAF column when it is present: on AGE
+    `source_labels` is the full ontology hierarchy, so picking positionally lands
+    on an abstract supertype — which no vertex carries as its stored label (a
+    label-scoped probe against it matches nothing), and which merges genuinely
+    distinct patterns wherever the caller dedups on the advertised pair.
+
+    Flavours that announce no leaf column (FalkorDB / openCypher, where
+    `labels(s)` already lists matchable labels) keep the positional pick over the
+    filtered list — behaviour unchanged.
+
+    NOTE: get_schema in graphiti_mcp_server.py carries a textually parallel copy.
+    The two consumers are deliberately independent (no cross-module import between
+    the tool module and the server module); keep them in step.
+    """
+    leaf = rec.get(f'{side}_leaf')
+    if leaf and leaf not in internal:
+        return leaf
+    labels = [l for l in rec.get(f'{side}_labels') or [] if l not in internal]
+    return labels[0] if labels else None
+
+
 async def profile_graph(
     driver: Any,
     *,
@@ -286,15 +310,13 @@ async def _profile_relationships(
         )
         patterns = []
         for rec in pattern_records:
-            # The seam's aliases (`source_labels`/`target_labels`), shared by both
-            # variants — get_schema parses the same rows with the same names.
-            src_labels = [l for l in rec.get('source_labels') or [] if l not in _INTERNAL_LABELS]
-            tgt_labels = [l for l in rec.get('target_labels') or [] if l not in _INTERNAL_LABELS]
-            if src_labels and tgt_labels:
-                # RECORDED LIMITATION: the `[0]` endpoint pick is hierarchy-arbitrary
-                # (the label list is explicitly unordered). Pre-existing behaviour,
-                # shared with get_schema; unchanged here on purpose.
-                pair = [src_labels[0], tgt_labels[0]]
+            # The seam's aliases (`source_labels`/`target_labels` plus the optional
+            # `source_leaf`/`target_leaf`), shared by both variants — get_schema
+            # parses the same rows with the same names.
+            src_endpoint = _pick_endpoint(rec, 'source', _INTERNAL_LABELS)
+            tgt_endpoint = _pick_endpoint(rec, 'target', _INTERNAL_LABELS)
+            if src_endpoint and tgt_endpoint:
+                pair = [src_endpoint, tgt_endpoint]
                 if pair not in patterns:
                     patterns.append(pair)
 

@@ -120,7 +120,13 @@ class BaseFlavour:
 
         Both variants MUST project the same aliases (`lbls`/`cnt`,
         `source_labels`/`target_labels`): get_schema parses either flavour's rows
-        with one shared loop."""
+        with one shared loop.
+
+        A flavour whose `source_labels` is a HIERARCHY (AGE) additionally projects
+        `source_leaf`/`target_leaf` — the single matchable endpoint label. Those
+        columns are OPTIONAL: consumers prefer them when present and fall back to
+        picking positionally from the label list when they are absent, which is
+        what keeps this base variant's behaviour unchanged."""
         return {
             "label_counts": "MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt",
             "rel_patterns": (

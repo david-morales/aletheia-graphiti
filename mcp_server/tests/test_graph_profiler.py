@@ -492,15 +492,28 @@ class _AgeStubDriver:
 
     One census row carries `lbls: None`: AGE returns label-less vertices with a
     null labels list, and a `.get(k, [])` default does NOT cover an explicit null.
+
+    The relationship-pattern census answers leaf columns ONLY when the query asks
+    for them (`label(s) AS source_leaf`), so the same stub exercises both the
+    leaf-preferring path and the positional fallback. `sibling_leaves` adds a
+    second endpoint sharing the SAME supertype under a different leaf — two
+    genuinely distinct patterns that a supertype-level pick collapses into one.
     """
 
     _LEAF = ['Persona']
     _HIERARCHY = ['Entity', 'Actor', 'Persona']
+    _SIBLING_HIERARCHY = ['Entity', 'Actor', 'Empresa']
 
-    def __init__(self, unmatchable: set[str] | None = None, unmatchable_raises: bool = True):
+    def __init__(
+        self,
+        unmatchable: set[str] | None = None,
+        unmatchable_raises: bool = True,
+        sibling_leaves: bool = False,
+    ):
         self.queries: list[str] = []
         self.unmatchable = unmatchable or set()
         self.unmatchable_raises = unmatchable_raises
+        self.sibling_leaves = sibling_leaves
 
     def _probes_an_unmatchable_label(self, query: str) -> bool:
         # Both label-scoped shapes the profiler emits: the node sample / value
@@ -530,8 +543,19 @@ class _AgeStubDriver:
         if 'type(r) AS rel_type' in query:
             return [{'rel_type': 'ES_DETENIDO', 'cnt': 2}], None, None
         if 'AS source_labels' in query:
-            src = self._HIERARCHY if 's.labels AS source_labels' in query else self._LEAF
-            return [{'source_labels': src, 'target_labels': ['Detencion']}], None, None
+            announces_leaf = 'AS source_leaf' in query
+            hierarchies = [self._HIERARCHY]
+            if self.sibling_leaves:
+                hierarchies.append(self._SIBLING_HIERARCHY)
+            rows = []
+            for hierarchy in hierarchies:
+                src = hierarchy if 's.labels AS source_labels' in query else self._LEAF
+                row: dict = {'source_labels': src, 'target_labels': ['Detencion']}
+                if announces_leaf:
+                    row['source_leaf'] = hierarchy[-1]
+                    row['target_leaf'] = 'Detencion'
+                rows.append(row)
+            return rows, None, None
         if 's.name AS source' in query:
             return [{'source': 'OMAR MOHAMED', 'target': 'Detencion 4/2026'}], None, None
         if 'avg(deg) AS avg_deg' in query:
@@ -610,24 +634,52 @@ class TestFlavourAwareRelationshipPatterns:
         assert probes, driver.queries
         assert all('s.labels AS source_labels' in q for q in probes), probes
         assert all('labels(s) AS source_labels' not in q for q in probes), probes
-        patterns = profiles['ES_DETENIDO']['source_target_patterns']
-        assert len(patterns) == 1, patterns
-        src_endpoint, tgt_endpoint = patterns[0]
-        # Membership, not position: the hierarchy list is explicitly unordered
-        # (models/response_types.py) and the `[0]` endpoint pick is pre-existing
-        # behaviour shared with FalkorDB — RECORDED LIMITATION, out of scope here.
-        assert src_endpoint in {'Actor', 'Persona'}, patterns
-        assert tgt_endpoint == 'Detencion', patterns
+        # EQUALITY, not membership: the announced leaf column is what makes the
+        # endpoint deterministic. The hierarchy list itself is unordered, so a
+        # positional pick over it could name any non-internal member.
+        assert profiles['ES_DETENIDO']['source_target_patterns'] == [
+            ['Persona', 'Detencion']
+        ], profiles['ES_DETENIDO']
+
+    @pytest.mark.asyncio
+    async def test_the_out_degree_probe_receives_the_leaf_label(self):
+        """The endpoint feeds a label-scoped probe. A supertype endpoint makes it
+        MATCH a label with no label table — a silent 0.0 where AGE has a real
+        number. `unmatchable={'Actor'}` is exactly that trap."""
+        driver = _AgeStubDriver(unmatchable={'Actor'})
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        degree_probes = [q for q in driver.queries if 'avg(deg) AS avg_deg' in q]
+        assert degree_probes, driver.queries
+        assert all('(s:`Persona`)' in q for q in degree_probes), degree_probes
+        assert profiles['ES_DETENIDO']['avg_out_degree'] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_two_leaves_under_one_supertype_stay_two_patterns(self):
+        """`if pair not in patterns` dedups on the announced endpoint, so a
+        supertype-level pick merges Persona and Empresa into one `Actor` row and
+        the Overview tab loses a relationship pattern outright."""
+        driver = _AgeStubDriver(sibling_leaves=True)
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        assert profiles['ES_DETENIDO']['source_target_patterns'] == [
+            ['Persona', 'Detencion'],
+            ['Empresa', 'Detencion'],
+        ], profiles['ES_DETENIDO']
 
     @pytest.mark.asyncio
     async def test_no_flavour_keeps_the_historic_pattern_endpoints(self):
-        """Back-compat pin: the base census still reads `labels(s)`/`labels(t)`."""
+        """Back-compat pin: the base census still reads `labels(s)`/`labels(t)`,
+        announces NO leaf column, and so keeps the positional pick."""
         driver = _AgeStubDriver()
 
         profiles = await _profile_relationships(driver, sample_size=5)
 
         probes = [q for q in driver.queries if 'RETURN DISTINCT' in q]
         assert probes and all('labels(s)' in q and 'labels(t)' in q for q in probes), probes
+        assert all('source_leaf' not in q for q in probes), probes
         assert profiles['ES_DETENIDO']['source_target_patterns'] == [['Persona', 'Detencion']]
 
     @pytest.mark.asyncio

@@ -1754,6 +1754,30 @@ async def health_check(request) -> JSONResponse:
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
+def _pick_endpoint(rec: dict[str, Any], side: str, internal: frozenset[str] | set[str]) -> str | None:
+    """The endpoint label to advertise for one side of a relationship-pattern row.
+
+    Prefer the flavour's announced LEAF column when it is present: on AGE
+    `source_labels` is the full ontology hierarchy, so picking positionally lands
+    on an abstract supertype — which no vertex carries as its stored label (a
+    label-scoped probe against it matches nothing), and which merges genuinely
+    distinct patterns wherever the caller dedups on the advertised pair.
+
+    Flavours that announce no leaf column (FalkorDB / openCypher, where
+    `labels(s)` already lists matchable labels) keep the positional pick over the
+    filtered list — behaviour unchanged.
+
+    NOTE: graph_profiler.py carries a textually parallel copy. The two consumers
+    are deliberately independent (no cross-module import between the server module
+    and the tool module); keep them in step.
+    """
+    leaf = rec.get(f'{side}_leaf')
+    if leaf and leaf not in internal:
+        return leaf
+    labels = [l for l in rec.get(f'{side}_labels') or [] if l not in internal]
+    return labels[0] if labels else None
+
+
 async def get_schema() -> SchemaResponse:
     """Retrieve the structural schema of the knowledge graph.
 
@@ -1854,10 +1878,12 @@ async def get_schema() -> SchemaResponse:
             )
             patterns = []
             for rec in pattern_records:
-                src = [l for l in rec.get('source_labels') or [] if l not in internal_labels]
-                tgt = [l for l in rec.get('target_labels') or [] if l not in internal_labels]
+                # Endpoint choice only — this loop never deduped, and it still
+                # does not (the census is already DISTINCT).
+                src = _pick_endpoint(rec, 'source', internal_labels)
+                tgt = _pick_endpoint(rec, 'target', internal_labels)
                 if src and tgt:
-                    patterns.append([src[0], tgt[0]])
+                    patterns.append([src, tgt])
 
             relationship_types[rel_type] = {
                 'count': rel_counts[rel_type],

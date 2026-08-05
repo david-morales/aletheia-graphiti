@@ -109,6 +109,32 @@ def test_both_censuses_project_the_same_aliases():
         assert "AS target_labels" in q["rel_patterns"], flavour.name
 
 
+def test_age_rel_patterns_also_announces_the_endpoint_leaf():
+    """On AGE `source_labels` is the whole HIERARCHY, so a positional pick lands
+    on an abstract supertype: unmatchable, and it collapses distinct leaf patterns
+    into one. `label(n)` returns exactly the leaf, so the census announces it as an
+    OPTIONAL extra column the consumers prefer when present."""
+    q = AgeFlavour().census_queries()["rel_patterns"]
+    assert "label(s) AS source_leaf" in q, q
+    assert "label(t) AS target_leaf" in q, q
+    # ...and the shared aliases are still there: the leaf columns are additive.
+    assert "s.labels AS source_labels" in q, q
+    assert "t.labels AS target_labels" in q, q
+
+
+def test_base_rel_patterns_announces_no_leaf_columns():
+    """The base/FalkorDB text stays byte-identical: `labels(s)` is already the
+    matchable label set there, so the consumers keep the positional pick."""
+    for flavour in (BaseFlavour(), FalkorDbFlavour()):
+        q = flavour.census_queries()["rel_patterns"]
+        assert "source_leaf" not in q, flavour.name
+        assert "target_leaf" not in q, flavour.name
+    assert BaseFlavour().census_queries()["rel_patterns"] == (
+        "MATCH (s)-[r:`{rel_type}`]->(t) "
+        "RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20"
+    )
+
+
 def test_base_announces_no_census_caveat():
     # Nothing to warn about: on FalkorDB/Neo4j every censused label is matchable.
     assert BaseFlavour().census_notes() == []
