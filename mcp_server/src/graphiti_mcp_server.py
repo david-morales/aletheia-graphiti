@@ -86,6 +86,7 @@ from models.response_types import (
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from tool_annotations import annotations_for, apply_canonical_tool_order
+from version import CONNECTOR_VERSION
 from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
@@ -1346,7 +1347,11 @@ async def get_status() -> StatusResponse:
     global graphiti_service
 
     if graphiti_service is None:
-        return StatusResponse(status='error', message='Graphiti service not initialized')
+        return StatusResponse(
+            status='error',
+            message='Graphiti service not initialized',
+            version=CONNECTOR_VERSION,
+        )
 
     try:
         client = await graphiti_service.get_client()
@@ -1363,6 +1368,7 @@ async def get_status() -> StatusResponse:
         return StatusResponse(
             status='ok',
             message=f'Graphiti MCP server is running and connected to {provider_name} database',
+            version=CONNECTOR_VERSION,
         )
     except Exception as e:
         error_msg = str(e)
@@ -1370,6 +1376,7 @@ async def get_status() -> StatusResponse:
         return StatusResponse(
             status='error',
             message=f'Graphiti MCP server is running but database connection failed: {error_msg}',
+            version=CONNECTOR_VERSION,
         )
 
 

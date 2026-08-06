@@ -45,8 +45,11 @@ class EpisodeSearchResponse(TypedDict):
 
 
 class StatusResponse(TypedDict):
+    """get_status. `version` is the CONNECTOR's build, not the MCP SDK's — the
+    wire's `serverInfo.version` reports the SDK and is identical fleet-wide."""
     status: str
     message: str
+    version: str
 
 
 class EdgeResult(TypedDict):

@@ -197,7 +197,7 @@ def test_every_tool_publishes_the_error_key(listed, tool_name):
 def test_get_status_reports_health_through_status_not_error(listed):
     """Pin the exemption above so it stays a decision, not an oversight."""
     props = set(listed['get_status'].outputSchema.get('properties') or {})
-    assert props == {'status', 'message'}
+    assert props == {'status', 'message', 'version'}
 
 
 def _validates(tool, payload):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from domain_profile import DomainProfile
+from version import CONNECTOR_BUILD
 
 if TYPE_CHECKING:
     from flavours.base import Flavour
@@ -163,6 +164,8 @@ def build_degraded_instructions(
     parts = [
         marker,
         '',
+        f'Connector: {CONNECTOR_BUILD}',
+        '',
         f'This connector ({group_id}) could not introspect its graph at startup, so it has',
         'no live entity catalog, no relationship catalog, no counts and no sample values to',
         'announce. Every tool below is registered and functional -- only the DESCRIPTIONS',
@@ -185,7 +188,9 @@ def build_degraded_instructions(
 
 def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
     """Build the MCP server instructions from a DomainProfile (and the backend flavour)."""
-    parts = []
+    # Which build wrote this guidance (A-D11). It travels with the announcement a
+    # consumer captures and caches, so a stale cache is identifiable after the fact.
+    parts = [f'Connector: {CONNECTOR_BUILD}', '']
 
     # Domain summary
     if profile.entity_types:
