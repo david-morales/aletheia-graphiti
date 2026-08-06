@@ -81,6 +81,7 @@ from models.response_types import (
     SuccessResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
+from tool_annotations import annotations_for
 from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
@@ -603,7 +604,7 @@ def format_node_result(node: EntityNode) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('add_memory'))
 async def add_memory(
     name: str | None = None,
     episode_body: str | None = None,
@@ -1045,7 +1046,7 @@ async def explore_node(
         return ErrorResponse(error=f'Explore error: {e}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('get_episode_context'))
 async def get_episode_context(
     episode_uuids: list[str],
 ) -> EpisodeContextResponse | ErrorResponse:
@@ -1103,7 +1104,7 @@ async def get_episode_context(
         return ErrorResponse(error=f'Episode context error: {e}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('build_communities'))
 async def build_communities(
     group_ids: list[str],
 ) -> CommunityBuildResponse | ErrorResponse:
@@ -1150,7 +1151,7 @@ async def build_communities(
         return ErrorResponse(error=f'Community build error: {e}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('delete_entity_edge'))
 async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
     """Delete a relationship (edge) from the knowledge graph.
 
@@ -1181,7 +1182,7 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
         return ErrorResponse(error=f'Error deleting entity edge: {error_msg}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('delete_episode'))
 async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
     """Delete an episode and its extracted data from the knowledge graph.
 
@@ -1211,7 +1212,7 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
         return ErrorResponse(error=f'Error deleting episode: {error_msg}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('get_episodes'))
 async def get_episodes(
     group_ids: list[str] | None = None,
     max_episodes: int = 10,
@@ -1283,7 +1284,7 @@ async def get_episodes(
         return ErrorResponse(error=f'Error getting episodes: {error_msg}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('clear_graph'))
 async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | ErrorResponse:
     """Delete all data from the knowledge graph for specified group IDs.
 
@@ -1326,7 +1327,7 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
         return ErrorResponse(error=f'Error clearing graph: {error_msg}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('get_status'))
 async def get_status() -> StatusResponse:
     """Check if the MCP server and database connection are healthy.
 
@@ -2091,7 +2092,7 @@ def _subgraph_node_row(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('sample_subgraph'))
 async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
     """Flavour-normalized node/edge sample of the knowledge graph.
 
@@ -2371,15 +2372,44 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     # description + server instructions (ADR-019 R1/R6).
     flavour = graphiti_service.flavour if graphiti_service is not None else None
 
-    mcp.add_tool(search, description=build_search_description(profile))
-    mcp.add_tool(explore_node, description=build_explore_node_description(profile))
-    mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
-    mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
-    mcp.add_tool(get_schema, description=build_get_schema_description(profile))
-    mcp.add_tool(get_ontology_structure)
-    mcp.add_tool(get_ontology_documentation)
-    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile, flavour))
-    mcp.add_tool(profile_graph)
+    # Annotations (ADR-019 R3) come from the one table in tool_annotations.py, the same
+    # source the static @mcp.tool() decorators read — the two paths cannot drift.
+    mcp.add_tool(
+        search,
+        description=build_search_description(profile),
+        annotations=annotations_for('search'),
+    )
+    mcp.add_tool(
+        explore_node,
+        description=build_explore_node_description(profile),
+        annotations=annotations_for('explore_node'),
+    )
+    mcp.add_tool(
+        search_ontology,
+        description=build_search_ontology_description(profile),
+        annotations=annotations_for('search_ontology'),
+    )
+    mcp.add_tool(
+        explore_ontology,
+        description=build_explore_ontology_description(profile),
+        annotations=annotations_for('explore_ontology'),
+    )
+    mcp.add_tool(
+        get_schema,
+        description=build_get_schema_description(profile),
+        annotations=annotations_for('get_schema'),
+    )
+    mcp.add_tool(get_ontology_structure, annotations=annotations_for('get_ontology_structure'))
+    mcp.add_tool(
+        get_ontology_documentation,
+        annotations=annotations_for('get_ontology_documentation'),
+    )
+    mcp.add_tool(
+        run_cypher,
+        description=build_run_cypher_description(profile, flavour),
+        annotations=annotations_for('run_cypher'),
+    )
+    mcp.add_tool(profile_graph, annotations=annotations_for('profile_graph'))
 
     # Update MCP instructions
     mcp._mcp_server.instructions = build_instructions(profile, flavour)
