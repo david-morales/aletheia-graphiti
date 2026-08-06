@@ -181,6 +181,33 @@ class AGEGraphOperations(GraphOperationsInterface):
     # vertex's map and the write
     # would then stamp it onto this one. Scoping also makes the read address
     # exactly one vertex, so there is no first-row/last-row ambiguity to resolve.
+    # ------------------------------------------------------- label-bearing writes
+    @staticmethod
+    async def _write(
+        driver: Any,
+        cypher: str,
+        *,
+        vertex_labels: tuple[str, ...] = (),
+        edge_labels: tuple[str, ...] = (),
+    ):
+        """Run a write that NAMES labels, materialising those labels first.
+
+        AGE creates a label's backing relations on first use, implicitly and
+        without a lock, so concurrent writers sharing a brand-new label collide on
+        the DDL and the losers lose their save entirely (BUG-38 — see
+        `AGEDriver._ensure_label`). Declaring the labels here means the graph
+        already has them by the time the MERGE runs.
+
+        Every MERGE/CREATE in this class goes through this method; that is what
+        keeps the guarantee from depending on each writer remembering. Read
+        patterns do NOT need it: AGE's MATCH on an unknown label creates nothing.
+        """
+        for label in vertex_labels:
+            await driver.ensure_vertex_label(label)
+        for label in edge_labels:
+            await driver.ensure_edge_label(label)
+        return await driver.execute_query(cypher)
+
     @staticmethod
     def _node_read_pattern(label: str) -> tuple[str, str]:
         """Read pattern for the vertex `node_save`/`_write_entity_from_fields` MERGE."""
@@ -252,8 +279,10 @@ class AGEGraphOperations(GraphOperationsInterface):
             'labels': list(node.labels or []),
             'attributes': _merged_attributes(stored, getattr(node, 'attributes', {}) or {}),
         }
-        await driver.execute_query(
-            f'MERGE (n:{label} {{uuid: {_cy(node.uuid)}}}) SET n += {_map(props)}'
+        await self._write(
+            driver,
+            f'MERGE (n:{label} {{uuid: {_cy(node.uuid)}}}) SET n += {_map(props)}',
+            vertex_labels=(label,),
         )
         content = (node.name or '') + '\n' + (getattr(node, 'summary', '') or '')
         await driver.execute_sql(
@@ -341,8 +370,10 @@ class AGEGraphOperations(GraphOperationsInterface):
             'created_at': node.created_at.isoformat(),
             'valid_at': node.valid_at.isoformat(),
         }
-        await driver.execute_query(
-            f'MERGE (e:Episodic {{uuid: {_cy(node.uuid)}}}) SET e += {_map(props)}'
+        await self._write(
+            driver,
+            f'MERGE (e:Episodic {{uuid: {_cy(node.uuid)}}}) SET e += {_map(props)}',
+            vertex_labels=('Episodic',),
         )
 
     def _hydrate_episodic(self, cls: Any, props: dict[str, Any]) -> Any:
@@ -431,11 +462,13 @@ class AGEGraphOperations(GraphOperationsInterface):
             'expired_at': _iso(getattr(edge, 'expired_at', None)),
             'attributes': _merged_attributes(stored, getattr(edge, 'attributes', {}) or {}),
         }
-        await driver.execute_query(
+        await self._write(
+            driver,
             f'MATCH (a), (b) WHERE a.uuid = {_cy(edge.source_node_uuid)} '
             f'AND b.uuid = {_cy(edge.target_node_uuid)} '
             f'MERGE (a)-[r:{label} {{uuid: {_cy(edge.uuid)}}}]->(b) '
-            f'SET r += {_map(props)}'
+            f'SET r += {_map(props)}',
+            edge_labels=(label,),
         )
         content = (getattr(edge, 'name', '') or '') + '\n' + (getattr(edge, 'fact', '') or '')
         await driver.execute_sql(
@@ -560,13 +593,15 @@ class AGEGraphOperations(GraphOperationsInterface):
         pointing at an episode or entity that was never persisted) is a real
         integrity problem, so it belongs in the logs rather than in a later count.
         """
-        records, _, _ = await driver.execute_query(
+        records, _, _ = await self._write(
+            driver,
             f'MATCH (e:Episodic), (n) '
             f'WHERE e.uuid = {_cy(props["source_node_uuid"])} '
             f'AND n.uuid = {_cy(props["target_node_uuid"])} '
             f'AND n.labels IS NOT NULL '
             f'MERGE (e)-[r:MENTIONS {{uuid: {_cy(props["uuid"])}}}]->(n) '
-            f'SET r += {_map(props)} RETURN r.uuid AS uuid'
+            f'SET r += {_map(props)} RETURN r.uuid AS uuid',
+            edge_labels=('MENTIONS',),
         )
         if not records:
             logger.warning(
@@ -645,8 +680,10 @@ class AGEGraphOperations(GraphOperationsInterface):
             'labels': list(d.get('labels') or []),
             'attributes': merged,
         }
-        await driver.execute_query(
-            f'MERGE (n:{label} {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}'
+        await self._write(
+            driver,
+            f'MERGE (n:{label} {{uuid: {_cy(d["uuid"])}}}) SET n += {_map(props)}',
+            vertex_labels=(label,),
         )
         await self._upsert_node_shadow(driver, d)
         return merged
@@ -664,8 +701,10 @@ class AGEGraphOperations(GraphOperationsInterface):
             'created_at': self._iso(d.get('created_at')),
             'valid_at': self._iso(d.get('valid_at')),
         }
-        await driver.execute_query(
-            f'MERGE (e:Episodic {{uuid: {_cy(d["uuid"])}}}) SET e += {_map(props)}'
+        await self._write(
+            driver,
+            f'MERGE (e:Episodic {{uuid: {_cy(d["uuid"])}}}) SET e += {_map(props)}',
+            vertex_labels=('Episodic',),
         )
 
     _KNOWN_EDGE_KEYS = {
@@ -706,11 +745,13 @@ class AGEGraphOperations(GraphOperationsInterface):
             'expired_at': self._iso(d.get('expired_at')),
             'attributes': merged,
         }
-        await driver.execute_query(
+        await self._write(
+            driver,
             f'MATCH (a), (b) WHERE a.uuid = {_cy(d["source_node_uuid"])} '
             f'AND b.uuid = {_cy(d["target_node_uuid"])} '
             f'MERGE (a)-[r:{label} {{uuid: {_cy(d["uuid"])}}}]->(b) '
-            f'SET r += {_map(props)}'
+            f'SET r += {_map(props)}',
+            edge_labels=(label,),
         )
         content = (d.get('name') or '') + '\n' + (d.get('fact') or '')
         await driver.execute_sql(

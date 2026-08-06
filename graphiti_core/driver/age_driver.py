@@ -199,6 +199,10 @@ class AGEDriver(GraphDriver):
         self._database = graph_name
         self.embedding_dim = embedding_dim
         self._pool: asyncpg.Pool | None = None
+        # (kind, label) pairs this driver has already materialised — see
+        # `_ensure_label`. Positive entries only, so a label another process
+        # created is simply re-verified once and then cached too.
+        self._known_labels: set[tuple[str, str]] = set()
         # Escape-hatch: assign the interface implementations. Imported lazily to
         # avoid a circular import at module load.
         from graphiti_core.driver.graph_operations.age_graph_operations import (
@@ -225,6 +229,68 @@ class AGEDriver(GraphDriver):
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             return await conn.fetch(sql, *args)
+
+    # ---- label materialisation (BUG-38: AGE's implicit label DDL is not safe
+    # ---- under concurrency) --------------------------------------------------
+    #
+    # AGE creates a label's backing relations the first time a MERGE/CREATE names
+    # it, implicitly, from inside whatever statement gets there first — with no
+    # lock and no IF NOT EXISTS. Concurrent writers sharing a brand-new label
+    # therefore run the same DDL at once and the losers abort their whole save:
+    #   DuplicateTableError  42P07  relation "BROADER" already exists
+    #   UniqueViolationError 23505  pg_class_relname_nsp_index / "BROADER_id_seq"
+    # (5 of 428 skos:broader edges lost on a live ontology load, 2026-08-05.)
+    #
+    # Catching those two SQLSTATEs and retrying would be a guess at a list AGE
+    # does not publish — it creates a table AND a sequence per label today, and
+    # the collision can land on either. Instead the DDL is made EXPLICIT and
+    # serialized: one advisory lock per (graph, label), taken only on the path
+    # that would otherwise create the label, released at commit. Writers declare
+    # the labels they name (`AGEGraphOperations._write`), so by the time any
+    # MERGE runs its labels already exist and the implicit path is never reached
+    # concurrently. Per-label keying keeps unrelated labels parallel.
+
+    async def _label_exists(self, conn: asyncpg.Connection, label: str) -> bool:
+        return bool(
+            await conn.fetchval(
+                'SELECT 1 FROM ag_catalog.ag_label l '
+                'JOIN ag_catalog.ag_graph g ON g.graphid = l.graph '
+                'WHERE g.name = $1 AND l.name = $2',
+                self._database,
+                label,
+            )
+        )
+
+    async def _ensure_label(self, label: str, kind: str) -> None:
+        if (kind, label) in self._known_labels:
+            return
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            if not await self._label_exists(conn, label):
+                async with conn.transaction():
+                    # Transaction-scoped: the winner holds it across its DDL, the
+                    # losers block here and then find the label already present.
+                    await conn.execute(
+                        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+                        self._database,
+                        label,
+                    )
+                    if not await self._label_exists(conn, label):
+                        create = 'create_vlabel' if kind == 'v' else 'create_elabel'
+                        await conn.execute(
+                            f'SELECT ag_catalog.{create}($1::name::cstring, $2::name::cstring)',
+                            self._database,
+                            label,
+                        )
+        self._known_labels.add((kind, label))
+
+    async def ensure_vertex_label(self, label: str) -> None:
+        """Materialise a vertex label before any write MERGEs on it."""
+        await self._ensure_label(label, 'v')
+
+    async def ensure_edge_label(self, label: str) -> None:
+        """Materialise an edge label before any write MERGEs on it."""
+        await self._ensure_label(label, 'e')
 
     # Shadow tables (pgvector + tsvector) keyed by node/edge uuid. AGE has no
     # native vector or fulltext, so search runs against these, kept in sync by
@@ -387,6 +453,10 @@ class AGEDriver(GraphDriver):
             if delete_existing:
                 if await self._graph_exists(conn):
                     await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+                # Dropping the graph drops every label with it; a cache that
+                # survived would let the first write after a rebuild fall back
+                # into the unsynchronised implicit-DDL path.
+                self._known_labels.clear()
                 await conn.execute(f'DROP TABLE IF EXISTS {self._node_tbl} CASCADE')
                 await conn.execute(f'DROP TABLE IF EXISTS {self._edge_tbl} CASCADE')
             if not await self._graph_exists(conn):
@@ -446,5 +516,6 @@ class AGEDriver(GraphDriver):
         async with pool.acquire() as conn:
             if await self._graph_exists(conn):
                 await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+            self._known_labels.clear()
             await conn.execute(f'DROP TABLE IF EXISTS {self._node_tbl} CASCADE')
             await conn.execute(f'DROP TABLE IF EXISTS {self._edge_tbl} CASCADE')
