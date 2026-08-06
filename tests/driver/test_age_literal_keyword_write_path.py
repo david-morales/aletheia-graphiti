@@ -111,6 +111,25 @@ def test_word_containing_return_is_still_not_a_clause():
     assert AGEDriver._columns_from_return('MATCH (n) RETURN n.returns AS returned') == ['returned']
 
 
+def test_trailing_subclause_keyword_inside_a_literal_does_not_truncate():
+    """Same class of bug on the ORDER BY / LIMIT / SKIP strip: a literal holding
+    the word truncated the clause and returned a column list one short, which AGE
+    rejects for arity ("return row and column definition list do not match")."""
+    assert AGEDriver._columns_from_return(
+        "MATCH (n) RETURN 'no limit' AS nota, n.x AS y"
+    ) == ['nota', 'y']
+    assert AGEDriver._columns_from_return(
+        "MATCH (n) RETURN 'skip it' AS nota, n.x AS y ORDER BY y LIMIT 3"
+    ) == ['nota', 'y']
+
+
+def test_a_property_named_order_is_not_an_order_by_subclause():
+    assert AGEDriver._columns_from_return('MATCH (n) RETURN n.order AS orden, n.x AS y') == [
+        'orden',
+        'y',
+    ]
+
+
 # ------------------------------------------------------------------- live: write path
 
 
