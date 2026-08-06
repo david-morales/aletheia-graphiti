@@ -292,7 +292,10 @@ class AGEDriver(GraphDriver):
                     # takes a fresh snapshot and therefore sees the winner's
                     # committed label. Under REPEATABLE READ or SERIALIZABLE the
                     # loser's snapshot predates that commit, the re-check misses,
-                    # and create_vlabel/create_elabel raises 42P07 — i.e. the very
+                    # and create_vlabel/create_elabel raises 3F000 ("label …
+                    # already exists" — AGE checks its own catalog before any
+                    # CREATE TABLE, so the implicit-DDL 42P07 never appears on
+                    # this path; measured at 24-way concurrency) — i.e. the very
                     # failure this guard exists to prevent. Postgres ships READ
                     # COMMITTED by default and the AGE bed runs it; a deployment
                     # that raises default_transaction_isolation must set this
