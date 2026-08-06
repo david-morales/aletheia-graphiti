@@ -60,6 +60,89 @@ def _is_word_char(ch: str) -> bool:
     return bool(ch) and (ch.isalnum() or ch == '_')
 
 
+def _iter_code_chars(s: str):
+    """Yield ``(index, char, depth)`` for every CODE character of ``s``.
+
+    Skipped whole: string literals (``'…'``, ``"…"``), backtick-quoted identifiers
+    (``n.`credit union```) and comments (``//…``, ``/*…*/``). ``depth`` is the
+    bracket nesting level counted over code characters only, reported with an
+    opening bracket already counted and a closing bracket already discounted.
+
+    This is the ONE lexer every structural scan below runs on — the RETURN and
+    UNION and ORDER BY/LIMIT/SKIP keyword searches and the projection-splitting
+    comma search. It exists because this driver builds every write by inlining
+    its property values as Cypher literals (``SET n += {summary: '…'}``), so the
+    query text is part query and part arbitrary user DATA. A scan over the raw
+    text cannot tell the two apart, and any keyword or comma inside a value then
+    steers the generated ``AS (col agtype, …)`` list — which is how a summary
+    containing ``… RETURN p.name, count(d)`` made AGE reject the whole write with
+    ``column definition list for CREATE clause must contain a single agtype
+    attribute`` (BUG-42). Deriving structure only from code positions makes that
+    impossible for ANY value, not just the ones seen so far.
+
+    An unterminated literal or comment runs to the end of the string, which ends
+    the scan rather than hanging it.
+    """
+    depth = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch in '\'"`':
+            quote = ch
+            i += 1
+            while i < n:
+                c = s[i]
+                # Backtick-quoted identifiers take no backslash escapes (a literal
+                # backtick is doubled, which closes and immediately reopens here —
+                # harmless, since the span still ends where the identifier does).
+                if quote != '`' and c == '\\':
+                    i += 2
+                    continue
+                i += 1
+                if c == quote:
+                    break
+            continue
+        if ch == '/' and s[i + 1 : i + 2] == '/':
+            end = s.find('\n', i + 2)
+            i = n if end == -1 else end + 1
+            continue
+        if ch == '/' and s[i + 1 : i + 2] == '*':
+            end = s.find('*/', i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        yield i, ch, depth
+        i += 1
+
+
+def _iter_code_keyword(s: str, keyword: str, top_level_only: bool = False):
+    """Yield the index of every whole-word, code-position ``keyword`` occurrence.
+
+    Case-insensitive. ``top_level_only`` additionally restricts matches to bracket
+    depth 0. Occurrences inside literals, backticked identifiers or comments are
+    not query structure and are never yielded — see ``_iter_code_chars``.
+    """
+    k = len(keyword)
+    heads = (keyword[0].lower(), keyword[0].upper())
+    for i, ch, depth in _iter_code_chars(s):
+        if ch not in heads or (top_level_only and depth != 0):
+            continue
+        if s[i : i + k].lower() != keyword:
+            continue
+        before = s[i - 1] if i else ''
+        if not _is_word_char(before) and not _is_word_char(s[i + k : i + k + 1]):
+            yield i
+
+
+def _find_code_keyword(s: str, keyword: str, top_level_only: bool = False) -> int:
+    """Index of the first whole-word, code-position ``keyword``; -1 when absent."""
+    return next(_iter_code_keyword(s, keyword, top_level_only), -1)
+
+
 def _dollar_quote_tag(query: str) -> str:
     """A dollar-quote tag (``$q<hex8>$``) that does not occur inside ``query``.
 
@@ -116,6 +199,10 @@ class AGEDriver(GraphDriver):
         self._database = graph_name
         self.embedding_dim = embedding_dim
         self._pool: asyncpg.Pool | None = None
+        # (kind, label) pairs this driver has already materialised — see
+        # `_ensure_label`. Positive entries only, so a label another process
+        # created is simply re-verified once and then cached too.
+        self._known_labels: set[tuple[str, str]] = set()
         # Escape-hatch: assign the interface implementations. Imported lazily to
         # avoid a circular import at module load.
         from graphiti_core.driver.graph_operations.age_graph_operations import (
@@ -143,6 +230,93 @@ class AGEDriver(GraphDriver):
         async with pool.acquire() as conn:
             return await conn.fetch(sql, *args)
 
+    # ---- label materialisation (BUG-38: AGE's implicit label DDL is not safe
+    # ---- under concurrency) --------------------------------------------------
+    #
+    # AGE creates a label's backing relations the first time a MERGE/CREATE names
+    # it, implicitly, from inside whatever statement gets there first — with no
+    # lock and no IF NOT EXISTS. Concurrent writers sharing a brand-new label
+    # therefore run the same DDL at once and the losers abort their whole save:
+    #   DuplicateTableError  42P07  relation "BROADER" already exists
+    #   UniqueViolationError 23505  pg_class_relname_nsp_index / "BROADER_id_seq"
+    # (5 of 428 skos:broader edges lost on a live ontology load, 2026-08-05.)
+    #
+    # Catching those two SQLSTATEs and retrying would be a guess at a list AGE
+    # does not publish — it creates a table AND a sequence per label today, and
+    # the collision can land on either. Instead the DDL is made EXPLICIT and
+    # serialized: one advisory lock per (graph, label), taken only on the path
+    # that would otherwise create the label, released at commit. Writers declare
+    # the labels they name (`AGEGraphOperations._write`), so by the time any
+    # MERGE runs its labels already exist and the implicit path is never reached
+    # concurrently. Per-label keying keeps unrelated labels parallel.
+
+    async def _label_exists(self, conn: asyncpg.Connection, label: str, kind: str) -> bool:
+        """Whether this graph already has ``label`` AS ``kind`` ('v' or 'e').
+
+        The kind belongs in the filter because the cache this feeds is keyed on
+        (kind, label). Matching on the name alone would report an existing VERTEX
+        label as satisfying a request for an EDGE label of that name: the miss
+        path would be skipped, nothing created, and ('e', name) cached as present
+        — a recorded fact that is not true. AGE forbids the two anyway
+        (``create_elabel`` then raises ``label "X" already exists``, SQLSTATE
+        3F000), so filtering by kind costs nothing and lets that clear error
+        surface instead of being cached over.
+        """
+        return bool(
+            await conn.fetchval(
+                'SELECT 1 FROM ag_catalog.ag_label l '
+                'JOIN ag_catalog.ag_graph g ON g.graphid = l.graph '
+                'WHERE g.name = $1 AND l.name = $2 AND l.kind::text = $3',
+                self._database,
+                label,
+                kind,
+            )
+        )
+
+    async def _ensure_label(self, label: str, kind: str) -> None:
+        if (kind, label) in self._known_labels:
+            return
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            if not await self._label_exists(conn, label, kind):
+                async with conn.transaction():
+                    # Transaction-scoped: the winner holds it across its DDL, the
+                    # losers block here and then find the label already present.
+                    await conn.execute(
+                        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+                        self._database,
+                        label,
+                    )
+                    # This re-check is what makes the losers no-op, and it is
+                    # correct only under READ COMMITTED — where each statement
+                    # takes a fresh snapshot and therefore sees the winner's
+                    # committed label. Under REPEATABLE READ or SERIALIZABLE the
+                    # loser's snapshot predates that commit, the re-check misses,
+                    # and create_vlabel/create_elabel raises 3F000 ("label …
+                    # already exists" — AGE checks its own catalog before any
+                    # CREATE TABLE, so the implicit-DDL 42P07 never appears on
+                    # this path; measured at 24-way concurrency) — i.e. the very
+                    # failure this guard exists to prevent. Postgres ships READ
+                    # COMMITTED by default and the AGE bed runs it; a deployment
+                    # that raises default_transaction_isolation must set this
+                    # connection back to READ COMMITTED.
+                    if not await self._label_exists(conn, label, kind):
+                        create = 'create_vlabel' if kind == 'v' else 'create_elabel'
+                        await conn.execute(
+                            f'SELECT ag_catalog.{create}($1::name::cstring, $2::name::cstring)',
+                            self._database,
+                            label,
+                        )
+        self._known_labels.add((kind, label))
+
+    async def ensure_vertex_label(self, label: str) -> None:
+        """Materialise a vertex label before any write MERGEs on it."""
+        await self._ensure_label(label, 'v')
+
+    async def ensure_edge_label(self, label: str) -> None:
+        """Materialise an edge label before any write MERGEs on it."""
+        await self._ensure_label(label, 'e')
+
     # Shadow tables (pgvector + tsvector) keyed by node/edge uuid. AGE has no
     # native vector or fulltext, so search runs against these, kept in sync by
     # the graph_operations save methods. One pair per graph, in `public`.
@@ -163,21 +337,17 @@ class AGEDriver(GraphDriver):
 
     @staticmethod
     def _split_top_commas(s: str) -> list[str]:
+        """Split on the commas that separate projections — bracket depth 0 AND a
+        code position, so a comma inside a string literal (``RETURN 'a, b' AS x``)
+        never invents a column."""
         parts: list[str] = []
-        depth = 0
-        buf: list[str] = []
-        for ch in s:
-            if ch in '([{':
-                depth += 1
-            elif ch in ')]}':
-                depth -= 1
+        start = 0
+        for i, ch, depth in _iter_code_chars(s):
             if ch == ',' and depth == 0:
-                parts.append(''.join(buf))
-                buf = []
-            else:
-                buf.append(ch)
-        if buf:
-            parts.append(''.join(buf))
+                parts.append(s[start:i])
+                start = i + 1
+        if s[start:]:
+            parts.append(s[start:])
         return parts
 
     @staticmethod
@@ -192,7 +362,7 @@ class AGEDriver(GraphDriver):
         columns of a set operation after its FIRST arm, so the first branch's
         RETURN is the correct source.
 
-        Scans in the style of ``_split_top_commas`` — bracket depth, plus the
+        Runs on the shared ``_iter_code_chars`` lexer — bracket depth, plus the
         three spans where a ``UNION`` is only text and never a branch boundary:
         string literals (``'…'``, ``"…"``), backtick-quoted identifiers
         (``n.`credit union```), and comments (``//…``, ``/*…*/``). Cutting inside
@@ -200,44 +370,30 @@ class AGEDriver(GraphDriver):
         list then fails AGE's own arity check — a regression on queries that
         worked before, so all three are skipped whole.
         """
-        depth = 0
-        quote: str | None = None
-        i = 0
-        n = len(clause)
-        while i < n:
-            ch = clause[i]
-            if quote is not None:
-                # Backtick-quoted identifiers take no backslash escapes (a literal
-                # backtick is doubled, which closes and immediately reopens here —
-                # harmless, since the span still ends where the identifier does).
-                if quote != '`' and ch == '\\':
-                    i += 2
-                    continue
-                if ch == quote:
-                    quote = None
-                i += 1
-                continue
-            if ch == '/' and clause[i + 1 : i + 2] == '/':
-                end = clause.find('\n', i + 2)
-                i = n if end == -1 else end + 1
-                continue
-            if ch == '/' and clause[i + 1 : i + 2] == '*':
-                end = clause.find('*/', i + 2)
-                i = n if end == -1 else end + 2
-                continue
-            if ch in '\'"`':
-                quote = ch
-            elif ch in '([{':
-                depth += 1
-            elif ch in ')]}':
-                depth -= 1
-            elif depth == 0 and ch in 'uU' and clause[i : i + 5].lower() == 'union':
-                before = clause[i - 1] if i else ''
-                after = clause[i + 5 : i + 6]
-                if not _is_word_char(before) and not _is_word_char(after):
-                    return clause[:i]
-            i += 1
-        return clause
+        cut = _find_code_keyword(clause, 'union', top_level_only=True)
+        return clause if cut < 0 else clause[:cut]
+
+    @staticmethod
+    def _strip_trailing_subclauses(clause: str) -> str:
+        """Drop everything from the first ``ORDER BY`` / ``LIMIT`` / ``SKIP`` on.
+
+        Code positions only, for the same reason the rest of the scanning is:
+        ``RETURN 'no limit' AS nota, n.x AS y`` must keep both projections. A raw
+        text split truncated the clause at the word inside the literal and
+        returned a column list one short, which AGE rejects for arity.
+        """
+        cut = len(clause)
+        for keyword in ('limit', 'skip'):
+            found = _find_code_keyword(clause, keyword)
+            if 0 <= found < cut:
+                cut = found
+        # ORDER BY is two words with arbitrary whitespace between them; a bare
+        # `order` (a property named order, say) is not a subclause.
+        for found in _iter_code_keyword(clause, 'order'):
+            if re.match(r'\s+by\b', clause[found + 5 :], re.IGNORECASE):
+                cut = min(cut, found)
+                break
+        return clause[:cut]
 
     @classmethod
     def _columns_from_return(cls, cypher: str) -> list[str] | None:
@@ -247,17 +403,20 @@ class AGEDriver(GraphDriver):
         UNION queries (columns come from the first branch — see
         ``_cut_at_top_level_union``). Robust parsing for arbitrary user Cypher is
         deferred to the run_cypher MCP phase.
+
+        The RETURN keyword is located over code positions only, so a property
+        value that merely contains the word — the write path inlines every value
+        as a literal — is not mistaken for a clause. ``None`` (no RETURN at all)
+        is what makes a write query declare the single agtype column AGE demands.
         """
-        m = re.search(r'\breturn\b(.*)$', cypher, re.IGNORECASE | re.DOTALL)
-        if not m:
+        start = _find_code_keyword(cypher, 'return')
+        if start < 0:
             return None
         # Cut at UNION *before* stripping ORDER BY / LIMIT / SKIP: those may sit on a
         # later branch, in which case stripping first would leave the branch text in.
-        clause = re.split(
-            r'\b(order\s+by|limit|skip)\b',
-            cls._cut_at_top_level_union(m.group(1)),
-            flags=re.IGNORECASE,
-        )[0]
+        clause = cls._strip_trailing_subclauses(
+            cls._cut_at_top_level_union(cypher[start + len('return') :])
+        )
         cols: list[str] = []
         for i, part in enumerate(cls._split_top_commas(clause)):
             alias = re.search(r'\bas\b\s+([A-Za-z_]\w*)\s*$', part.strip(), re.IGNORECASE)
@@ -319,6 +478,10 @@ class AGEDriver(GraphDriver):
             if delete_existing:
                 if await self._graph_exists(conn):
                     await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+                # Dropping the graph drops every label with it; a cache that
+                # survived would let the first write after a rebuild fall back
+                # into the unsynchronised implicit-DDL path.
+                self._known_labels.clear()
                 await conn.execute(f'DROP TABLE IF EXISTS {self._node_tbl} CASCADE')
                 await conn.execute(f'DROP TABLE IF EXISTS {self._edge_tbl} CASCADE')
             if not await self._graph_exists(conn):
@@ -378,5 +541,6 @@ class AGEDriver(GraphDriver):
         async with pool.acquire() as conn:
             if await self._graph_exists(conn):
                 await conn.execute('SELECT drop_graph($1::name, true)', self._database)
+            self._known_labels.clear()
             await conn.execute(f'DROP TABLE IF EXISTS {self._node_tbl} CASCADE')
             await conn.execute(f'DROP TABLE IF EXISTS {self._edge_tbl} CASCADE')

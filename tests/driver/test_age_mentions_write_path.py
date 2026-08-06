@@ -62,6 +62,7 @@ class _CapturingDriver:
 
     def __init__(self, records: list[dict[str, Any]] | None = None) -> None:
         self.queries: list[str] = []
+        self.ensured: list[tuple[str, str]] = []
         self._records = [{'uuid': 'merged'}] if records is None else records
         self._node_tbl = 'age_nodes'
         self._edge_tbl = 'age_edges'
@@ -72,6 +73,14 @@ class _CapturingDriver:
 
     async def execute_sql(self, _sql: str, *_args: Any):
         return []
+
+    # Label materialisation is part of the AGE driver contract the writers call
+    # into (BUG-38); a double that omitted it would just fail on attribute access.
+    async def ensure_vertex_label(self, label: str) -> None:
+        self.ensured.append(('v', label))
+
+    async def ensure_edge_label(self, label: str) -> None:
+        self.ensured.append(('e', label))
 
 
 def _merge_query(driver: _CapturingDriver) -> str:
