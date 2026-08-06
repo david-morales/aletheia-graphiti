@@ -359,3 +359,55 @@ async def test_a_failing_storage_census_flags_NOTHING(monkeypatch):
     labels = schema["node_labels"]
     assert labels, labels
     assert all(not v.get("hierarchy") for v in labels.values()), labels
+
+
+@pytest.mark.parametrize(
+    "case,rows",
+    [
+        ("zero_rows", []),
+        # AGE names an UNALIASED projection `col0`; every rec.get('storage_label')
+        # is then None and the set comes out empty while the query looks healthy.
+        ("mis_keyed_col0", [{"col0": "Persona"}, {"col0": "Arma"}]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_empty_storage_census_flags_NOTHING(monkeypatch, case, rows):
+    """The OTHER half of the safe degrade: the census SUCCEEDS but yields nothing
+    usable. `found` is then an empty set, and diffing against it flags EVERY
+    label as hierarchy-only — the same schema-blanking inversion as a raise, and
+    it reaches the diff through the happy path where no except clause guards it.
+
+    Two ways that happens, both live-plausible:
+
+    * zero rows — a graph whose vertices are all label-less, or a backend that
+      answers the census with nothing;
+    * rows whose column is not `storage_label`. AGE names an UNALIASED projection
+      `col0` (the failure mode this module has already been bitten by twice: the
+      `RETURN DISTINCT key AS key` fix and the `RETURN n AS n` fix). Every
+      `rec.get('storage_label')` is then None and the set comes out empty while
+      the query itself looks perfectly healthy.
+    """
+
+    class _EmptyStorageCensus(_AgeRichStubDriver):
+        def __init__(self, rows):
+            super().__init__()
+            self._storage_rows = rows
+
+        async def execute_query(self, query: str, *a, **k):
+            if "AS storage_label" in query:
+                self.queries.append(query)
+                return self._storage_rows, None, None
+            return await super().execute_query(query, *a, **k)
+
+    driver = _EmptyStorageCensus(rows)
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(AgeFlavour(), driver))
+    schema = await srv.get_schema()
+
+    assert "error" not in schema, (case, schema)
+    labels = schema["node_labels"]
+    # The schema is INTACT — same entries, counts untouched...
+    assert set(labels) == {"Actor", "Persona", "PhysicalObject", "Arma"}, (case, labels)
+    assert all(info["count"] == 5 for info in labels.values()), (case, labels)
+    # ...and NOT ONE of them is flagged.
+    flagged = sorted(k for k, v in labels.items() if v.get("hierarchy"))
+    assert flagged == [], (case, flagged)

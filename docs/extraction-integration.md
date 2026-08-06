@@ -211,13 +211,25 @@ On success, the response is a `dict[str, Any]` with these keys:
 | `type` | `str` | Always `"schema"`. Discriminator for clients that route on response type. |
 | `graph_name` | `str` | Destination graph name (the connector's `group_id`). |
 | `domain` | `str` | Display name of the domain — derived from `graph_name` (underscores → spaces, title-cased). |
-| `node_labels` | `dict[str, dict]` | Per-label: `{count: int, properties: list[str], sampled: bool, description?: str, sample_names?: list[str]}`. The `name_embedding` property is excluded from `properties`. |
+| `node_labels` | `dict[str, dict]` | Per-label entry — see the table below. |
 | `relationship_types` | `dict[str, dict]` | Per-relationship-type: `{count: int, patterns: list[list[str]], description?: str}`. Each pattern is a 2-element `[source_label, target_label]` list. |
 | `analysis_notes` | `list[str]` (optional) | `IMPORTANT:` lines extracted from entity/relationship descriptions in the domain profile. Present only if any `IMPORTANT:` notes exist. |
 | `tool_capabilities` | `dict` | Discovery metadata for the reasoning engine — describes which tools cover which fields, search strategies, rerankers, etc. Stable but not consumed by extraction today. |
 | `cypher_reference` | `str` | A multi-line FalkorDB Cypher quick reference. Stable; safe to embed in prompts. |
 
 On error: `{"error": "<message>"}`.
+
+#### `node_labels` entry
+
+| Key | Type | Description |
+|---|---|---|
+| `count` | `int` | Number of nodes carrying this label. |
+| `attribute_keys` | `list[str]` | The canonical domain-queryable keys (ADR-019 R5). Backend-specific in how they are gathered — on FalkorDB the top-level properties minus Graphiti's bookkeeping, on Apache AGE the keys of the nested `attributes` map — but the meaning is the same on both: the fields you can filter and project. **Prefer this over `properties`** for anything that addresses domain data. |
+| `properties` | `list[str]` | Full top-level property keys, bookkeeping included. Retained for `cypher_quality`'s schema matching and for this contract's existing consumers. The `name_embedding` property is excluded. |
+| `sampled` | `bool` | `false` when the per-label probe could not answer (it raised, or returned no rows). An entry with `sampled: false` has an empty `properties` because it was never read — **not** because the type has no properties. `count` is censused independently and is always trustworthy. |
+| `hierarchy` | `bool` (optional) | `true` when the label is **hierarchy-only**: censusable and searchable, but *not a storage type*. No node is stored under it, `MATCH (n:Label)` matches nothing, and it can appear in no entry of `relationship_types.patterns`. Schema and graph views should **omit** these — an unfiltered view draws them as disconnected nodes. Absent (or `null`) means the label is a storage type; on FalkorDB it is always absent, since every censused label there is stored. Arises on Apache AGE, where a vertex stores one leaf label while the full ontology hierarchy is censused. |
+| `description` | `str` (optional) | Prose description from the ontology graph, when one is available for this label. |
+| `sample_names` | `list[str]` (optional) | A few example `name` values for this label. |
 
 The response is cached server-side and invalidated by `add_memory()` calls. A single pipeline run that does an ingest pass can expect the cached shape to remain stable until it ingests.
 
@@ -231,12 +243,14 @@ The response is cached server-side and invalidated by `add_memory()` calls. A si
   "node_labels": {
     "Aircraft": {
       "count": 1247,
+      "attribute_keys": ["model", "operator", "registration"],
       "properties": ["model", "name", "operator", "registration", "uuid"],
       "sampled": true,
       "description": "Aircraft involved in a safety occurrence."
     },
     "Operator": {
       "count": 312,
+      "attribute_keys": ["country", "iata_code"],
       "properties": ["country", "iata_code", "name", "uuid"],
       "sampled": true
     }
