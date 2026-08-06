@@ -250,14 +250,26 @@ class AGEDriver(GraphDriver):
     # MERGE runs its labels already exist and the implicit path is never reached
     # concurrently. Per-label keying keeps unrelated labels parallel.
 
-    async def _label_exists(self, conn: asyncpg.Connection, label: str) -> bool:
+    async def _label_exists(self, conn: asyncpg.Connection, label: str, kind: str) -> bool:
+        """Whether this graph already has ``label`` AS ``kind`` ('v' or 'e').
+
+        The kind belongs in the filter because the cache this feeds is keyed on
+        (kind, label). Matching on the name alone would report an existing VERTEX
+        label as satisfying a request for an EDGE label of that name: the miss
+        path would be skipped, nothing created, and ('e', name) cached as present
+        — a recorded fact that is not true. AGE forbids the two anyway
+        (``create_elabel`` then raises ``label "X" already exists``, SQLSTATE
+        3F000), so filtering by kind costs nothing and lets that clear error
+        surface instead of being cached over.
+        """
         return bool(
             await conn.fetchval(
                 'SELECT 1 FROM ag_catalog.ag_label l '
                 'JOIN ag_catalog.ag_graph g ON g.graphid = l.graph '
-                'WHERE g.name = $1 AND l.name = $2',
+                'WHERE g.name = $1 AND l.name = $2 AND l.kind::text = $3',
                 self._database,
                 label,
+                kind,
             )
         )
 
@@ -266,7 +278,7 @@ class AGEDriver(GraphDriver):
             return
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            if not await self._label_exists(conn, label):
+            if not await self._label_exists(conn, label, kind):
                 async with conn.transaction():
                     # Transaction-scoped: the winner holds it across its DDL, the
                     # losers block here and then find the label already present.
@@ -275,7 +287,17 @@ class AGEDriver(GraphDriver):
                         self._database,
                         label,
                     )
-                    if not await self._label_exists(conn, label):
+                    # This re-check is what makes the losers no-op, and it is
+                    # correct only under READ COMMITTED — where each statement
+                    # takes a fresh snapshot and therefore sees the winner's
+                    # committed label. Under REPEATABLE READ or SERIALIZABLE the
+                    # loser's snapshot predates that commit, the re-check misses,
+                    # and create_vlabel/create_elabel raises 42P07 — i.e. the very
+                    # failure this guard exists to prevent. Postgres ships READ
+                    # COMMITTED by default and the AGE bed runs it; a deployment
+                    # that raises default_transaction_isolation must set this
+                    # connection back to READ COMMITTED.
+                    if not await self._label_exists(conn, label, kind):
                         create = 'create_vlabel' if kind == 'v' else 'create_elabel'
                         await conn.execute(
                             f'SELECT ag_catalog.{create}($1::name::cstring, $2::name::cstring)',

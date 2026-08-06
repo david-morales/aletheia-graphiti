@@ -223,9 +223,8 @@ async def test_concurrent_saves_of_several_new_labels_at_once(age_driver):
 
 
 @pytest.mark.asyncio
-async def test_labels_are_materialised_with_the_right_kind(age_driver):
-    """A vertex label and an edge label of the same name are different objects;
-    the guard must create each as the kind its writer needs."""
+async def test_labels_are_materialised_with_the_kind_their_writer_needs(age_driver):
+    """A node writer's label is created as a vertex, an edge writer's as an edge."""
     ops = age_driver.graph_operations_interface
     src, tgt = _node('A', 'Cosa'), _node('B', 'Cosa')
     await ops.node_save(src, age_driver)
@@ -234,6 +233,31 @@ async def test_labels_are_materialised_with_the_right_kind(age_driver):
 
     assert await _label_kinds(age_driver, 'Cosa') == ['v']
     assert await _label_kinds(age_driver, 'RELACION') == ['e']
+
+
+@pytest.mark.asyncio
+async def test_a_name_taken_by_the_other_kind_is_not_reported_as_present(age_driver):
+    """The existence check is per (name, KIND), because the cache it feeds is.
+
+    A name-only check would see the existing VERTEX label `Homonima`, call the
+    EDGE request satisfied, create nothing, and cache ('e', 'Homonima') as
+    present — recording a fact that is not true. AGE forbids one name being both
+    kinds, so the honest outcome is that the miss path runs and AGE's own error
+    surfaces: `label "Homonima" already exists`, SQLSTATE 3F000. Nothing may be
+    cached for the kind that was never created.
+    """
+    import asyncpg
+
+    await age_driver.ensure_vertex_label('Homonima')
+    assert await _label_kinds(age_driver, 'Homonima') == ['v']
+
+    with pytest.raises(asyncpg.exceptions.InvalidSchemaNameError) as excinfo:
+        await age_driver.ensure_edge_label('Homonima')
+    assert 'already exists' in str(excinfo.value)
+
+    assert ('e', 'Homonima') not in age_driver._known_labels  # no false positive
+    assert ('v', 'Homonima') in age_driver._known_labels  # the real one still stands
+    assert await _label_kinds(age_driver, 'Homonima') == ['v']  # nothing was created
 
 
 @pytest.mark.asyncio
