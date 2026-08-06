@@ -642,7 +642,7 @@ async def add_memory(
 
     Examples:
         # Single episode
-        add_memory(name="Report", episode_body="Aircraft PH-KZB experienced...", source="text")
+        add_memory(name="Report 2024-11", episode_body="<the document text>", source="text")
 
         # Bulk ingestion
         add_memory(episodes=[
@@ -652,8 +652,9 @@ async def add_memory(
     Used by downstream services (e.g., aletheia-extraction) to persist extracted
     records into the knowledge graph after ontology mapping and human approval.
 
-    See docs/extraction-integration.md for the integration contract:
-    response shape, adapter recipe (where applicable), and error modes.
+    The integration contract is announced, not documented elsewhere: the response
+    shape is this tool's `outputSchema`, and a failure comes back in-band as
+    `{"error": "..."}` rather than as a protocol error.
     """
     global graphiti_service, queue_service
 
@@ -792,8 +793,10 @@ async def search(
                   "node_distance" (requires center_node_uuid), or "episode_mentions".
         center_node_uuid: Rerank results by proximity to this node.
         bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
-        entity_types: Only return nodes with these labels (e.g. ["Person", "Organization"]).
-        edge_types: Only return edges of these types (e.g. ["OWNERSHIP", "SANCTION"]).
+        entity_types: Only return nodes carrying these labels. This graph's labels are
+                      listed in this tool's description and in get_schema `node_labels`.
+        edge_types: Only return edges of these types -- see get_schema
+                    `relationship_types`.
         valid_at: ISO date string — only return facts valid at this date.
         limit: Maximum results to return (default 10).
     """
@@ -926,7 +929,8 @@ async def explore_node(
         node_uuid: Expand directly from this node UUID. Provide this or node_name.
         group_ids: Which graph partitions to explore. Omit for default.
         depth: How many hops to traverse (1-4, default 2).
-        edge_types: Only traverse these relationship types (e.g. ["OWNERSHIP"]).
+        edge_types: Only traverse these relationship types -- see get_schema
+                    `relationship_types`.
         limit: Maximum results to return (default 20).
     """
     global graphiti_service
@@ -1387,7 +1391,9 @@ async def search_ontology(
     prose + property definitions, large) use get_ontology_documentation.
 
     Args:
-        query: Natural language search query (e.g., "AirworthinessDirective", "what properties does Aircraft have").
+        query: Natural language search query -- a class name, or a question about a
+               class ("what properties does <ClassName> have"). Call
+               get_ontology_structure for the class names in THIS ontology.
         search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
         reranker: Reranking strategy — "rrf" (default), "mmr", or "cross_encoder".
         limit: Maximum results to return (default 10).
@@ -1576,7 +1582,9 @@ async def explore_ontology(
     than the full ontology relationship comment.
 
     Args:
-        node_name: Find the ontology class by name (e.g., "AirworthinessDirective"). Provide this or node_uuid.
+        node_name: Find the ontology class by name, spelled as this graph's ontology
+                   spells it (get_ontology_structure lists every class).
+                   Provide this or node_uuid.
         node_uuid: Resolve the class by its node UUID. Provide this or node_name.
         depth: 1 = direct neighbors only; >=2 adds a name-only second hop (default 2).
         limit: Maximum entries per surrounding list (default 20).
@@ -1776,8 +1784,9 @@ async def get_schema() -> SchemaResponse:
     Used by downstream services (e.g., aletheia-extraction) to discover
     available entity and relationship types before generating extraction strategies.
 
-    See docs/extraction-integration.md for the integration contract:
-    response shape, adapter recipe (where applicable), and error modes.
+    The integration contract is announced, not documented elsewhere: the response
+    shape is this tool's `outputSchema`, and a failure comes back in-band as
+    `{"error": "..."}` rather than as a protocol error.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
@@ -2168,8 +2177,9 @@ async def get_ontology_structure() -> OntologyStructureResponse:
     to study ONE class in full context use explore_ontology; to find classes
     by meaning use search_ontology (semantic recall).
 
-    See docs/extraction-integration.md for the integration contract:
-    response shape, adapter recipe (where applicable), and error modes.
+    The integration contract is announced, not documented elsewhere: the response
+    shape is this tool's `outputSchema`, and a failure comes back in-band as
+    `{"error": "..."}` rather than as a protocol error.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
