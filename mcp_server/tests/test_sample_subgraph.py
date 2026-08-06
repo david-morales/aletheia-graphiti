@@ -102,6 +102,11 @@ async def test_sample_subgraph_returns_normalized_nodes_and_edges(monkeypatch):
         "uuid": N1,
         "name": "Ada",
         "labels": ["Entity", "Actor", "Persona"],
+        # Derived: the base/FalkorDB writer stores exactly [Entity, <leaf>], so
+        # the first non-internal label IS the leaf. (This fixture carries an
+        # AGE-shaped 3-element hierarchy, which is why the derived answer here is
+        # the supertype — see the row-builder tests for the contract.)
+        "leaf": "Actor",
         "created_at": "2026-01-01T00:00:00Z",
         "summary": "a person",
         "group_id": "policia",
@@ -246,6 +251,69 @@ async def test_sample_subgraph_passes_labels_through_unordered(monkeypatch):
     source = inspect.getsource(srv.sample_subgraph)
     assert "labels[0]" not in source
     assert "labels[-1]" not in source
+
+
+class TestLeafRowBuilder:
+    """`leaf` — the producer-announced most-specific label.
+
+    The consumer hazard this closes: `labels` is UNORDERED, so a UI taking the
+    first element types AGE nodes by whatever the hierarchy happens to start with.
+    Live on the bench graph that collapsed 16 leaf types into three supertypes
+    (Actor 94 / Event 67 / Ubicacion 39) and coloured the two arms differently.
+    """
+
+    def test_falkordb_shaped_row_derives_the_leaf_from_labels(self):
+        """The base/FalkorDB writer stores exactly [Entity, <leaf>], so the first
+        non-internal label IS the leaf — no query change needed on that arm."""
+        assert srv._subgraph_node_row({"labels": ["Entity", "Persona"]})["leaf"] == "Persona"
+        # Order is not a contract: the domain label may come first.
+        assert srv._subgraph_node_row({"labels": ["Droga", "Entity"]})["leaf"] == "Droga"
+
+    def test_an_explicit_leaf_column_is_passed_through_verbatim(self):
+        """AGE announces it — never re-derive, because deriving from an UNORDERED
+        hierarchy is exactly the bug."""
+        row = {"labels": ["Entity", "Actor", "Persona"], "leaf": "Persona"}
+        assert srv._subgraph_node_row(row)["leaf"] == "Persona"
+
+    def test_the_announced_leaf_wins_over_the_derived_one(self):
+        """The derivation would answer `Actor` here — the announced value must win."""
+        row = {"labels": ["Entity", "Actor", "Persona"], "leaf": "Persona"}
+        derived = srv._subgraph_node_row({"labels": row["labels"]})["leaf"]
+        assert derived == "Actor"
+        assert srv._subgraph_node_row(row)["leaf"] == "Persona"
+
+    def test_leaf_is_null_when_it_cannot_be_established(self):
+        for row in ({}, {"labels": None}, {"labels": []}, {"labels": ["Entity"]},
+                    {"labels": ["Entity", "Episodic", "Community"]},
+                    {"labels": None, "leaf": ""},
+                    {"labels": ["Entity"], "leaf": None}):
+            assert srv._subgraph_node_row(row)["leaf"] is None, row
+
+    def test_an_empty_announced_leaf_falls_back_to_the_derivation(self):
+        """A null/empty `leaf` column must not SUPPRESS the fallback — a backend
+        that announces the column but cannot fill it for one row still has a
+        derivable answer whenever a non-internal label is present."""
+        for row in ({"labels": ["Entity", "Persona"], "leaf": None},
+                    {"labels": ["Entity", "Persona"], "leaf": ""}):
+            assert srv._subgraph_node_row(row)["leaf"] == "Persona", row
+
+    def test_an_internal_label_is_never_announced_as_the_leaf(self):
+        """A backend that answered `label(n) = 'Entity'` must not type the node
+        as internal — fall back to the derivation, then to null."""
+        row = {"labels": ["Entity", "Persona"], "leaf": "Entity"}
+        assert srv._subgraph_node_row(row)["leaf"] == "Persona"
+
+    @pytest.mark.asyncio
+    async def test_the_tool_emits_leaf_for_every_node(self, monkeypatch):
+        age_shaped = dict(NODE_ROW)
+        age_shaped["uuid"] = N2
+        age_shaped["leaf"] = "Persona"
+        svc, _ = _service(node_rows=[dict(NODE_ROW), age_shaped])
+        monkeypatch.setattr(srv, "graphiti_service", svc)
+
+        payload = await srv.sample_subgraph()
+
+        assert [n["leaf"] for n in payload["nodes"]] == ["Actor", "Persona"]
 
 
 def test_sample_subgraph_is_registered_and_announced():

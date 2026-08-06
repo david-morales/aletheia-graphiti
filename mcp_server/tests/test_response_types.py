@@ -174,6 +174,7 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
     sample_subgraph_success = {
         "type": "subgraph", "graph_name": "g",
         "nodes": [{"uuid": "n1", "name": "Ada", "labels": ["Entity", "Persona"],
+                   "leaf": "Persona",
                    "created_at": "2026-01-01T00:00:00Z", "summary": None,
                    "group_id": "g"}],
         "edges": [{"uuid": "e1", "name": "ES_DETENIDO", "fact": "f",
@@ -188,7 +189,7 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
     # escapes the ADR-015 error envelope as a protocol error. total=False: nothing required.
     sample_subgraph_all_null = {
         "type": None, "graph_name": None,
-        "nodes": [{"uuid": None, "name": None, "labels": None,
+        "nodes": [{"uuid": None, "name": None, "labels": None, "leaf": None,
                    "created_at": None, "summary": None, "group_id": None}],
         "edges": [{"uuid": None, "name": None, "fact": None,
                    "source_node_uuid": None, "target_node_uuid": None,

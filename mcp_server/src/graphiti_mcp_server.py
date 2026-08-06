@@ -2019,15 +2019,59 @@ def _iso_or_raw(value: Any) -> Any:
     return value.isoformat() if hasattr(value, 'isoformat') else value
 
 
+# Labels that describe Graphiti's own bookkeeping, never a domain type.
+_SUBGRAPH_INTERNAL_LABELS = frozenset({'Entity', 'Episodic', 'Community'})
+
+
+def _subgraph_node_row(r: dict[str, Any]) -> dict[str, Any]:
+    """One SubgraphNode from one driver row, including the announced `leaf`.
+
+    `leaf` is the node's single most specific label — what a consumer should type
+    and colour by. It exists because `labels` is UNORDERED: a UI taking its first
+    element typed AGE nodes by whatever the hierarchy happened to start with,
+    collapsing 16 leaf types into 3 supertypes and colouring the two backends
+    differently for the same graph.
+
+    Two sources, in order:
+
+    * the row's own `leaf` column when the flavour ANNOUNCES one (AGE projects
+      `label(n)`, which is exactly the one stored leaf) — taken verbatim, never
+      re-derived, because re-deriving from an unordered list is the bug;
+    * otherwise derived from `labels`. Sound on base/FalkorDB only because their
+      writer stores exactly [Entity, <leaf>], so the single non-internal label IS
+      the leaf regardless of order — which is why that arm needs no query change.
+
+    Null when neither source yields a non-internal label; consumers fall back to
+    set-filtering `labels`.
+    """
+    labels = r.get('labels') or []
+    announced = r.get('leaf')
+    if announced and announced not in _SUBGRAPH_INTERNAL_LABELS:
+        leaf = announced
+    else:
+        domain = [x for x in labels if x and x not in _SUBGRAPH_INTERNAL_LABELS]
+        leaf = domain[0] if domain else None
+    return {
+        'uuid': r.get('uuid'), 'name': r.get('name'),
+        'labels': labels,
+        'leaf': leaf,
+        'created_at': _iso_or_raw(r.get('created_at')), 'summary': r.get('summary'),
+        'group_id': r.get('group_id'),
+    }
+
+
 @mcp.tool()
 async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
     """Flavour-normalized node/edge sample of the knowledge graph.
 
     Returns up to `limit` entity nodes (uuid, name, labels — the FULL logical
-    hierarchy on every backend — created_at, summary, group_id) and the edges
-    among them (edge limit = 2.5x node limit). Intended for graph-view
+    hierarchy on every backend — leaf, created_at, summary, group_id) and the
+    edges among them (edge limit = 2.5x node limit). Intended for graph-view
     consumers; replaces client-composed Cypher, which cannot be
     dialect-correct across backends.
+
+    `leaf` is the node's most specific label: consumers should type and colour by
+    `leaf`, falling back to set-filtering `labels` only when it is null.
 
     `labels` is UNORDERED on every backend: set-filter the internal labels
     (Entity, Episodic, ...) to find the domain type, never index positionally.
@@ -2045,15 +2089,7 @@ async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
 
         node_q = flavour.subgraph_node_query().replace('$limit', str(limit))
         node_records, _ = await flavour.execute_graph_query(driver, node_q)
-        nodes = [
-            {
-                'uuid': r.get('uuid'), 'name': r.get('name'),
-                'labels': r.get('labels') or [],
-                'created_at': _iso_or_raw(r.get('created_at')), 'summary': r.get('summary'),
-                'group_id': r.get('group_id'),
-            }
-            for r in _dedup_rows_by_uuid(list(node_records))
-        ]
+        nodes = [_subgraph_node_row(r) for r in _dedup_rows_by_uuid(list(node_records))]
 
         edges = []
         uuids = [n['uuid'] for n in nodes if n['uuid']]

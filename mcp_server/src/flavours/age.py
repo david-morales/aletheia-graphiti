@@ -870,9 +870,20 @@ class AgeFlavour(BaseFlavour):
         # nodes scattered over ~1400 contain ~0.6 edges by expectation, so the view
         # renders unconnected dots. Base and FalkorDB keep storage order (already
         # interleaved) and stay byte-identical.
+        #
+        # `label(n) AS leaf`: the stored list `n.labels` is the hierarchy and it is
+        # UNORDERED, so a consumer typing a node by its first element gets whatever
+        # the list happens to start with — live, the UI collapsed 16 leaf types to
+        # Actor 94 / Event 67 / Ubicacion 39 and coloured this arm differently from
+        # falkor for the same graph. `label(n)` returns exactly the ONE stored leaf
+        # (dialect_reference, "Labels"), so the producer announces it rather than
+        # leaving every consumer to re-derive it wrongly. Base/FalkorDB derive it
+        # server-side from their [Entity, <leaf>] writer invariant, which is why
+        # their query text needs no change.
         return (
             "MATCH (n) WHERE n.labels IS NOT NULL "
             "RETURN n.uuid AS uuid, n.name AS name, n.labels AS labels, "
+            "label(n) AS leaf, "
             "n.created_at AS created_at, n.summary AS summary, n.group_id AS group_id "
             "ORDER BY n.created_at "
             "LIMIT $limit"

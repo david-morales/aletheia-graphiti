@@ -46,6 +46,26 @@ def test_age_node_query_diversifies_the_sample_with_an_order_by():
     assert q.index("ORDER BY n.created_at") < q.index("$limit"), q
 
 
+def test_age_node_query_projects_the_leaf_label():
+    """`labels` is UNORDERED, so a consumer taking the first element types an AGE
+    node by whatever the hierarchy list happens to start with — live, the UI's
+    filter collapsed 16 leaf types to `Actor 94 / Event 67 / Ubicacion 39`.
+    `label(n)` IS the single stored leaf on AGE (its own dialect_reference), so
+    the producer announces it instead of leaving consumers to guess."""
+    q = AgeFlavour().subgraph_node_query()
+    assert "label(n) AS leaf" in q, q
+    # ...and the hierarchy is still carried; leaf is additive.
+    assert "n.labels AS labels" in q, q
+
+
+def test_base_node_query_announces_no_leaf_column():
+    """Base/FalkorDB text stays byte-identical — the leaf is derived server-side
+    from the writer invariant [Entity, <leaf>]. A query change here would move
+    what the proven arm issues."""
+    for flavour in (BaseFlavour(), FalkorDbFlavour()):
+        assert "leaf" not in flavour.subgraph_node_query(), flavour.name
+
+
 def test_base_node_query_keeps_storage_order():
     """Byte-identical pin: falkor's storage order already interleaves types (10 label
     sets at limit 25 live), so it needs no ORDER BY — and a sort would cost a scan."""
