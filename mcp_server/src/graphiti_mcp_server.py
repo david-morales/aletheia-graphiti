@@ -58,6 +58,7 @@ from starlette.responses import JSONResponse
 from config.schema import GraphitiConfig, ServerConfig
 from domain_profile import DomainProfile, build_domain_profile
 from tool_descriptions import (
+    build_degraded_instructions,
     build_instructions,
     build_search_description,
     build_explore_node_description,
@@ -2361,12 +2362,29 @@ async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
         return {'error': f'Failed to profile graph: {e}'}
 
 
+# The nine tools registered at startup rather than by decorator, because their
+# descriptions are rendered from the live DomainProfile. ONE list: the dynamic
+# path and the degraded fallback both walk it, so a tool can never be served by
+# one and forgotten by the other (the bug behind A-D2).
+_DYNAMIC_TOOLS = (
+    search,
+    explore_node,
+    search_ontology,
+    explore_ontology,
+    get_schema,
+    get_ontology_structure,
+    get_ontology_documentation,
+    run_cypher,
+    profile_graph,
+)
+
+
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
-    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'get_ontology_structure', 'get_ontology_documentation', 'run_cypher', 'profile_graph'):
-        if name in mcp._tool_manager._tools:
-            del mcp._tool_manager._tools[name]
+    for fn in _DYNAMIC_TOOLS:
+        if fn.__name__ in mcp._tool_manager._tools:
+            del mcp._tool_manager._tools[fn.__name__]
 
     # Backend flavour drives the per-backend Cypher dialect surfaced in the run_cypher
     # description + server instructions (ADR-019 R1/R6).
@@ -2415,6 +2433,80 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     mcp._mcp_server.instructions = build_instructions(profile, flavour)
 
     logger.info('Registered tools with dynamic descriptions')
+
+
+# Leads the served `instructions` whenever graph introspection failed at startup
+# (BUG-50 / A-D2). A consumer that captures the announcement once — which is the
+# common shape — must be able to SEE that what it captured is a fallback.
+DEGRADED_INSTRUCTIONS_MARKER = (
+    '!! DEGRADED: domain profile unavailable !!'
+)
+
+
+def register_fallback_tools(reason: str) -> None:
+    """Serve the FULL surface with static descriptions when introspection fails.
+
+    The old fallback re-registered four tools and left the other five profile-driven
+    ones unregistered, so `get_schema` (the canonical ADR-019 R5 payload consumers
+    discover this connector through), `run_cypher`, `profile_graph` and both
+    ontology-bulk tools disappeared from `tools/list` while `/health` stayed green.
+    Losing the profile costs the DESCRIPTIONS, never the TOOLS: every tool still
+    works, it just describes itself from its docstring instead of from live data.
+
+    The announcement is rebuilt to say so, in the lead position, and keeps the
+    backend dialect (the flavour is known even when the graph cannot be read).
+    """
+    flavour = graphiti_service.flavour if graphiti_service is not None else None
+    # `config` is declared but not assigned at import time — read it defensively so a
+    # very early failure degrades honestly instead of raising NameError on the way out.
+    cfg = globals().get('config')
+    group_id = cfg.graphiti.group_id if cfg is not None else 'unknown'
+
+    for fn in _DYNAMIC_TOOLS:
+        name = fn.__name__
+        if name in mcp._tool_manager._tools:
+            del mcp._tool_manager._tools[name]
+        mcp.add_tool(fn, annotations=annotations_for(name))
+
+    mcp._mcp_server.instructions = build_degraded_instructions(
+        group_id=group_id,
+        flavour=flavour,
+        reason=reason,
+        marker=DEGRADED_INSTRUCTIONS_MARKER,
+    )
+
+    logger.error(
+        'Serving a DEGRADED surface for %s: all %d tools registered with static '
+        'descriptions, announcement marked degraded. Cause: %s',
+        group_id,
+        len(mcp._tool_manager._tools),
+        reason,
+    )
+
+
+async def _build_and_register_domain_surface() -> None:
+    """Introspect the graph and register the profile-driven tools and resources.
+
+    Split out of `initialize_server` so the failure path is reachable from a test:
+    it is the branch that used to collapse the served surface in silence.
+    """
+    try:
+        profile_client = await graphiti_service.get_client()
+        ontology_client = graphiti_service.ontology_client
+        domain_profile = await build_domain_profile(
+            profile_client,
+            group_id=config.graphiti.group_id,
+            ontology_client=ontology_client,
+            flavour=graphiti_service.flavour,
+        )
+        graphiti_service.domain_profile = domain_profile
+        register_dynamic_tools(domain_profile)
+        register_resources(domain_profile)
+    except Exception as e:
+        # ERROR, not warning: the connector is now answering with guidance it did
+        # not derive from this graph, and nothing else in the stack will say so.
+        logger.error(f'Failed to build domain profile, degrading to static descriptions: {e}')
+        register_fallback_tools(reason=str(e))
 
 
 def register_resources(profile: DomainProfile) -> None:
@@ -2579,25 +2671,9 @@ async def initialize_server() -> ServerConfig:
     queue_service = QueueService()
     await graphiti_service.initialize()
 
-    # Build domain profile from graph introspection
-    try:
-        profile_client = await graphiti_service.get_client()
-        ontology_client = graphiti_service.ontology_client
-        domain_profile = await build_domain_profile(
-            profile_client,
-            group_id=config.graphiti.group_id,
-            ontology_client=ontology_client,
-            flavour=graphiti_service.flavour,
-        )
-        graphiti_service.domain_profile = domain_profile
-        register_dynamic_tools(domain_profile)
-        register_resources(domain_profile)
-    except Exception as e:
-        logger.warning(f'Failed to build domain profile, using static descriptions: {e}')
-        # Fall back: register tools with their docstrings as descriptions
-        for fn in (search, explore_node, search_ontology, explore_ontology):
-            if fn.__name__ not in mcp._tool_manager._tools:
-                mcp.add_tool(fn)
+    # Build domain profile from graph introspection. On failure the surface stays
+    # complete and the announcement declares itself degraded (BUG-50 / A-D2).
+    await _build_and_register_domain_surface()
 
     # Set global client for backward compatibility
     graphiti_client = await graphiti_service.get_client()

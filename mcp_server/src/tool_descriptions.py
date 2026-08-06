@@ -10,6 +10,110 @@ if TYPE_CHECKING:
     from flavours.base import Flavour
 
 
+def _key_tools_lines() -> list[str]:
+    """The capability catalog (ADR-019 R1).
+
+    Profile-independent on purpose: the tools a connector serves do not depend on
+    what its graph happens to contain, so the healthy and the DEGRADED
+    announcements serve the same catalog and cannot drift apart.
+    """
+    return [
+        '',
+        'Key tools:',
+        '',
+        '1. search -- Find entities, facts, or communities by natural language query.',
+        '   Use when: the user asks a question or wants to find something.',
+        '   Use explore_node instead when: you already know which entity to examine.',
+        '',
+        "2. explore_node -- Expand a known entity's neighborhood.",
+        '   Use when: you have a specific entity name and want its connections.',
+        "   Use search instead when: you don't know which entity to start from.",
+        '',
+        '3. search_ontology -- Look up schema definitions in the companion ontology.',
+        '   Use when: you need to understand what types or properties are defined.',
+        '   Use search instead when: you want actual data, not schema definitions.',
+        '',
+        '4. explore_ontology -- Expand a specific ontology class.',
+        '   Use when: you want properties and parent classes for a specific type.',
+        '',
+        '5. sample_subgraph -- Sample nodes plus the edges among them, already',
+        '   normalized across backends (labels are the full hierarchy, unordered).',
+        '   Use when: a client needs a renderable slice of the graph (graph view).',
+        '   Use search instead when: you are answering a question -- this samples,',
+        '   it does not rank or filter by meaning.',
+    ]
+
+
+def _analytical_queries_lines() -> list[str]:
+    """The two-family access-pattern guidance (ADR-019 R1)."""
+    return [
+        '',
+        '## Analytical Queries',
+        '',
+        'Two complementary tool families for this graph:',
+        '- **Semantic discovery** (search, explore_node): find entities, explore connections, community context',
+        '- **Analytical queries** (get_schema, run_cypher): counts, aggregations, path queries, comparisons, gap detection',
+        '',
+        '**When to use which:**',
+        '- Use search/explore_node when you need semantic similarity or entity discovery',
+        '- Use get_schema + run_cypher when you need counts, aggregations, comparisons, or gap detection',
+        '- Use search -> then run_cypher for chained workflows: discover entities semantically,',
+        '  then compute metrics with Cypher using WHERE ... IN [...] to bridge results',
+    ]
+
+
+def _dialect_lines(flavour: Flavour | None) -> list[str]:
+    """Backend Cypher dialect, short form (ADR-019 R1/R6).
+
+    The full form is get_schema's `dialect_reference`. Sourced from the flavour,
+    never hardcoded per-backend — and available even when graph introspection
+    failed, which is why the degraded announcement can still carry it.
+    """
+    if flavour is None or not flavour.dialect_summary:
+        return []
+    return [
+        '',
+        f'**Cypher dialect:** {flavour.dialect_summary}',
+        'See get_schema `dialect_reference` for the full dialect notes.',
+    ]
+
+
+def build_degraded_instructions(
+    *,
+    group_id: str,
+    flavour: Flavour | None,
+    reason: str,
+    marker: str,
+) -> str:
+    """Announce a connector whose graph introspection failed (BUG-50 / A-D2).
+
+    Losing the domain profile costs the DESCRIPTIONS, never the TOOLS. The
+    announcement says exactly that, in the lead position, so a consumer that
+    captures `instructions` once can see that what it captured is a fallback —
+    and never reads "with no entities yet" off a graph it simply could not probe.
+    """
+    parts = [
+        marker,
+        '',
+        f'This connector ({group_id}) could not introspect its graph at startup, so it has',
+        'no live entity catalog, no relationship catalog, no counts and no sample values to',
+        'announce. Every tool below is registered and functional -- only the DESCRIPTIONS',
+        'are static fallbacks. This says NOTHING about whether the graph holds data.',
+        '',
+        'What to do:',
+        '- Call get_schema first: it queries live and returns this graph\'s labels,',
+        '  relationship types, counts and the backend `dialect_reference`.',
+        '- Treat every example in a tool description as illustrative, not as this',
+        '  graph\'s data.',
+        '',
+        f'Introspection failure: {reason}',
+    ]
+    parts += _key_tools_lines()
+    parts += _analytical_queries_lines()
+    parts += _dialect_lines(flavour)
+    return '\n'.join(parts)
+
+
 def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
     """Build the MCP server instructions from a DomainProfile (and the backend flavour)."""
     parts = []
@@ -44,30 +148,8 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
             desc = f' -- {info.description}' if info.description else ''
             parts.append(f'- {info.name} ({info.count}){desc}')
 
-    # Tool guidance
-    parts.append('')
-    parts.append('Key tools:')
-    parts.append('')
-    parts.append('1. search -- Find entities, facts, or communities by natural language query.')
-    parts.append('   Use when: the user asks a question or wants to find something.')
-    parts.append('   Use explore_node instead when: you already know which entity to examine.')
-    parts.append('')
-    parts.append('2. explore_node -- Expand a known entity\'s neighborhood.')
-    parts.append('   Use when: you have a specific entity name and want its connections.')
-    parts.append('   Use search instead when: you don\'t know which entity to start from.')
-    parts.append('')
-    parts.append('3. search_ontology -- Look up schema definitions in the companion ontology.')
-    parts.append('   Use when: you need to understand what types or properties are defined.')
-    parts.append('   Use search instead when: you want actual data, not schema definitions.')
-    parts.append('')
-    parts.append('4. explore_ontology -- Expand a specific ontology class.')
-    parts.append('   Use when: you want properties and parent classes for a specific type.')
-    parts.append('')
-    parts.append('5. sample_subgraph -- Sample nodes plus the edges among them, already')
-    parts.append('   normalized across backends (labels are the full hierarchy, unordered).')
-    parts.append('   Use when: a client needs a renderable slice of the graph (graph view).')
-    parts.append('   Use search instead when: you are answering a question -- this samples,')
-    parts.append('   it does not rank or filter by meaning.')
+    # Tool guidance (shared with the degraded announcement — one catalog)
+    parts += _key_tools_lines()
 
     # Tips
     if profile.entity_types or profile.edge_types:
@@ -82,25 +164,10 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
         parts.append('- Use valid_at for temporal queries (ISO date format, e.g. "2024-03-15")')
 
     # Dual access pattern guidance
-    parts.append('')
-    parts.append('## Analytical Queries')
-    parts.append('')
-    parts.append('Two complementary tool families for this graph:')
-    parts.append('- **Semantic discovery** (search, explore_node): find entities, explore connections, community context')
-    parts.append('- **Analytical queries** (get_schema, run_cypher): counts, aggregations, path queries, comparisons, gap detection')
-    parts.append('')
-    parts.append('**When to use which:**')
-    parts.append('- Use search/explore_node when you need semantic similarity or entity discovery')
-    parts.append('- Use get_schema + run_cypher when you need counts, aggregations, comparisons, or gap detection')
-    parts.append('- Use search -> then run_cypher for chained workflows: discover entities semantically,')
-    parts.append('  then compute metrics with Cypher using WHERE ... IN [...] to bridge results')
+    parts += _analytical_queries_lines()
 
-    # Backend Cypher dialect — short form (ADR-019 R1/R6); the full form is get_schema's
-    # dialect_reference. Sourced from the flavour, never hardcoded per-backend.
-    if flavour is not None and flavour.dialect_summary:
-        parts.append('')
-        parts.append(f'**Cypher dialect:** {flavour.dialect_summary}')
-        parts.append('See get_schema `dialect_reference` for the full dialect notes.')
+    # Backend Cypher dialect — short form (ADR-019 R1/R6)
+    parts += _dialect_lines(flavour)
 
     return '\n'.join(parts)
 
