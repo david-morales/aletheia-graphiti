@@ -62,6 +62,19 @@ def _analytical_queries_lines() -> list[str]:
     ]
 
 
+def _census_caveat_lines(flavour: Flavour | None) -> list[str]:
+    """The flavour's census caveats, announced as data (ADR-019 R6).
+
+    These govern how to read EVERY count and label above, so they belong in the
+    instructions and not only in `get_schema.analysis_notes` — which was the one
+    surface they reached (A-D4).
+    """
+    notes = list(flavour.census_notes()) if flavour is not None else []
+    if not notes:
+        return []
+    return ['', 'How to read this graph\'s labels and counts:', *[f'- {n}' for n in notes]]
+
+
 def _dialect_lines(flavour: Flavour | None) -> list[str]:
     """Backend Cypher dialect, short form (ADR-019 R1/R6).
 
@@ -110,6 +123,7 @@ def build_degraded_instructions(
     ]
     parts += _key_tools_lines()
     parts += _analytical_queries_lines()
+    parts += _census_caveat_lines(flavour)
     parts += _dialect_lines(flavour)
     return '\n'.join(parts)
 
@@ -132,13 +146,21 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
             f'This is a knowledge graph ({profile.group_id}) with no entities yet.'
         )
 
-    # Entity types
+    # Entity types. A hierarchy-only label is marked WHERE IT IS LISTED, not only
+    # in a caveat further down: this list is what an agent reads to pick a label,
+    # and `MATCH (n:Actor)` fails silently by returning zero rows (A-D4).
     if profile.entity_types:
         parts.append('')
         parts.append('Entity types in this graph:')
         for info in sorted(profile.entity_types.values(), key=lambda x: -x.count):
             desc = f' -- {info.description}' if info.description else ''
-            parts.append(f'- {info.label} ({info.count}){desc}')
+            flag = (
+                ' [hierarchy label -- searchable, but NOT `(n:Label)`-matchable;'
+                f" use `WHERE '{info.label}' IN n.labels`]"
+                if info.hierarchy
+                else ''
+            )
+            parts.append(f'- {info.label} ({info.count}){desc}{flag}')
 
     # Edge types
     if profile.edge_types:
@@ -165,6 +187,9 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
 
     # Dual access pattern guidance
     parts += _analytical_queries_lines()
+
+    # How to READ the census above (ADR-019 R6) — governs every count and label
+    parts += _census_caveat_lines(flavour)
 
     # Backend Cypher dialect — short form (ADR-019 R1/R6)
     parts += _dialect_lines(flavour)
@@ -329,44 +354,59 @@ def build_get_schema_description(profile: DomainProfile) -> str:
 
 
 def _build_example_queries(profile: DomainProfile) -> list[str]:
-    """Build deterministic domain-specific example Cypher queries from templates."""
+    """Build deterministic example Cypher queries from templates.
+
+    EVERY label here comes from `storage_entity_type_names()`, never from the full
+    census (A-D4). On AGE the census counts the ontology hierarchy, so the
+    unfiltered list leads with abstract supertypes: the templates used to emit
+    `MATCH (s:Actor)-[:EJECUTADO_POR]->(t:Agente)` — three queries returning zero
+    rows by construction, as the FIRST thing an agent reads about run_cypher.
+
+    A profile whose every label is hierarchy-only yields NO examples. That is the
+    intended outcome: no example beats one that cannot match.
+    """
     examples: list[str] = []
-    entity_names = profile.entity_type_names()
+    entity_names = profile.storage_entity_type_names()
     edge_names = profile.edge_type_names()
+    matchable = set(entity_names)
 
-    # Template 1: Count by relationship (needs 2+ entity types, 1+ edge type)
-    if len(entity_names) >= 2 and len(edge_names) >= 1:
-        edge = edge_names[0]
-        # Find the edge info to get source->target pattern
-        edge_info = profile.edge_types[edge]
-        pattern = edge_info.source_target_pattern
-        if pattern and '->' in pattern:
-            src_label, tgt_label = [s.strip() for s in pattern.split('->')]
-        else:
-            src_label, tgt_label = entity_names[0], entity_names[1]
-        examples.append(
-            f'MATCH (s:{src_label})-[:{edge}]->(t:{tgt_label}) '
-            f'RETURN t.name, count(s) AS cnt ORDER BY cnt DESC LIMIT 10'
-        )
+    def _endpoints(edge: str, fallback: tuple[str, str]) -> tuple[str, str] | None:
+        """Source/target for an example, or None when they are not matchable.
 
-    # Template 2: Multi-occurrence aggregation (needs 1+ entity type, 1+ edge type)
-    if len(entity_names) >= 1 and len(edge_names) >= 1:
-        edge = edge_names[0]
-        edge_info = profile.edge_types[edge]
-        pattern = edge_info.source_target_pattern
+        The announced pattern is data and can itself name a hierarchy label, so it
+        is checked rather than trusted.
+        """
+        pattern = profile.edge_types[edge].source_target_pattern
         if pattern and '->' in pattern:
-            src_label, tgt_label = [s.strip() for s in pattern.split('->')]
-        else:
-            src_label = entity_names[0]
-            tgt_label = entity_names[0]
-        examples.append(
-            f'MATCH (s:{src_label})-[:{edge}]->(t:{tgt_label}) '
-            f'WITH t, count(s) AS total WHERE total > 1 '
-            f'RETURN t.name, total ORDER BY total DESC'
-        )
+            src, tgt = (s.strip() for s in pattern.split('->'))
+            if src in matchable and tgt in matchable:
+                return src, tgt
+            return None
+        return fallback
+
+    # Template 1: Count by relationship (needs 2+ matchable types, 1+ edge type)
+    if len(entity_names) >= 2 and edge_names:
+        edge = edge_names[0]
+        ends = _endpoints(edge, (entity_names[0], entity_names[1]))
+        if ends:
+            examples.append(
+                f'MATCH (s:{ends[0]})-[:{edge}]->(t:{ends[1]}) '
+                f'RETURN t.name, count(s) AS cnt ORDER BY cnt DESC LIMIT 10'
+            )
+
+    # Template 2: Multi-occurrence aggregation (needs 1+ matchable type, 1+ edge type)
+    if entity_names and edge_names:
+        edge = edge_names[0]
+        ends = _endpoints(edge, (entity_names[0], entity_names[0]))
+        if ends:
+            examples.append(
+                f'MATCH (s:{ends[0]})-[:{edge}]->(t:{ends[1]}) '
+                f'WITH t, count(s) AS total WHERE total > 1 '
+                f'RETURN t.name, total ORDER BY total DESC'
+            )
 
     # Template 3: WHERE...IN bridge for semantic-to-analytical
-    # (needs 1+ entity type with sample_names)
+    # (needs 1+ matchable type with sample_names)
     for name in entity_names:
         info = profile.entity_types[name]
         if info.sample_names:

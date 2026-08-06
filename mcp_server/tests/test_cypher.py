@@ -722,15 +722,15 @@ def _make_test_profile():
     entity_types = {
         'Occurrence': SimpleNamespace(
             label='Occurrence', count=10, description='Aviation incident',
-            sample_names=['2024-0975-EU'],
+            sample_names=['2024-0975-EU'], hierarchy=False,
         ),
         'Aircraft': SimpleNamespace(
             label='Aircraft', count=15, description='Aircraft entity',
-            sample_names=['Boeing 737'],
+            sample_names=['Boeing 737'], hierarchy=False,
         ),
         'Operator': SimpleNamespace(
             label='Operator', count=8, description='Airline operator',
-            sample_names=['KLM'],
+            sample_names=['KLM'], hierarchy=False,
         ),
     }
     edge_types = {
@@ -753,6 +753,11 @@ def _make_test_profile():
 
         def entity_type_names(self):
             return sorted(self.entity_types.keys())
+
+        def storage_entity_type_names(self):
+            return sorted(
+                label for label, info in self.entity_types.items() if not info.hierarchy
+            )
 
         def edge_type_names(self):
             return sorted(self.edge_types.keys())

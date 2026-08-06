@@ -16,6 +16,11 @@ class EntityTypeInfo:
     count: int
     description: str
     sample_names: list[str] = field(default_factory=list)
+    # True when the label is HIERARCHY-ONLY: censusable and searchable, but no
+    # vertex is stored under it, so `MATCH (n:Label)` reaches nothing and it can
+    # appear in no relationship pattern. Always False on backends that store the
+    # full hierarchy (FalkorDB); set on AGE, where the census counts supertypes.
+    hierarchy: bool = False
 
 
 @dataclass
@@ -35,6 +40,18 @@ class DomainProfile:
 
     def entity_type_names(self) -> list[str]:
         return sorted(self.entity_types.keys())
+
+    def storage_entity_type_names(self) -> list[str]:
+        """The labels a `MATCH (n:Label)` can actually reach.
+
+        Anything generating Cypher — example queries above all — must build from
+        THIS list, not from `entity_type_names()`. On AGE the census counts the
+        full ontology hierarchy, so the unfiltered list leads with abstract
+        supertypes that match zero rows.
+        """
+        return sorted(
+            label for label, info in self.entity_types.items() if not info.hierarchy
+        )
 
     def edge_type_names(self) -> list[str]:
         return sorted(self.edge_types.keys())
@@ -216,6 +233,40 @@ async def _enrich_from_ontology(
             edge_types[upper_name].description = summary
 
 
+async def _flag_hierarchy_labels(driver, entity_types: dict[str, EntityTypeInfo], flavour) -> None:
+    """Mark the profile's labels that no `MATCH (n:Label)` can reach.
+
+    Same census `get_schema` uses, for the same reason and with the same degrade
+    direction: a probe that cannot answer yields an EMPTY set, and diffing against
+    empty would flag EVERY label as hierarchy-only — which would suppress every
+    generated example and mark the whole type list unusable. So a failure, a
+    missing census key, or an empty answer leaves every label unflagged, which is
+    today's behaviour on every backend that stores its full hierarchy.
+    """
+    try:
+        query = flavour.census_queries()['storage_labels']
+    except (AttributeError, KeyError):
+        return
+
+    try:
+        records, _, _ = await driver.execute_query(query)
+    except Exception as e:
+        _log_probe_failure('storage_labels', e, flavour, query)
+        return
+
+    stored = {rec.get('storage_label') for rec in records if rec.get('storage_label')}
+    if not stored:
+        logger.debug('domain profile: no storage-label census; hierarchy flag disabled')
+        return
+
+    for label, info in entity_types.items():
+        info.hierarchy = label not in stored
+
+    flagged = sorted(label for label, info in entity_types.items() if info.hierarchy)
+    if flagged:
+        logger.info(f'Domain profile: hierarchy-only labels (not `(n:X)`-matchable): {flagged}')
+
+
 async def build_domain_profile(
     client,
     group_id: str,
@@ -233,6 +284,7 @@ async def build_domain_profile(
     # Query data graph
     entity_types = await _query_entity_types(driver, group_id, flavour)
     edge_types = await _query_edge_types(driver, group_id, flavour)
+    await _flag_hierarchy_labels(driver, entity_types, flavour)
 
     # Fetch sample names for each entity type
     for label, info in entity_types.items():
