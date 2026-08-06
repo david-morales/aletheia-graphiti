@@ -85,7 +85,7 @@ from models.response_types import (
     SubgraphResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
-from tool_annotations import annotations_for
+from tool_annotations import annotations_for, apply_canonical_tool_order
 from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
@@ -2442,6 +2442,10 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     )
     mcp.add_tool(profile_graph, annotations=annotations_for('profile_graph'))
 
+    # Deterministic tools/list order (2026-07-28 spec SHOULD). The re-adds above
+    # would otherwise migrate these nine to the end of the dict on every pass.
+    apply_canonical_tool_order(mcp._tool_manager._tools)
+
     # Update MCP instructions
     mcp._mcp_server.instructions = build_instructions(profile, flavour)
 
@@ -2480,6 +2484,8 @@ def register_fallback_tools(reason: str) -> None:
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
         mcp.add_tool(fn, annotations=annotations_for(name))
+
+    apply_canonical_tool_order(mcp._tool_manager._tools)
 
     mcp._mcp_server.instructions = build_degraded_instructions(
         group_id=group_id,

@@ -81,6 +81,58 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
 }
 
 
+# The order `tools/list` serves, declared rather than emergent (2026-07-28 spec
+# SHOULD: list endpoints must not vary per connection). It mirrors the capability
+# catalog in the server instructions, so the two announcements agree — an agent
+# reading item 7 in the catalog finds the same tool seventh in the listing.
+#
+# Registration order alone would not do it: nine decorators fire in source order,
+# and both `register_dynamic_tools` and the degraded fallback delete-and-re-add
+# their nine, which migrates them to the end of the dict on every pass. A stable
+# order is also what lets a client's prompt cache hit — the tool block usually
+# leads the context window, so a reshuffle invalidates everything after it.
+TOOL_ORDER: tuple[str, ...] = (
+    # retrieval
+    'search',
+    'explore_node',
+    'search_ontology',
+    'explore_ontology',
+    'sample_subgraph',
+    # schema and structure
+    'get_schema',
+    'run_cypher',
+    'profile_graph',
+    'get_ontology_structure',
+    'get_ontology_documentation',
+    # episodes
+    'get_episodes',
+    'get_episode_context',
+    # writing
+    'add_memory',
+    'build_communities',
+    # health
+    'get_status',
+    # destructive
+    'delete_entity_edge',
+    'delete_episode',
+    'clear_graph',
+)
+
+
+def apply_canonical_tool_order(tools: dict) -> None:
+    """Reorder a FastMCP tool-manager mapping in place into `TOOL_ORDER`.
+
+    Takes the mapping rather than the server so this module stays free of any
+    FastMCP import. A tool absent from `TOOL_ORDER` is APPENDED, never dropped:
+    reordering must not be able to unregister anything.
+    """
+    ordered = {name: tools[name] for name in TOOL_ORDER if name in tools}
+    extras = {name: tool for name, tool in tools.items() if name not in ordered}
+    tools.clear()
+    tools.update(ordered)
+    tools.update(extras)
+
+
 def annotations_for(name: str) -> ToolAnnotations:
     """Return the annotations for a served tool.
 
