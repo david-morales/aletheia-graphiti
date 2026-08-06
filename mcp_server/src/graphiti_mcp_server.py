@@ -68,18 +68,21 @@ from tool_descriptions import (
     build_run_cypher_description,
 )
 from models.response_types import (
-    CommunityBuildResponse,
+    AddMemoryResult,
+    CommunityBuildResult,
     CypherResultResponse,
-    EpisodeAddedResponse,
-    EpisodeContextResponse,
-    EpisodeSearchResponse,
-    ErrorResponse,
-    ExploreResponse,
+    EpisodeContextResult,
+    EpisodeListResult,
+    ExploreResult,
+    MutationResult,
+    OntologyClassContextResponse,
+    OntologyDocumentationResponse,
+    OntologyStructureResponse,
+    ProfileGraphResponse,
     SchemaResponse,
-    SearchResponse,
+    SearchResult,
     StatusResponse,
     SubgraphResponse,
-    SuccessResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from tool_annotations import annotations_for
@@ -615,7 +618,7 @@ async def add_memory(
     uuid: str | None = None,
     sync: bool = False,
     episodes: list[dict] | None = None,
-) -> SuccessResponse | EpisodeAddedResponse | ErrorResponse:
+) -> AddMemoryResult:
     """Add information to the knowledge graph.
 
     Use when:
@@ -655,7 +658,7 @@ async def add_memory(
     global graphiti_service, queue_service
 
     if graphiti_service is None or queue_service is None:
-        return ErrorResponse(error='Services not initialized')
+        return AddMemoryResult(error='Services not initialized')
 
     effective_group_id = group_id or config.graphiti.group_id
 
@@ -663,7 +666,7 @@ async def add_memory(
         # Bulk mode
         if episodes is not None:
             if not episodes:
-                return ErrorResponse(error='Episodes list is empty')
+                return AddMemoryResult(error='Episodes list is empty')
 
             client = await graphiti_service.get_client()
 
@@ -671,7 +674,7 @@ async def add_memory(
             for i, ep in enumerate(episodes):
                 if 'name' not in ep or 'content' not in ep:
                     missing = [k for k in ('name', 'content') if k not in ep]
-                    return ErrorResponse(
+                    return AddMemoryResult(
                         error=f"Episode at index {i} missing required key(s): {', '.join(missing)}"
                     )
 
@@ -698,14 +701,14 @@ async def add_memory(
             # Invalidate schema cache after ingestion
             graphiti_service._schema_dirty = True
 
-            return SuccessResponse(
+            return AddMemoryResult(
                 message=f"Bulk ingested {len(raw_episodes)} episodes into '{effective_group_id}': "
                         f"{len(results.nodes)} nodes, {len(results.edges)} edges created"
             )
 
         # Single mode (existing behavior)
         if not name or not episode_body:
-            return ErrorResponse(error='Provide name + episode_body for single mode, or episodes for bulk mode')
+            return AddMemoryResult(error='Provide name + episode_body for single mode, or episodes for bulk mode')
 
         episode_type = EpisodeType.text
         if source:
@@ -731,7 +734,7 @@ async def add_memory(
 
             graphiti_service._schema_dirty = True
 
-            return EpisodeAddedResponse(
+            return AddMemoryResult(
                 message=f"Episode '{name}' processed synchronously in '{effective_group_id}': "
                         f"{len(results.nodes)} nodes, {len(results.edges)} edges",
                 node_uuids=[n.uuid for n in results.nodes],
@@ -751,13 +754,13 @@ async def add_memory(
         # Invalidate schema cache after ingestion
         graphiti_service._schema_dirty = True
 
-        return SuccessResponse(
+        return AddMemoryResult(
             message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
         )
 
     except Exception as e:
         logger.error(f'Error in add_memory: {e}')
-        return ErrorResponse(error=f'Error adding memory: {e}')
+        return AddMemoryResult(error=f'Error adding memory: {e}')
 
 
 async def search(
@@ -772,7 +775,7 @@ async def search(
     edge_types: list[str] | None = None,
     valid_at: str | None = None,
     limit: int = 10,
-) -> SearchResponse | ErrorResponse:
+) -> SearchResult:
     """Search the knowledge graph using a semantic intent or explicit parameters.
 
     Prefer passing `intent` to let the server choose the best strategy.
@@ -797,7 +800,7 @@ async def search(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return SearchResult(error='Graphiti service not initialized')
 
     try:
         start_time = time.time()
@@ -818,7 +821,7 @@ async def search(
         if intent:
             strategy = INTENT_STRATEGIES.get(intent)
             if strategy is None:
-                return ErrorResponse(
+                return SearchResult(
                     error=f"Unknown intent '{intent}'. "
                     f"Valid intents: {list(INTENT_STRATEGIES.keys())}"
                 )
@@ -890,7 +893,7 @@ async def search(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        return SearchResponse(
+        return SearchResult(
             message=f'Found {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
             nodes=node_results,
             edges=edge_results,
@@ -899,10 +902,10 @@ async def search(
         )
 
     except ValueError as e:
-        return ErrorResponse(error=str(e))
+        return SearchResult(error=str(e))
     except Exception as e:
         logger.error(f'Error in search: {e}')
-        return ErrorResponse(error=f'Search error: {e}')
+        return SearchResult(error=f'Search error: {e}')
 
 
 async def explore_node(
@@ -912,7 +915,7 @@ async def explore_node(
     depth: Literal[1, 2, 3, 4] = 2,
     edge_types: list[str] | None = None,
     limit: int = 20,
-) -> ExploreResponse | ErrorResponse:
+) -> ExploreResult:
     """Explore everything connected to a specific entity in the knowledge graph.
 
     Resolves a node by name or UUID, then expands outward via graph traversal.
@@ -929,10 +932,10 @@ async def explore_node(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return ExploreResult(error='Graphiti service not initialized')
 
     if not node_name and not node_uuid:
-        return ErrorResponse(error='Provide either node_name or node_uuid')
+        return ExploreResult(error='Provide either node_name or node_uuid')
 
     try:
         client = await graphiti_service.get_client()
@@ -960,7 +963,7 @@ async def explore_node(
                 group_ids=effective_group_ids,
             )
             if not resolve_results.nodes:
-                return ExploreResponse(
+                return ExploreResult(
                     message=f'No node found matching "{node_name}"',
                     center_node=None,
                     nodes=[],
@@ -984,7 +987,7 @@ async def explore_node(
                 # match `(n:Entity …)` and raise. Changing that lookup has other
                 # callers and belongs to its own lane.
                 logger.info(f'explore_node: no node with uuid {node_uuid}')
-                return ExploreResponse(
+                return ExploreResult(
                     message=f'No node found with UUID "{node_uuid}"',
                     center_node=None,
                     nodes=[],
@@ -1034,7 +1037,7 @@ async def explore_node(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        return ExploreResponse(
+        return ExploreResult(
             message=f'Explored "{node_name or node_uuid}": {len(node_results)} nodes, {len(edge_results)} edges',
             center_node=center_node_result,
             nodes=node_results,
@@ -1044,13 +1047,13 @@ async def explore_node(
 
     except Exception as e:
         logger.error(f'Error in explore_node: {e}')
-        return ErrorResponse(error=f'Explore error: {e}')
+        return ExploreResult(error=f'Explore error: {e}')
 
 
 @mcp.tool(annotations=annotations_for('get_episode_context'))
 async def get_episode_context(
     episode_uuids: list[str],
-) -> EpisodeContextResponse | ErrorResponse:
+) -> EpisodeContextResult:
     """Get all entities and relationships extracted from specific episodes.
 
     Use when:
@@ -1065,10 +1068,10 @@ async def get_episode_context(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return EpisodeContextResult(error='Graphiti service not initialized')
 
     if not episode_uuids:
-        return ErrorResponse(error='Provide at least one episode UUID')
+        return EpisodeContextResult(error='Provide at least one episode UUID')
 
     try:
         client = await graphiti_service.get_client()
@@ -1094,7 +1097,7 @@ async def get_episode_context(
 
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
 
-        return EpisodeContextResponse(
+        return EpisodeContextResult(
             message=f'Found {len(node_results)} nodes and {len(edge_results)} edges from {len(episode_uuids)} episodes',
             nodes=node_results,
             edges=edge_results,
@@ -1102,13 +1105,13 @@ async def get_episode_context(
 
     except Exception as e:
         logger.error(f'Error in get_episode_context: {e}')
-        return ErrorResponse(error=f'Episode context error: {e}')
+        return EpisodeContextResult(error=f'Episode context error: {e}')
 
 
 @mcp.tool(annotations=annotations_for('build_communities'))
 async def build_communities(
     group_ids: list[str],
-) -> CommunityBuildResponse | ErrorResponse:
+) -> CommunityBuildResult:
     """Build communities by clustering entities in the knowledge graph.
 
     Use when:
@@ -1124,10 +1127,10 @@ async def build_communities(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return CommunityBuildResult(error='Graphiti service not initialized')
 
     if not group_ids:
-        return ErrorResponse(error='Provide at least one group_id')
+        return CommunityBuildResult(error='Provide at least one group_id')
 
     try:
         client = await graphiti_service.get_client()
@@ -1141,7 +1144,7 @@ async def build_communities(
             for c in community_nodes
         ]
 
-        return CommunityBuildResponse(
+        return CommunityBuildResult(
             message=f'Built {len(community_nodes)} communities across {len(group_ids)} graphs',
             community_count=len(community_nodes),
             communities=community_results,
@@ -1149,11 +1152,11 @@ async def build_communities(
 
     except Exception as e:
         logger.error(f'Error building communities: {e}')
-        return ErrorResponse(error=f'Community build error: {e}')
+        return CommunityBuildResult(error=f'Community build error: {e}')
 
 
 @mcp.tool(annotations=annotations_for('delete_entity_edge'))
-async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
+async def delete_entity_edge(uuid: str) -> MutationResult:
     """Delete a relationship (edge) from the knowledge graph.
 
     Use when:
@@ -1166,7 +1169,7 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return MutationResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1176,15 +1179,15 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
         # Delete the edge using its delete method
         await entity_edge.delete(client.driver)
         graphiti_service._schema_dirty = True
-        return SuccessResponse(message=f'Entity edge with UUID {uuid} deleted successfully')
+        return MutationResult(message=f'Entity edge with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error deleting entity edge: {error_msg}')
-        return ErrorResponse(error=f'Error deleting entity edge: {error_msg}')
+        return MutationResult(error=f'Error deleting entity edge: {error_msg}')
 
 
 @mcp.tool(annotations=annotations_for('delete_episode'))
-async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
+async def delete_episode(uuid: str) -> MutationResult:
     """Delete an episode and its extracted data from the knowledge graph.
 
     Use when:
@@ -1196,7 +1199,7 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return MutationResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1206,18 +1209,18 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
         # Delete the node using its delete method
         await episodic_node.delete(client.driver)
         graphiti_service._schema_dirty = True
-        return SuccessResponse(message=f'Episode with UUID {uuid} deleted successfully')
+        return MutationResult(message=f'Episode with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error deleting episode: {error_msg}')
-        return ErrorResponse(error=f'Error deleting episode: {error_msg}')
+        return MutationResult(error=f'Error deleting episode: {error_msg}')
 
 
 @mcp.tool(annotations=annotations_for('get_episodes'))
 async def get_episodes(
     group_ids: list[str] | None = None,
     max_episodes: int = 10,
-) -> EpisodeSearchResponse | ErrorResponse:
+) -> EpisodeListResult:
     """List recent episodes (ingested documents) from the knowledge graph.
 
     Use when:
@@ -1231,7 +1234,7 @@ async def get_episodes(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return EpisodeListResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1258,7 +1261,7 @@ async def get_episodes(
             episodes = []
 
         if not episodes:
-            return EpisodeSearchResponse(message='No episodes found', episodes=[])
+            return EpisodeListResult(message='No episodes found', episodes=[])
 
         # Format the results
         episode_results = []
@@ -1276,17 +1279,17 @@ async def get_episodes(
             }
             episode_results.append(episode_dict)
 
-        return EpisodeSearchResponse(
+        return EpisodeListResult(
             message='Episodes retrieved successfully', episodes=episode_results
         )
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error getting episodes: {error_msg}')
-        return ErrorResponse(error=f'Error getting episodes: {error_msg}')
+        return EpisodeListResult(error=f'Error getting episodes: {error_msg}')
 
 
 @mcp.tool(annotations=annotations_for('clear_graph'))
-async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | ErrorResponse:
+async def clear_graph(group_ids: list[str] | None = None) -> MutationResult:
     """Delete all data from the knowledge graph for specified group IDs.
 
     Use when:
@@ -1301,7 +1304,7 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return MutationResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1312,20 +1315,20 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
         )
 
         if not effective_group_ids:
-            return ErrorResponse(error='No group IDs specified for clearing')
+            return MutationResult(error='No group IDs specified for clearing')
 
         # Clear data for the specified group IDs
         await clear_data(client.driver, group_ids=effective_group_ids)
 
         graphiti_service._schema_dirty = True
 
-        return SuccessResponse(
+        return MutationResult(
             message=f'Graph data cleared successfully for group IDs: {", ".join(effective_group_ids)}'
         )
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error clearing graph: {error_msg}')
-        return ErrorResponse(error=f'Error clearing graph: {error_msg}')
+        return MutationResult(error=f'Error clearing graph: {error_msg}')
 
 
 @mcp.tool(annotations=annotations_for('get_status'))
@@ -1371,7 +1374,7 @@ async def search_ontology(
     search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
     reranker: Literal['rrf', 'mmr', 'cross_encoder'] = 'rrf',
     limit: int = 10,
-) -> SearchResponse | ErrorResponse:
+) -> SearchResult:
     """Search the companion ontology graph for schema definitions, entity types, and relationships.
 
     Use this to understand what types of entities and relationships exist in the knowledge graph,
@@ -1392,10 +1395,10 @@ async def search_ontology(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return SearchResult(error='Graphiti service not initialized')
 
     if not await graphiti_service._ensure_ontology_client():
-        return ErrorResponse(error='No ontology graph configured for this server')
+        return SearchResult(error='No ontology graph configured for this server')
     assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     try:
@@ -1430,7 +1433,7 @@ async def search_ontology(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        return SearchResponse(
+        return SearchResult(
             message=f'Ontology: {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
             nodes=node_results,
             edges=edge_results,
@@ -1439,10 +1442,10 @@ async def search_ontology(
         )
 
     except ValueError as e:
-        return ErrorResponse(error=str(e))
+        return SearchResult(error=str(e))
     except Exception as e:
         logger.error(f'Error in search_ontology: {e}')
-        return ErrorResponse(error=f'Ontology search error: {e}')
+        return SearchResult(error=f'Ontology search error: {e}')
 
 
 # The three ontology tiers read their rows through `flavour.ontology_queries()`
@@ -1556,7 +1559,7 @@ async def explore_ontology(
     node_uuid: str | None = None,
     depth: Literal[1, 2, 3, 4] = 2,
     limit: int = 20,
-) -> dict[str, Any] | ErrorResponse:
+) -> OntologyClassContextResponse:
     """Gather the full context of ONE ontology class.
 
     Returns its complete documentation, properties, and typed surroundings:
@@ -1585,14 +1588,14 @@ async def explore_ontology(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return OntologyClassContextResponse(error='Graphiti service not initialized')
 
     if not await graphiti_service._ensure_ontology_client():
-        return ErrorResponse(error='No ontology graph configured for this server')
+        return OntologyClassContextResponse(error='No ontology graph configured for this server')
     assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     if not node_name and not node_uuid:
-        return ErrorResponse(error='Provide either node_name or node_uuid')
+        return OntologyClassContextResponse(error='Provide either node_name or node_uuid')
 
     try:
         ontology_client = graphiti_service.ontology_client
@@ -1629,7 +1632,7 @@ async def explore_ontology(
                         center_row = by_name[match.name]
                         break
         if center_row is None:
-            return ErrorResponse(
+            return OntologyClassContextResponse(
                 error=f'No ontology class found matching "{node_name or node_uuid}"'
             )
 
@@ -1730,7 +1733,7 @@ async def explore_ontology(
 
     except Exception as e:
         logger.error(f'Error in explore_ontology: {e}')
-        return ErrorResponse(error=f'Ontology explore error: {e}')
+        return OntologyClassContextResponse(error=f'Ontology explore error: {e}')
 
 
 @mcp.custom_route('/health', methods=['GET'])
@@ -2150,7 +2153,7 @@ async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
         return {'error': str(e)}
 
 
-async def get_ontology_structure() -> dict[str, Any]:
+async def get_ontology_structure() -> OntologyStructureResponse:
     """Return the full ontology class hierarchy in one call.
 
     Returns entity classes (with inheritance, alt_labels, descriptions)
@@ -2218,7 +2221,7 @@ async def get_ontology_structure() -> dict[str, Any]:
         return {'error': f'Failed to retrieve ontology structure: {e}'}
 
 
-async def get_ontology_documentation() -> dict[str, Any]:
+async def get_ontology_documentation() -> OntologyDocumentationResponse:
     """Complete ontology reference: every class with full documentation prose
     and per-class property definitions.
 
@@ -2335,7 +2338,7 @@ async def run_cypher(query: str) -> CypherResultResponse:
         return result
 
 
-async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
+async def profile_graph(sample_size: int = 5) -> ProfileGraphResponse:
     """Profile entity properties and relationship patterns in this knowledge graph.
 
     Returns property coverage, sample values, detected languages, relationship
