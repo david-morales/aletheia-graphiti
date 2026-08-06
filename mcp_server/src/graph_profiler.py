@@ -9,16 +9,43 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from flavours.base import BaseFlavour
+
 logger = logging.getLogger(__name__)
 
 # Internal labels to skip when profiling
 _INTERNAL_LABELS = frozenset({'Entity', 'Episodic', 'Community'})
 
 
+def _pick_endpoint(rec: dict[str, Any], side: str, internal: frozenset[str] | set[str]) -> str | None:
+    """The endpoint label to advertise for one side of a relationship-pattern row.
+
+    Prefer the flavour's announced LEAF column when it is present: on AGE
+    `source_labels` is the full ontology hierarchy, so picking positionally lands
+    on an abstract supertype — which no vertex carries as its stored label (a
+    label-scoped probe against it matches nothing), and which merges genuinely
+    distinct patterns wherever the caller dedups on the advertised pair.
+
+    Flavours that announce no leaf column (FalkorDB / openCypher, where
+    `labels(s)` already lists matchable labels) keep the positional pick over the
+    filtered list — behaviour unchanged.
+
+    NOTE: get_schema in graphiti_mcp_server.py carries a textually parallel copy.
+    The two consumers are deliberately independent (no cross-module import between
+    the tool module and the server module); keep them in step.
+    """
+    leaf = rec.get(f'{side}_leaf')
+    if leaf and leaf not in internal:
+        return leaf
+    labels = [l for l in rec.get(f'{side}_labels') or [] if l not in internal]
+    return labels[0] if labels else None
+
+
 async def profile_graph(
     driver: Any,
     *,
     sample_size: int = 5,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
     """Profile entity properties and relationship patterns.
 
@@ -26,16 +53,20 @@ async def profile_graph(
     For each relationship type: count, source/target patterns, sample paths.
 
     Args:
-        driver: Graphiti database driver (FalkorDB or Neo4j).
+        driver: Graphiti database driver (FalkorDB, AGE or Neo4j).
         group_id: The graph group_id to profile.
         sample_size: Number of sample values per property (default 5).
+        flavour: Backend flavour owning the dialect-sensitive census texts.
+            ``None`` resolves to the generic openCypher :class:`BaseFlavour`, which
+            is today's behaviour byte for byte — existing callers are unaffected.
 
     Returns:
         Structured profile dict with entity_profiles, relationship_profiles,
         and language_summary.
     """
-    entity_profiles = await _profile_entities(driver, sample_size)
-    relationship_profiles = await _profile_relationships(driver, sample_size)
+    flavour = flavour or BaseFlavour()
+    entity_profiles = await _profile_entities(driver, sample_size, flavour)
+    relationship_profiles = await _profile_relationships(driver, sample_size, flavour)
     episodic_languages = await _sample_episodic_languages(driver)
     language_summary = _build_language_summary(entity_profiles, episodic_languages)
 
@@ -49,15 +80,23 @@ async def profile_graph(
 async def _profile_entities(
     driver: Any,
     sample_size: int,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
-    """Profile all entity labels: properties, coverage, samples, languages."""
+    """Profile all entity labels: properties, coverage, samples, languages.
+
+    The FLAVOUR owns the census text: on AGE ``labels(n)`` returns only the
+    ontology leaf, so the hardcoded base literal hid every abstract supertype
+    from the Overview tab. The parsing is shared — both variants project the
+    same ``lbls``/``cnt`` aliases.
+    """
+    flavour = flavour or BaseFlavour()
     # Get label counts
-    label_records, _, _ = await driver.execute_query(
-        'MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt'
-    )
+    label_records, _, _ = await driver.execute_query(flavour.census_queries()['label_counts'])
     label_counts: dict[str, int] = {}
     for rec in label_records:
-        for label in rec.get('lbls', []):
+        # `or []`, not a .get default: AGE returns label-less vertices with an
+        # explicit null labels list, which a default never covers.
+        for label in rec.get('lbls') or []:
             if label not in _INTERNAL_LABELS:
                 label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
@@ -67,24 +106,41 @@ async def _profile_entities(
         if count == 0:
             continue
 
-        # Sample nodes for this label
-        sample_records, _, _ = await driver.execute_query(
-            f'MATCH (n:`{label}`) RETURN n LIMIT {sample_size * 2}'
-        )
+        # Sample nodes for this label. A censused label need not be MATCHable: on
+        # AGE the hierarchy (abstract) labels have no label table at all, so this
+        # probe answers with no rows — or raises. Neither may take the whole
+        # profile down; a probe that cannot answer degrades ONE entry and says so
+        # via `sampled`. Same rule as get_schema's label-scoped probe.
+        try:
+            sample_records, _, _ = await driver.execute_query(
+                flavour.node_sample_query().format(label=label, limit=sample_size * 2)
+            )
+        except Exception as probe_error:  # noqa: BLE001 — one label must not break the profile
+            logger.warning(
+                'profile_graph: label-scoped probe failed for `%s`, '
+                'reporting it unsampled: %s',
+                label,
+                probe_error,
+            )
+            sample_records = []
 
         if not sample_records:
-            profiles[label] = {'count': count, 'properties': {}}
+            # Honest: an entry whose probe raised or returned nothing was never
+            # sampled, and a consumer must not read its empty `properties` as
+            # "this type has no properties". The census count always survives.
+            profiles[label] = {'count': count, 'properties': {}, 'sampled': False}
             continue
 
         # Extract property profiles from samples
-        property_profiles = _extract_property_profiles(sample_records, sample_size)
+        property_profiles = _extract_property_profiles(sample_records, sample_size, flavour)
 
         # Enrich with full-scan value statistics
-        await _enrich_value_stats(driver, label, count, property_profiles)
+        await _enrich_value_stats(driver, label, count, property_profiles, flavour=flavour)
 
         profiles[label] = {
             'count': count,
             'properties': property_profiles,
+            'sampled': True,
         }
 
     return profiles
@@ -93,8 +149,16 @@ async def _profile_entities(
 def _extract_property_profiles(
     sample_records: list[dict[str, Any]],
     sample_size: int,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
-    """Extract property coverage, samples, and language detection from node samples."""
+    """Extract property coverage, samples, and language detection from node samples.
+
+    The FLAVOUR owns where a domain field lives on the node: AGE nests every one
+    of them inside a `attributes` agtype map, so walking the top level alone found
+    NO domain fields at all (live: `properties: {}` on all 23 AGE entity types).
+    `flatten_node_props` is the identity on FalkorDB/openCypher.
+    """
+    flavour = flavour or BaseFlavour()
     # Collect all property values across samples
     property_values: dict[str, list[Any]] = {}
 
@@ -103,6 +167,7 @@ def _extract_property_profiles(
         if not isinstance(node, dict):
             # FalkorDB returns node objects — convert via properties
             node = _node_to_dict(node)
+        node = flavour.flatten_node_props(node)
 
         for key, value in node.items():
             if key == 'name_embedding' or key.endswith('_embedding'):
@@ -161,6 +226,7 @@ async def _enrich_value_stats(
     total_count: int,
     property_profiles: dict[str, Any],
     top_n: int = 10,
+    flavour: Any | None = None,
 ) -> None:
     """Enrich property profiles with full-scan value statistics.
 
@@ -170,22 +236,33 @@ async def _enrich_value_stats(
 
     Categorical heuristic: distinct_count < 20 OR distinct_count / total_count < 0.1.
 
+    The FLAVOUR owns the property path (`property_accessor`), and it MUST be the
+    mirror of the one `flatten_node_props` read the sample through. On AGE a domain
+    field probed at the top level is valid Cypher that matches nothing: it returns
+    0/0 and step 3 below then overwrites a real sample-based coverage with 0.0 —
+    silently wrong, which is worse than the guarded failure the try/except handles.
+    The base accessor renders this query text byte-identical to its historic form.
+
     Args:
         driver: Graphiti database driver.
         label: Entity label to scan.
         total_count: Total number of nodes with this label.
         property_profiles: Mutable dict of property profiles to enrich in-place.
         top_n: Number of top frequent values to retrieve (default 10).
+        flavour: Backend flavour; ``None`` resolves to BaseFlavour (identity path).
     """
     if total_count == 0:
         return
 
+    flavour = flavour or BaseFlavour()
+
     for prop_name, profile in property_profiles.items():
+        accessor = flavour.property_accessor(prop_name)
         # 1. Get distinct count and exact non-null count
         try:
             records, _, _ = await driver.execute_query(
-                f'MATCH (n:`{label}`) WHERE n.`{prop_name}` IS NOT NULL '
-                f'RETURN COUNT(DISTINCT n.`{prop_name}`) AS distinct_count, '
+                f'MATCH (n:`{label}`) WHERE {accessor} IS NOT NULL '
+                f'RETURN COUNT(DISTINCT {accessor}) AS distinct_count, '
                 f'COUNT(n) AS non_null_count'
             )
             if not records:
@@ -210,8 +287,8 @@ async def _enrich_value_stats(
         if is_categorical:
             try:
                 top_records, _, _ = await driver.execute_query(
-                    f'MATCH (n:`{label}`) WHERE n.`{prop_name}` IS NOT NULL '
-                    f'RETURN n.`{prop_name}` AS val, COUNT(*) AS freq '
+                    f'MATCH (n:`{label}`) WHERE {accessor} IS NOT NULL '
+                    f'RETURN {accessor} AS val, COUNT(*) AS freq '
                     f'ORDER BY freq DESC LIMIT {top_n}'
                 )
                 profile['top_values'] = [
@@ -225,8 +302,16 @@ async def _enrich_value_stats(
 async def _profile_relationships(
     driver: Any,
     sample_size: int,
+    flavour: Any | None = None,
 ) -> dict[str, Any]:
-    """Profile all relationship types: counts, patterns, sample paths."""
+    """Profile all relationship types: counts, patterns, sample paths.
+
+    The endpoint-pattern census is the flavour's (same reason as the label
+    census: ``labels(s)`` is leaf-only on AGE). Both variants project
+    ``source_labels``/``target_labels``, so the parsing below is shared.
+    """
+    flavour = flavour or BaseFlavour()
+    census = flavour.census_queries()
     # Get relationship counts
     rel_records, _, _ = await driver.execute_query(
         'MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS cnt'
@@ -242,15 +327,17 @@ async def _profile_relationships(
     for rel_type, count in sorted(rel_counts.items()):
         # Get source->target patterns
         pattern_records, _, _ = await driver.execute_query(
-            f'MATCH (s)-[r:`{rel_type}`]->(t) '
-            f'RETURN DISTINCT labels(s) AS src, labels(t) AS tgt LIMIT 20'
+            census['rel_patterns'].format(rel_type=rel_type)
         )
         patterns = []
         for rec in pattern_records:
-            src_labels = [l for l in rec.get('src', []) if l not in _INTERNAL_LABELS]
-            tgt_labels = [l for l in rec.get('tgt', []) if l not in _INTERNAL_LABELS]
-            if src_labels and tgt_labels:
-                pair = [src_labels[0], tgt_labels[0]]
+            # The seam's aliases (`source_labels`/`target_labels` plus the optional
+            # `source_leaf`/`target_leaf`), shared by both variants — get_schema
+            # parses the same rows with the same names.
+            src_endpoint = _pick_endpoint(rec, 'source', _INTERNAL_LABELS)
+            tgt_endpoint = _pick_endpoint(rec, 'target', _INTERNAL_LABELS)
+            if src_endpoint and tgt_endpoint:
+                pair = [src_endpoint, tgt_endpoint]
                 if pair not in patterns:
                     patterns.append(pair)
 
@@ -264,17 +351,30 @@ async def _profile_relationships(
             for rec in sample_records
         ]
 
-        # Calculate average out-degree for first pattern
+        # Calculate average out-degree for first pattern. Label-scoped, so it
+        # carries the same AGE hazard as the entity probe: the endpoint may be a
+        # hierarchy label with no label table. Degrade this one number rather
+        # than sink every relationship profile.
         avg_out_degree = 0.0
         if patterns:
             src_label = patterns[0][0]
-            degree_records, _, _ = await driver.execute_query(
-                f'MATCH (s:`{src_label}`)-[r:`{rel_type}`]->() '
-                f'WITH s, count(r) AS deg '
-                f'RETURN avg(deg) AS avg_deg'
-            )
+            try:
+                degree_records, _, _ = await driver.execute_query(
+                    f'MATCH (s:`{src_label}`)-[r:`{rel_type}`]->() '
+                    f'WITH s, count(r) AS deg '
+                    f'RETURN avg(deg) AS avg_deg'
+                )
+            except Exception as probe_error:  # noqa: BLE001 — one probe must not break the profile
+                logger.warning(
+                    'profile_graph: out-degree probe failed for `%s`-[:%s], '
+                    'reporting 0.0: %s',
+                    src_label,
+                    rel_type,
+                    probe_error,
+                )
+                degree_records = []
             if degree_records:
-                avg_out_degree = round(float(degree_records[0].get('avg_deg', 0)), 1)
+                avg_out_degree = round(float(degree_records[0].get('avg_deg', 0) or 0), 1)
 
         profiles[rel_type] = {
             'count': count,

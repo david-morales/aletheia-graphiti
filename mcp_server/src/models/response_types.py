@@ -154,6 +154,60 @@ class SchemaResponse(TypedDict, total=False):
     error: str | None                   # ADR-015 R4 error path
 
 
+class SubgraphNode(TypedDict, total=False):
+    uuid: str | None
+    name: str | None
+    # Full logical hierarchy on BOTH flavours (internal labels included). UNORDERED —
+    # see the SubgraphResponse docstring: set-filter, never index positionally.
+    labels: list[str] | None
+    # The node's single MOST SPECIFIC label — the one to type/colour by. Producer-
+    # announced precisely because `labels` is unordered: deriving a type from its
+    # first element collapsed 16 leaf types into 3 supertypes on the AGE arm.
+    # Nullable per the module rule: null when no non-internal label exists.
+    leaf: str | None
+    created_at: str | None
+    summary: str | None
+    group_id: str | None
+
+
+class SubgraphEdge(TypedDict, total=False):
+    uuid: str | None
+    name: str | None           # type(r)
+    fact: str | None
+    source_node_uuid: str | None
+    target_node_uuid: str | None
+    created_at: str | None
+
+
+class SubgraphResponse(TypedDict, total=False):
+    """sample_subgraph payload (Step 2 UI alignment): a flavour-normalized node/edge sample.
+
+    `labels` carries the full logical hierarchy on both flavours (FalkorDB:
+    labels(n); AGE: the stored n.labels list).
+
+    The list is UNORDERED — its order is NOT a contract on either flavour, and
+    position carries no meaning. Live bench evidence: most rows come back
+    ['Entity', 'Actor', 'Persona'] (internal label first), but ['Droga', 'Entity']
+    puts the domain label first. Consumers MUST set-filter the internal labels
+    (Entity, Episodic, ...) to find the domain type — never index positionally
+    (`labels[0]`, `labels[-1]`) and never assume general-to-specific ordering.
+
+    `leaf` exists so consumers do not have to: it is the node's single most
+    specific label, announced by the producer. TYPE AND COLOUR BY `leaf`, and
+    fall back to set-filtering `labels` only when it is null. Deriving a type from
+    the hierarchy's first element is the concrete bug this closes — on the AGE arm
+    it collapsed 16 leaf types into 3 supertypes (Actor 94 / Event 67 /
+    Ubicacion 39) and coloured the two backends differently for the same graph.
+
+    Same nullability rule as the module note above — every field `X | None`.
+    """
+    type: str | None           # always "subgraph"
+    graph_name: str | None
+    nodes: list[SubgraphNode] | None
+    edges: list[SubgraphEdge] | None
+    error: str | None          # ADR-015 R4 error path
+
+
 class CypherResultResponse(TypedDict, total=False):
     """run_cypher envelope (ADR-019 R2) — success + error keys in one type.
 

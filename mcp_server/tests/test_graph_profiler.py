@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from flavours.age import AgeFlavour
 from graph_profiler import (
     _build_language_summary,
     _detect_languages_heuristic,
@@ -268,7 +269,7 @@ class TestProfileRelationships:
                 {'rel_type': 'LOCATED_IN', 'cnt': 8},
             ],
             'MATCH (s)-[r:`INVOLVED_AIRCRAFT`]->(t) RETURN DISTINCT': [
-                {'src': ['Occurrence', 'Entity'], 'tgt': ['Aircraft', 'Entity']},
+                {'source_labels': ['Occurrence', 'Entity'], 'target_labels': ['Aircraft', 'Entity']},
             ],
             'MATCH (s)-[r:`INVOLVED_AIRCRAFT`]->(t) RETURN s.name': [
                 {'source': 'Barcelona incident', 'target': 'Airbus A321neo'},
@@ -277,7 +278,7 @@ class TestProfileRelationships:
                 {'avg_deg': 1.2},
             ],
             'MATCH (s)-[r:`LOCATED_IN`]->(t) RETURN DISTINCT': [
-                {'src': ['Airport', 'Entity'], 'tgt': ['Country', 'Entity']},
+                {'source_labels': ['Airport', 'Entity'], 'target_labels': ['Country', 'Entity']},
             ],
             'MATCH (s)-[r:`LOCATED_IN`]->(t) RETURN s.name': [
                 {'source': 'Barcelona-El Prat', 'target': 'Spain'},
@@ -467,6 +468,366 @@ class TestSampleEpisodicLanguages:
         assert 'fr' in langs
 
 
+# ---------------------------------------------------------------------------
+# Flavour-awareness (the Overview tab's census must be the backend's own)
+# ---------------------------------------------------------------------------
+
+
+class _AgeStubDriver:
+    """A driver with Apache AGE's label semantics, not FalkorDB's.
+
+    On AGE a vertex carries exactly ONE stored label (its ontology leaf), so
+    `labels(n)` answers `['Persona']`; the full hierarchy lives in the stored
+    list property `n.labels` (`['Entity', 'Actor', 'Persona']`). The stub answers
+    each census according to WHICH OF THE TWO the query asked for — that is what
+    makes the abstract supertype visible or invisible, and what makes a test that
+    asserts on the supertype fail for the real reason when the profiler issues the
+    hardcoded FalkorDB-shaped census.
+
+    `unmatchable` names labels that exist in the hierarchy but have NO label table
+    on this backend — precisely the supertypes the census surfaces. A label-scoped
+    probe against one of those either raises (AGE's own behaviour for an unknown
+    label, `unmatchable_raises=True`) or returns no rows; both are reproduced,
+    because they are different failure modes for the profiler.
+
+    One census row carries `lbls: None`: AGE returns label-less vertices with a
+    null labels list, and a `.get(k, [])` default does NOT cover an explicit null.
+
+    The relationship-pattern census answers leaf columns ONLY when the query asks
+    for them (`label(s) AS source_leaf`), so the same stub exercises both the
+    leaf-preferring path and the positional fallback. `sibling_leaves` adds a
+    second endpoint sharing the SAME supertype under a different leaf — two
+    genuinely distinct patterns that a supertype-level pick collapses into one.
+    """
+
+    _LEAF = ['Persona']
+    _HIERARCHY = ['Entity', 'Actor', 'Persona']
+    _SIBLING_HIERARCHY = ['Entity', 'Actor', 'Empresa']
+
+    def __init__(
+        self,
+        unmatchable: set[str] | None = None,
+        unmatchable_raises: bool = True,
+        sibling_leaves: bool = False,
+    ):
+        self.queries: list[str] = []
+        self.unmatchable = unmatchable or set()
+        self.unmatchable_raises = unmatchable_raises
+        self.sibling_leaves = sibling_leaves
+
+    def _probes_an_unmatchable_label(self, query: str) -> bool:
+        # Both label-scoped shapes the profiler emits: the node sample / value
+        # stats `(n:`X`)` and the out-degree probe `(s:`X`)`.
+        return any(
+            f'(n:`{label}`)' in query or f'(s:`{label}`)' in query
+            for label in self.unmatchable
+        )
+
+    async def execute_query(self, query: str, *a, **k):
+        self.queries.append(query)
+        # Checked FIRST: a label-scoped probe is recognisable by its label, not by
+        # what it projects, and this is what the real backend does to it.
+        if self._probes_an_unmatchable_label(query):
+            if self.unmatchable_raises:
+                raise RuntimeError('label "Actor" does not exist')
+            return [], None, None
+        if 'count(n) AS cnt' in query:
+            lbls = self._HIERARCHY if 'n.labels AS lbls' in query else self._LEAF
+            return [{'lbls': lbls, 'cnt': 5}, {'lbls': None, 'cnt': 7}], None, None
+        if 'COUNT(DISTINCT' in query or 'AS val, COUNT(*)' in query:
+            # A domain field probed at the TOP level is valid Cypher on AGE that
+            # matches nothing: 0/0, which silently overwrites the sample-based
+            # coverage with 0.0. Only the nested path finds the value.
+            if 'n.`documento`' in query:
+                return [{'distinct_count': 0, 'non_null_count': 0}], None, None
+            if 'COUNT(DISTINCT' in query:
+                return [{'distinct_count': 2, 'non_null_count': 5}], None, None
+            return [{'val': 'OMAR MOHAMED', 'freq': 3}], None, None
+        if 'RETURN n LIMIT' in query or 'RETURN n AS n LIMIT' in query:
+            # AGE hands back the whole VERTEX ENVELOPE, with Graphiti's own
+            # columns inside `properties` and every DOMAIN field one level
+            # deeper, in the queryable `attributes` agtype map (live driver repr).
+            vertex = {
+                'id': 2814749767106562,
+                'label': 'Persona',
+                'properties': {
+                    'name': 'OMAR MOHAMED',
+                    'uuid': '365fd6da',
+                    'attributes': {'documento': 'X1234567L'},
+                },
+            }
+            if 'RETURN n AS n' in query:
+                return [{'n': vertex}], None, None
+            # UNALIASED: AGE names the column `col0`, so a reader keyed on `n`
+            # sees nothing — rows exist, so the label still reports sampled: true.
+            return [{'col0': vertex}], None, None
+        if 'type(r) AS rel_type' in query:
+            return [{'rel_type': 'ES_DETENIDO', 'cnt': 2}], None, None
+        if 'AS source_labels' in query:
+            announces_leaf = 'AS source_leaf' in query
+            hierarchies = [self._HIERARCHY]
+            if self.sibling_leaves:
+                hierarchies.append(self._SIBLING_HIERARCHY)
+            rows = []
+            for hierarchy in hierarchies:
+                src = hierarchy if 's.labels AS source_labels' in query else self._LEAF
+                row: dict = {'source_labels': src, 'target_labels': ['Detencion']}
+                if announces_leaf:
+                    row['source_leaf'] = hierarchy[-1]
+                    row['target_leaf'] = 'Detencion'
+                rows.append(row)
+            return rows, None, None
+        if 's.name AS source' in query:
+            return [{'source': 'OMAR MOHAMED', 'target': 'Detencion 4/2026'}], None, None
+        if 'avg(deg) AS avg_deg' in query:
+            return [{'avg_deg': 1.5}], None, None
+        return [], None, None
+
+
+class TestFlavourAwareEntityCensus:
+    @pytest.mark.asyncio
+    async def test_profile_entities_uses_the_flavour_census(self):
+        """AGE's census reads the stored hierarchy — `labels(n)` hides the supertypes."""
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_entities(driver, sample_size=5, flavour=AgeFlavour())
+
+        census = [q for q in driver.queries if 'count(n) AS cnt' in q]
+        assert census, driver.queries
+        assert all('n.labels AS lbls' in q for q in census), census
+        assert all('labels(n) AS lbls' not in q for q in census), census
+        # The abstract supertype is only visible through the flavour's census.
+        assert 'Actor' in profiles, profiles
+        assert 'Persona' in profiles, profiles
+        assert 'Entity' not in profiles  # internal bookkeeping label, filtered as before
+        # The label-less census row (lbls: None) contributes nothing and crashes nothing.
+        assert set(profiles) == {'Actor', 'Persona'}, profiles
+
+    @pytest.mark.asyncio
+    async def test_no_flavour_keeps_the_historic_falkordb_census(self):
+        """Back-compat pin: existing callers get today's literal, byte for byte."""
+        driver = _AgeStubDriver()
+
+        result = await profile_graph(driver, sample_size=5)
+
+        assert 'MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt' in driver.queries, (
+            driver.queries
+        )
+        # ...and with it, today's leaf-only reading of the graph.
+        profiles = result['entity_profiles']
+        assert set(profiles) == {'Persona'}, profiles
+
+    @pytest.mark.asyncio
+    async def test_a_raising_label_probe_degrades_one_label_not_the_profile(self):
+        """AGE supertypes have no label table: `MATCH (n:`Actor`)` raises. One entry
+        may degrade; the whole profile may not sink."""
+        driver = _AgeStubDriver(unmatchable={'Actor'})
+
+        result = await profile_graph(driver, sample_size=5, flavour=AgeFlavour())
+
+        profiles = result['entity_profiles']
+        assert set(profiles) == {'Actor', 'Persona'}, profiles
+        assert profiles['Actor']['count'] == 5
+        assert profiles['Actor']['properties'] == {}
+        assert profiles['Actor']['sampled'] is False
+        # The matchable label is unaffected and honestly reports its sample.
+        assert profiles['Persona']['sampled'] is True
+        assert 'documento' in profiles['Persona']['properties'], profiles['Persona']
+
+    @pytest.mark.asyncio
+    async def test_a_label_probe_returning_no_rows_is_reported_unsampled(self):
+        driver = _AgeStubDriver(unmatchable={'Actor'}, unmatchable_raises=False)
+
+        profiles = await _profile_entities(driver, sample_size=5, flavour=AgeFlavour())
+
+        assert profiles['Actor'] == {'count': 5, 'properties': {}, 'sampled': False}
+        assert profiles['Persona']['sampled'] is True
+
+
+class TestFlavourAwareNodeProperties:
+    """Overview parity: an AGE leaf flagged `sampled: true` must carry real
+    properties, not an empty dict beside a positive assertion that it sampled."""
+
+    @pytest.mark.asyncio
+    async def test_age_shaped_samples_yield_real_property_profiles(self):
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_entities(driver, sample_size=5, flavour=AgeFlavour())
+
+        persona = profiles['Persona']
+        assert persona['sampled'] is True
+        # The domain field lives in the nested map; a top-level-only reader
+        # returned `properties: {}` for all 23 AGE types live.
+        assert 'documento' in persona['properties'], persona['properties']
+        assert persona['properties']['documento']['sample_values'] == ['X1234567L']
+        assert 'name' in persona['properties']
+        # The transport container is not itself a domain property.
+        assert 'attributes' not in persona['properties'], persona['properties']
+
+    @pytest.mark.asyncio
+    async def test_age_enrichment_reads_the_nested_path(self):
+        """The full-scan probe must follow the same path as the sample, or it
+        overwrites a real 1.0 coverage with a silent 0.0."""
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_entities(driver, sample_size=5, flavour=AgeFlavour())
+
+        probes = [q for q in driver.queries if 'COUNT(DISTINCT' in q and 'documento' in q]
+        assert probes, driver.queries
+        assert all('n.attributes.`documento`' in q for q in probes), probes
+        documento = profiles['Persona']['properties']['documento']
+        assert documento['distinct_count'] == 2, documento
+        assert documento['coverage'] == 1.0, documento
+
+    @pytest.mark.asyncio
+    async def test_falkordb_shaped_samples_are_untouched(self):
+        """No flavour → identity normalizer → today's behaviour byte for byte,
+        including the enrichment query text."""
+        driver = _make_driver({
+            'labels(n) AS lbls': [{'lbls': ['Persona', 'Entity'], 'cnt': 5}],
+            'MATCH (n:`Persona`) RETURN n LIMIT': [
+                {'n': {'name': 'OMAR MOHAMED', 'documento': 'X1234567L'}},
+            ],
+            'COUNT(DISTINCT n.`documento`)': [{'distinct_count': 2, 'non_null_count': 5}],
+            'n.`documento` AS val, COUNT(*)': [{'val': 'X1234567L', 'freq': 3}],
+        })
+
+        profiles = await _profile_entities(driver, sample_size=5)
+
+        persona = profiles['Persona']
+        assert persona['sampled'] is True
+        assert persona['properties']['documento']['sample_values'] == ['X1234567L']
+        assert persona['properties']['documento']['distinct_count'] == 2
+        assert persona['properties']['documento']['coverage'] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_the_base_enrichment_query_text_is_byte_identical(self):
+        """The accessor seam must render the historic literals verbatim on the
+        base path — this is the whole back-compat claim for FalkorDB."""
+        seen: list[str] = []
+
+        class _Recorder:
+            async def execute_query(self, query: str, *a, **k):
+                seen.append(query)
+                return [{'distinct_count': 2, 'non_null_count': 5}], None, None
+
+        await _enrich_value_stats(
+            _Recorder(), 'Occurrence', 10, {'ataChapter': {'coverage': 1.0, 'sample_values': []}}
+        )
+
+        assert seen[0] == (
+            'MATCH (n:`Occurrence`) WHERE n.`ataChapter` IS NOT NULL '
+            'RETURN COUNT(DISTINCT n.`ataChapter`) AS distinct_count, '
+            'COUNT(n) AS non_null_count'
+        ), seen[0]
+        assert seen[1] == (
+            'MATCH (n:`Occurrence`) WHERE n.`ataChapter` IS NOT NULL '
+            'RETURN n.`ataChapter` AS val, COUNT(*) AS freq '
+            'ORDER BY freq DESC LIMIT 10'
+        ), seen[1]
+
+    def test_extract_property_profiles_without_a_flavour_is_the_historic_reader(self):
+        """Back-compat pin: the nested map stays an opaque value on the base path."""
+        records = [{'n': {'name': 'OMAR', 'attributes': {'documento': 'X1'}}}]
+
+        profiles = _extract_property_profiles(records, sample_size=5)
+
+        assert 'documento' not in profiles
+        assert 'attributes' in profiles
+
+
+class TestFlavourAwareRelationshipPatterns:
+    @pytest.mark.asyncio
+    async def test_pattern_census_comes_from_the_flavour(self):
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        probes = [q for q in driver.queries if 'AS source_labels' in q]
+        assert probes, driver.queries
+        assert all('s.labels AS source_labels' in q for q in probes), probes
+        assert all('labels(s) AS source_labels' not in q for q in probes), probes
+        # EQUALITY, not membership: the announced leaf column is what makes the
+        # endpoint deterministic. The hierarchy list itself is unordered, so a
+        # positional pick over it could name any non-internal member.
+        assert profiles['ES_DETENIDO']['source_target_patterns'] == [
+            ['Persona', 'Detencion']
+        ], profiles['ES_DETENIDO']
+
+    @pytest.mark.asyncio
+    async def test_the_out_degree_probe_receives_the_leaf_label(self):
+        """The endpoint feeds a label-scoped probe. A supertype endpoint makes it
+        MATCH a label with no label table — a silent 0.0 where AGE has a real
+        number. `unmatchable={'Actor'}` is exactly that trap."""
+        driver = _AgeStubDriver(unmatchable={'Actor'})
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        degree_probes = [q for q in driver.queries if 'avg(deg) AS avg_deg' in q]
+        assert degree_probes, driver.queries
+        assert all('(s:`Persona`)' in q for q in degree_probes), degree_probes
+        assert profiles['ES_DETENIDO']['avg_out_degree'] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_two_leaves_under_one_supertype_stay_two_patterns(self):
+        """`if pair not in patterns` dedups on the announced endpoint, so a
+        supertype-level pick merges Persona and Empresa into one `Actor` row and
+        the Overview tab loses a relationship pattern outright."""
+        driver = _AgeStubDriver(sibling_leaves=True)
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        assert profiles['ES_DETENIDO']['source_target_patterns'] == [
+            ['Persona', 'Detencion'],
+            ['Empresa', 'Detencion'],
+        ], profiles['ES_DETENIDO']
+
+    @pytest.mark.asyncio
+    async def test_no_flavour_keeps_the_historic_pattern_endpoints(self):
+        """Back-compat pin: the base census still reads `labels(s)`/`labels(t)`,
+        announces NO leaf column, and so keeps the positional pick."""
+        driver = _AgeStubDriver()
+
+        profiles = await _profile_relationships(driver, sample_size=5)
+
+        probes = [q for q in driver.queries if 'RETURN DISTINCT' in q]
+        assert probes and all('labels(s)' in q and 'labels(t)' in q for q in probes), probes
+        assert all('source_leaf' not in q for q in probes), probes
+        assert profiles['ES_DETENIDO']['source_target_patterns'] == [['Persona', 'Detencion']]
+
+    @pytest.mark.asyncio
+    async def test_an_unmatchable_endpoint_does_not_sink_relationship_profiling(self):
+        """The out-degree probe is label-scoped too — same AGE hazard, same rule."""
+        driver = _AgeStubDriver(unmatchable={'Actor', 'Persona'})
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        assert 'ES_DETENIDO' in profiles, profiles
+        rel = profiles['ES_DETENIDO']
+        assert rel['count'] == 2
+        assert rel['avg_out_degree'] == 0.0
+        assert rel['sample_paths'] == [
+            {'source': 'OMAR MOHAMED', 'target': 'Detencion 4/2026'}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_null_average_out_degree_reads_as_zero(self):
+        """The other half of the unmatchable endpoint: a backend that answers with
+        no rows rather than raising. `avg(deg)` over zero rows is one row holding a
+        NULL, and `float(None)` would sink every relationship profile."""
+        driver = _make_driver({
+            'type(r) AS rel_type': [{'rel_type': 'ES_DETENIDO', 'cnt': 2}],
+            'RETURN DISTINCT': [
+                {'source_labels': ['Entity', 'Persona'], 'target_labels': ['Detencion']}
+            ],
+            'avg(deg) AS avg_deg': [{'avg_deg': None}],
+        })
+
+        profiles = await _profile_relationships(driver, sample_size=5, flavour=AgeFlavour())
+
+        assert profiles['ES_DETENIDO']['avg_out_degree'] == 0.0
+
+
 class TestProfileGraph:
     @pytest.mark.asyncio
     async def test_full_profile(self):
@@ -482,7 +843,7 @@ class TestProfileGraph:
                 {'rel_type': 'OPERATES', 'cnt': 10},
             ],
             'MATCH (s)-[r:`OPERATES`]->(t) RETURN DISTINCT': [
-                {'src': ['Airline', 'Entity'], 'tgt': ['Aircraft', 'Entity']},
+                {'source_labels': ['Airline', 'Entity'], 'target_labels': ['Aircraft', 'Entity']},
             ],
             'MATCH (s)-[r:`OPERATES`]->(t) RETURN s.name': [
                 {'source': 'KLM', 'target': 'Boeing 737-800'},
@@ -500,3 +861,32 @@ class TestProfileGraph:
 
         assert 'Aircraft' in result['entity_profiles']
         assert 'OPERATES' in result['relationship_profiles']
+
+
+class TestServerWiring:
+    """The seam only reaches the Overview tab if the tool passes the flavour."""
+
+    @pytest.mark.asyncio
+    async def test_profile_graph_tool_passes_the_service_flavour(self, monkeypatch):
+        import graphiti_mcp_server as srv
+
+        driver = _AgeStubDriver()
+
+        class _Client:
+            def __init__(self, d):
+                self.driver = d
+
+        class _Service:
+            flavour = AgeFlavour()
+
+            async def get_client(self):
+                return _Client(driver)
+
+        monkeypatch.setattr(srv, 'graphiti_service', _Service())
+
+        result = await srv.profile_graph(sample_size=5)
+
+        assert 'error' not in result, result
+        census = [q for q in driver.queries if 'count(n) AS cnt' in q]
+        assert census and all('n.labels AS lbls' in q for q in census), census
+        assert 'Actor' in result['entity_profiles'], result['entity_profiles']

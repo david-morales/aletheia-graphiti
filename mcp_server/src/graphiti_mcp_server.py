@@ -77,6 +77,7 @@ from models.response_types import (
     SchemaResponse,
     SearchResponse,
     StatusResponse,
+    SubgraphResponse,
     SuccessResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
@@ -1442,33 +1443,13 @@ async def search_ontology(
         return ErrorResponse(error=f'Ontology search error: {e}')
 
 
-# Shared projection for the full-detail ontology tiers
-# (get_ontology_documentation and explore_ontology). Includes the Task-1
-# attributes `properties` (JSON string) and `identity` (bool) — both may be
-# null/absent on graphs built before v1.0.3.
-_ONTOLOGY_CLASS_CONTEXT_QUERY = (
-    'MATCH (n:OntologyClass) '
-    'RETURN n.uuid AS uuid, '
-    'n.name AS name, '
-    'n.ontology_type AS ontology_type, '
-    'n.inherits_from AS inherits_from, '
-    'n.summary AS summary, '
-    'n.alt_labels AS alt_labels, '
-    'n.source_entity AS source_entity, '
-    'n.target_entity AS target_entity, '
-    'n.examples AS examples, '
-    'n.properties AS properties, '
-    'n.identity AS identity'
-)
-
-# Ontology families that model relationships as owl:ObjectProperty store them
-# as RELATES_TO EDGES between OntologyClass nodes (no relationship_class nodes
-# at all). The edges carry `name` (e.g. ES_DETENIDO) and `fact`
-# (e.g. "Persona ES_DETENIDO Detencion: <prose>").
-_ONTOLOGY_RELATES_TO_QUERY = (
-    'MATCH (a:OntologyClass)-[r:RELATES_TO]->(b:OntologyClass) '
-    'RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target'
-)
+# The three ontology tiers read their rows through `flavour.ontology_queries()`
+# (keys: class_context / structure / relates). The FLAVOUR owns the query text
+# because the storage shape is dialect-specific — FalkorDB keeps every
+# descriptive ontology field as a top-level node property and stores
+# relationships as RELATES_TO edges; Apache AGE nests the fields in an
+# `attributes` map and materializes the relation name as the edge LABEL. The
+# parsing below is shared, because every variant projects the same aliases.
 
 
 def _parse_properties(raw: str | None) -> list[dict[str, Any]]:
@@ -1614,10 +1595,13 @@ async def explore_ontology(
     try:
         ontology_client = graphiti_service.ontology_client
         ontology_group_id = graphiti_service.config.graphiti.ontology_graph
+        ontology_queries = graphiti_service.flavour.ontology_queries()
 
         # ONE query: every ontology class, full projection, held in memory
         # (ontology graphs are small).
-        rows, _, _ = await ontology_client.driver.execute_query(_ONTOLOGY_CLASS_CONTEXT_QUERY)
+        rows, _, _ = await ontology_client.driver.execute_query(
+            ontology_queries['class_context']
+        )
         by_name: dict[str, dict[str, Any]] = {
             r.get('name'): r for r in rows if r.get('name')
         }
@@ -1658,7 +1642,7 @@ async def explore_ontology(
             r for r in rows if (r.get('ontology_type') or '') == 'relationship_class'
         ]
         edge_records, _, _ = await ontology_client.driver.execute_query(
-            _ONTOLOGY_RELATES_TO_QUERY
+            ontology_queries['relates']
         )
         rel_rows = _combine_relationship_entries(node_rel_rows, edge_records)
         outgoing = [
@@ -1753,6 +1737,30 @@ async def health_check(request) -> JSONResponse:
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
+def _pick_endpoint(rec: dict[str, Any], side: str, internal: frozenset[str] | set[str]) -> str | None:
+    """The endpoint label to advertise for one side of a relationship-pattern row.
+
+    Prefer the flavour's announced LEAF column when it is present: on AGE
+    `source_labels` is the full ontology hierarchy, so picking positionally lands
+    on an abstract supertype — which no vertex carries as its stored label (a
+    label-scoped probe against it matches nothing), and which merges genuinely
+    distinct patterns wherever the caller dedups on the advertised pair.
+
+    Flavours that announce no leaf column (FalkorDB / openCypher, where
+    `labels(s)` already lists matchable labels) keep the positional pick over the
+    filtered list — behaviour unchanged.
+
+    NOTE: graph_profiler.py carries a textually parallel copy. The two consumers
+    are deliberately independent (no cross-module import between the server module
+    and the tool module); keep them in step.
+    """
+    leaf = rec.get(f'{side}_leaf')
+    if leaf and leaf not in internal:
+        return leaf
+    labels = [l for l in rec.get(f'{side}_labels') or [] if l not in internal]
+    return labels[0] if labels else None
+
+
 async def get_schema() -> SchemaResponse:
     """Retrieve the structural schema of the knowledge graph.
 
@@ -1778,14 +1786,18 @@ async def get_schema() -> SchemaResponse:
         driver = client.driver
         group_id = graphiti_service.config.graphiti.group_id
         internal_labels = {'Entity', 'Episodic', 'Community'}
+        # The FLAVOUR owns every dialect-sensitive query text below (censuses,
+        # attribute_keys); the parsing is shared because the variants project the
+        # same aliases. On AGE `labels(n)` returns only the ontology leaf, so a
+        # hardcoded base census hid every abstract supertype from the schema.
+        flavour = graphiti_service.flavour
+        census = flavour.census_queries()
 
         # 1. Label counts (single-pass)
-        label_records, _, _ = await driver.execute_query(
-            'MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt'
-        )
+        label_records, _, _ = await driver.execute_query(census['label_counts'])
         label_counts: dict[str, int] = {}
         for rec in label_records:
-            for label in rec.get('lbls', []):
+            for label in rec.get('lbls') or []:
                 if label not in internal_labels:
                     label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
@@ -1794,23 +1806,41 @@ async def get_schema() -> SchemaResponse:
         #    documented aletheia-extraction contract (kept unchanged). `attribute_keys` = the
         #    canonical ADR-019 R5 domain-queryable keys, flavour-specific (FalkorDB: top-level
         #    minus reserved bookkeeping; AGE: keys of the nested `attributes` agtype map).
-        flavour = graphiti_service.flavour
         node_labels: dict[str, dict] = {}
         for label in label_counts:
-            # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
-            # (openCypher variable projections lose their name), so `r['key']`
-            # would KeyError on AGE. The explicit alias makes the column `key` on
-            # both flavours (FalkorDB already returns `key`). Regression: AGE
-            # get_schema live test.
-            prop_records, _, _ = await driver.execute_query(
-                f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
-            )
+            # A censused label need not be MATCHable. On AGE the hierarchy
+            # (abstract) labels have no label table at all, so a label-scoped probe
+            # against one answers with no rows — or raises. Neither may take the
+            # whole schema down: an unhandled raise here returns {'error': ...} for
+            # the entire call, i.e. a total get_schema outage on AGE. Same rule as
+            # AgeFlavour.attribute_keys ("a non-map label must not break schema") —
+            # a probe that cannot answer degrades ONE entry, and says so via
+            # `sampled`. The census count is independent and always survives.
+            try:
+                # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
+                # (openCypher variable projections lose their name), so `r['key']`
+                # would KeyError on AGE. The explicit alias makes the column `key` on
+                # both flavours (FalkorDB already returns `key`). Regression: AGE
+                # get_schema live test.
+                prop_records, _, _ = await driver.execute_query(
+                    f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
+                )
+                attribute_keys = await flavour.attribute_keys(driver, label)
+            except Exception as probe_error:  # noqa: BLE001 — one label must not break schema
+                logger.warning(
+                    f'get_schema: label-scoped probe failed for `{label}`, '
+                    f'reporting it unsampled: {probe_error}'
+                )
+                prop_records, attribute_keys = [], []
             props = [r['key'] for r in prop_records if r.get('key') not in ('name_embedding',)]
             node_labels[label] = {
                 'count': label_counts[label],
-                'attribute_keys': await flavour.attribute_keys(driver, label),
+                'attribute_keys': attribute_keys,
                 'properties': sorted(props),
-                'sampled': True,
+                # Honest: an entry whose probe raised or returned nothing was never
+                # sampled, and a consumer must not read its empty `properties` as
+                # "this type has no properties".
+                'sampled': bool(prop_records),
             }
 
         # 3. Relationship counts (single-pass)
@@ -1827,14 +1857,16 @@ async def get_schema() -> SchemaResponse:
         relationship_types: dict[str, dict] = {}
         for rel_type in rel_counts:
             pattern_records, _, _ = await driver.execute_query(
-                f'MATCH (s)-[r:`{rel_type}`]->(t) RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20'
+                census['rel_patterns'].format(rel_type=rel_type)
             )
             patterns = []
             for rec in pattern_records:
-                src = [l for l in rec.get('source_labels', []) if l not in internal_labels]
-                tgt = [l for l in rec.get('target_labels', []) if l not in internal_labels]
+                # Endpoint choice only — this loop never deduped, and it still
+                # does not (the census is already DISTINCT).
+                src = _pick_endpoint(rec, 'source', internal_labels)
+                tgt = _pick_endpoint(rec, 'target', internal_labels)
                 if src and tgt:
-                    patterns.append([src[0], tgt[0]])
+                    patterns.append([src, tgt])
 
             relationship_types[rel_type] = {
                 'count': rel_counts[rel_type],
@@ -1869,7 +1901,9 @@ async def get_schema() -> SchemaResponse:
 
         # Extract IMPORTANT: notes from entity/relationship descriptions
         # into a top-level field so they're prominent, not buried in type details.
-        analysis_notes: list[str] = []
+        # Seeded with the flavour's census caveats (ADR-019 R6): those govern how to
+        # read EVERY entry above, so they lead.
+        analysis_notes: list[str] = list(flavour.census_notes())
         for label, info in node_labels.items():
             desc = info.get('description', '')
             for line in desc.split('\n'):
@@ -1949,6 +1983,140 @@ async def get_schema() -> SchemaResponse:
         return {'error': f'Failed to retrieve schema: {e}'}
 
 
+def _dedup_rows_by_uuid(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop repeated uuids, first row wins.
+
+    Two independent sources of duplicates: AGE can hold duplicate-uuid sibling
+    vertices (BUG-38 reintroduces them under concurrent ingestion), and an edge
+    query can return the same edge row twice when both endpoints match more than
+    once. A graph view would draw each twice. Rows with no uuid are not
+    addressable, so they cannot be deduplicated by key and pass through.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        uuid = row.get('uuid')
+        if uuid is None:
+            out.append(row)
+            continue
+        if uuid in seen:
+            continue
+        seen.add(uuid)
+        out.append(row)
+    return out
+
+
+def _iso_or_raw(value: Any) -> Any:
+    """Datetime-like values to ISO strings; everything else through untouched.
+
+    FalkorDB and AGE deliver `created_at` as a string, but the generic/Neo4j path
+    returns a neo4j.time.DateTime, which FastMCP's output validation rejects. That
+    failure happens in convert_result — OUTSIDE this tool's try/except — so it escapes
+    the ADR-015 error envelope as a protocol error instead of an `error` payload.
+    Every sibling tool normalizes the same way (format_node_result, explore_node,
+    get_episode_context). None has no isoformat and passes straight through.
+    """
+    return value.isoformat() if hasattr(value, 'isoformat') else value
+
+
+# Labels that describe Graphiti's own bookkeeping, never a domain type.
+_SUBGRAPH_INTERNAL_LABELS = frozenset({'Entity', 'Episodic', 'Community'})
+
+
+def _subgraph_node_row(r: dict[str, Any]) -> dict[str, Any]:
+    """One SubgraphNode from one driver row, including the announced `leaf`.
+
+    `leaf` is the node's single most specific label — what a consumer should type
+    and colour by. It exists because `labels` is UNORDERED: a UI taking its first
+    element typed AGE nodes by whatever the hierarchy happened to start with,
+    collapsing 16 leaf types into 3 supertypes and colouring the two backends
+    differently for the same graph.
+
+    Two sources, in order:
+
+    * the row's own `leaf` column when the flavour ANNOUNCES one (AGE projects
+      `label(n)`, which is exactly the one stored leaf) — taken verbatim, never
+      re-derived, because re-deriving from an unordered list is the bug;
+    * otherwise derived from `labels`. Sound on base/FalkorDB only because their
+      writer stores exactly [Entity, <leaf>], so the single non-internal label IS
+      the leaf regardless of order — which is why that arm needs no query change.
+
+    Null when neither source yields a non-internal label; consumers fall back to
+    set-filtering `labels`.
+    """
+    labels = r.get('labels') or []
+    announced = r.get('leaf')
+    if announced and announced not in _SUBGRAPH_INTERNAL_LABELS:
+        leaf = announced
+    else:
+        domain = [x for x in labels if x and x not in _SUBGRAPH_INTERNAL_LABELS]
+        leaf = domain[0] if domain else None
+    return {
+        'uuid': r.get('uuid'), 'name': r.get('name'),
+        'labels': labels,
+        'leaf': leaf,
+        'created_at': _iso_or_raw(r.get('created_at')), 'summary': r.get('summary'),
+        'group_id': r.get('group_id'),
+    }
+
+
+@mcp.tool()
+async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
+    """Flavour-normalized node/edge sample of the knowledge graph.
+
+    Returns up to `limit` entity nodes (uuid, name, labels — the FULL logical
+    hierarchy on every backend — leaf, created_at, summary, group_id) and the
+    edges among them (edge limit = 2.5x node limit). Intended for graph-view
+    consumers; replaces client-composed Cypher, which cannot be
+    dialect-correct across backends.
+
+    `leaf` is the node's most specific label: consumers should type and colour by
+    `leaf`, falling back to set-filtering `labels` only when it is null.
+
+    `labels` is UNORDERED on every backend: set-filter the internal labels
+    (Entity, Episodic, ...) to find the domain type, never index positionally.
+
+    Args:
+        limit: Maximum entity nodes to sample (clamped to 1..1000, default 100).
+    """
+    if graphiti_service is None:
+        return {'error': 'Service not initialized. Please wait for startup to complete.'}
+    try:
+        client = await graphiti_service.get_client()
+        driver = client.driver
+        flavour = graphiti_service.flavour
+        limit = max(1, min(int(limit), 1000))
+
+        node_q = flavour.subgraph_node_query().replace('$limit', str(limit))
+        node_records, _ = await flavour.execute_graph_query(driver, node_q)
+        nodes = [_subgraph_node_row(r) for r in _dedup_rows_by_uuid(list(node_records))]
+
+        edges = []
+        uuids = [n['uuid'] for n in nodes if n['uuid']]
+        if uuids:
+            edge_q = flavour.subgraph_edge_query(uuids).replace('$limit', str(round(limit * 2.5)))
+            edge_records, _ = await flavour.execute_graph_query(driver, edge_q)
+            edges = [
+                {
+                    'uuid': r.get('uuid'), 'name': r.get('name'), 'fact': r.get('fact'),
+                    'source_node_uuid': r.get('source_node_uuid'),
+                    'target_node_uuid': r.get('target_node_uuid'),
+                    'created_at': _iso_or_raw(r.get('created_at')),
+                }
+                for r in _dedup_rows_by_uuid(list(edge_records))
+            ]
+
+        return {
+            'type': 'subgraph',
+            'graph_name': graphiti_service.config.graphiti.group_id,
+            'nodes': nodes,
+            'edges': edges,
+        }
+    except Exception as e:
+        logger.error(f'Error in sample_subgraph: {e}')
+        return {'error': str(e)}
+
+
 async def get_ontology_structure() -> dict[str, Any]:
     """Return the full ontology class hierarchy in one call.
 
@@ -1979,17 +2147,11 @@ async def get_ontology_structure() -> dict[str, Any]:
         driver = ontology_client.driver
         ontology_graph_name = graphiti_service.config.graphiti.ontology_graph or ''
 
-        # Query 1: all ontology classes
+        # Query 1: all ontology classes. Flavour-owned text, frozen SHAPE: the
+        # map tier stays lightweight (no uuid, no properties/identity) on every
+        # flavour — see Flavour.ontology_queries().
         class_records, _, _ = await driver.execute_query(
-            'MATCH (n:OntologyClass) '
-            'RETURN n.name AS name, '
-            'n.ontology_type AS ontology_type, '
-            'n.inherits_from AS inherits_from, '
-            'n.summary AS summary, '
-            'n.alt_labels AS alt_labels, '
-            'n.source_entity AS source_entity, '
-            'n.target_entity AS target_entity, '
-            'n.examples AS examples'
+            graphiti_service.flavour.ontology_queries()['structure']
         )
 
         entity_classes = []
@@ -2053,8 +2215,11 @@ async def get_ontology_documentation() -> dict[str, Any]:
     try:
         driver = graphiti_service.ontology_client.driver
         ontology_graph_name = graphiti_service.config.graphiti.ontology_graph or ''
+        ontology_queries = graphiti_service.flavour.ontology_queries()
 
-        class_records, _, _ = await driver.execute_query(_ONTOLOGY_CLASS_CONTEXT_QUERY)
+        class_records, _, _ = await driver.execute_query(
+            ontology_queries['class_context']
+        )
 
         entity_classes = []
         relationship_classes = []
@@ -2066,10 +2231,10 @@ async def get_ontology_documentation() -> dict[str, Any]:
                 # class, abstract_class, or any other entity-level type
                 entity_classes.append(entry)
 
-        # Object-property ontologies store relationships as RELATES_TO edges
-        # between OntologyClass nodes instead of reified relationship_class
-        # nodes. Union both sources; node-derived entries win on duplicates.
-        edge_records, _, _ = await driver.execute_query(_ONTOLOGY_RELATES_TO_QUERY)
+        # Object-property ontologies store relationships as edges between
+        # OntologyClass nodes instead of reified relationship_class nodes.
+        # Union both sources; node-derived entries win on duplicates.
+        edge_records, _, _ = await driver.execute_query(ontology_queries['relates'])
         relationship_classes = _combine_relationship_entries(
             relationship_classes, edge_records
         )
@@ -2154,7 +2319,11 @@ async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
 
     try:
         client = await graphiti_service.get_client()
-        return await _run_profile_graph(client.driver, sample_size=sample_size)
+        # The flavour owns the census texts (same seam as get_schema): without it
+        # the profiler runs FalkorDB-shaped `labels(n)` censuses on every backend.
+        return await _run_profile_graph(
+            client.driver, sample_size=sample_size, flavour=graphiti_service.flavour
+        )
     except Exception as e:
         logger.error(f'Error in profile_graph: {e}')
         return {'error': f'Failed to profile graph: {e}'}

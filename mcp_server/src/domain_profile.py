@@ -186,17 +186,21 @@ async def _enrich_from_ontology(
     ontology_driver,
     entity_types: dict[str, EntityTypeInfo],
     edge_types: dict[str, EdgeTypeInfo],
+    flavour=None,
 ) -> None:
-    """Enrich entity and edge type descriptions from ontology graph node summaries."""
-    query = (
-        'MATCH (n:Entity) '
-        'WHERE n.summary IS NOT NULL '
-        'RETURN n.name AS name, n.summary AS summary'
-    )
+    """Enrich entity and edge type descriptions from ontology graph node summaries.
+
+    The FLAVOUR owns the scope: an AGE ontology vertex carries the leaf label
+    `OntologyClass`, so the base `:Entity` text matched ~nothing there and every
+    description stayed empty — which is what left get_schema's description /
+    sample_names enrichment unfired and the AGE Overview cards blank.
+    """
+    flavour = flavour or BaseFlavour()
+    query = flavour.ontology_queries()['summaries']
     try:
         records, _, _ = await ontology_driver.execute_query(query)
     except Exception as e:
-        logger.warning(f'Failed to query ontology descriptions: {e}')
+        _log_probe_failure('ontology_summaries', e, flavour, query)
         return
 
     for record in records:
@@ -243,6 +247,7 @@ async def build_domain_profile(
             ontology_client.driver,
             entity_types,
             edge_types,
+            flavour,
         )
 
     profile = DomainProfile(

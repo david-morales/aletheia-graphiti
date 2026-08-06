@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from flavours.falkordb import FalkorDbFlavour
 from graphiti_mcp_server import (
     add_memory,
     build_communities,
@@ -113,6 +114,13 @@ def make_mock_services(group_id: str = 'test-group'):
     mock_graphiti_service.get_client = AsyncMock(return_value=mock_client)
     mock_graphiti_service.entity_types = None
     mock_graphiti_service.ontology_client = None
+    # A REAL flavour: the census/ontology query TEXT is flavour-owned, so a mock
+    # here never yields Cypher. On this AsyncMock service the failure is
+    # especially quiet — `flavour.ontology_queries()` returns a COROUTINE, and
+    # subscripting it raises inside the tool's own try/except, so the tool
+    # answers `{'error': ...}` instead of crashing. Same hazard as
+    # test_ontology_resilience.py and test_ontology_tiers.py.
+    mock_graphiti_service.flavour = FalkorDbFlavour()
     # Default: no ontology configured — matches ontology_client=None semantics.
     # Tests that exercise the happy path must override this with AsyncMock(return_value=True).
     mock_graphiti_service._ensure_ontology_client = AsyncMock(return_value=False)

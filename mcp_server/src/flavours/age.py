@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from flavours.base import BaseFlavour, RESERVED_KEYS  # noqa: F401
+from flavours.base import BaseFlavour, RESERVED_KEYS, _uuid_list_literal  # noqa: F401
 from utils.cypher import (
     _BACKTICK_IDENT_RE,
     _NON_CODE_SPAN_RE,
@@ -686,6 +686,13 @@ _AGE_PROFILE_QUERIES: dict[str, str] = {
 }
 
 
+# The ONLY properties an AGE vertex stores at the top level — Graphiti's own
+# bookkeeping columns. Everything else a domain writes lands inside the nested
+# `attributes` agtype map, which is what flatten_node_props / property_accessor
+# reconcile. `attributes` itself is listed so it is never treated as a domain field.
+_AGE_TOP_LEVEL_KEYS: frozenset[str] = RESERVED_KEYS | {"attributes"}
+
+
 class AgeFlavour(BaseFlavour):
     """AGE flavour — reject-with-hint for AGE-unsupported constructs, nested-map attribute_keys.
 
@@ -719,6 +726,233 @@ class AgeFlavour(BaseFlavour):
 
     def profile_queries(self) -> dict[str, str]:
         return dict(_AGE_PROFILE_QUERIES)
+
+    def census_queries(self) -> dict[str, str]:
+        # The stored n.labels list is the hierarchy; labels(n) would hide every
+        # abstract supertype from the census. IS NOT NULL excludes Episodic.
+        return {
+            "label_counts": (
+                "MATCH (n) WHERE n.labels IS NOT NULL "
+                "RETURN n.labels AS lbls, count(n) AS cnt"
+            ),
+            # `source_labels`/`target_labels` are the whole HIERARCHY here, so a
+            # consumer picking positionally from them lands on an abstract
+            # supertype: not `(n:X)`-matchable, and it merges genuinely distinct
+            # leaf patterns (Actor->X swallows both Persona->X and Empresa->X).
+            # `label(n)` returns exactly the stored leaf (dialect_reference,
+            # "Labels"), so announce it as the optional extra columns the shared
+            # parsing prefers. Aliases are lowercase snake_case and unique, as AGE
+            # requires; the leaf is functionally determined by the labels list, so
+            # DISTINCT returns no more rows than before.
+            "rel_patterns": (
+                "MATCH (s)-[r:`{rel_type}`]->(t) "
+                "WHERE s.labels IS NOT NULL AND t.labels IS NOT NULL "
+                "RETURN DISTINCT s.labels AS source_labels, t.labels AS target_labels, "
+                "label(s) AS source_leaf, label(t) AS target_leaf LIMIT 20"
+            ),
+        }
+
+    def census_notes(self) -> list[str]:
+        # The census counts the hierarchy, so node_labels now advertises abstract
+        # supertypes that NO vertex carries as its stored label. `MATCH (n:Actor)`
+        # returns zero rows for those — silently, which reads as "no Actors exist".
+        # Announce the working form instead of leaving the agent to infer it.
+        return [
+            "IMPORTANT: `node_labels` counts the FULL ontology hierarchy on this backend, "
+            "so it includes abstract supertypes (e.g. Actor) that no vertex carries as its "
+            "stored label. `MATCH (n:Actor)` matches ZERO rows for those — it silently looks "
+            "like the type is empty. Match a hierarchy label with "
+            "`MATCH (n) WHERE 'Actor' IN n.labels`; `(n:X)` and `label(n)` only ever address "
+            "the LEAF label.",
+        ]
+
+    def ontology_queries(self) -> dict[str, str]:
+        # Two AGE storage facts, both proven on the live bench ontology graph:
+        #
+        # (a) NESTED ATTRIBUTES. Only uuid/name/summary/group_id/labels/created_at
+        #     are top-level node properties; every descriptive ontology field lives
+        #     in the queryable `attributes` agtype map (dialect_reference,
+        #     "Attributes & agtype"). The base text read them top-level, so
+        #     `n.ontology_type` was NULL on 30/30 classes while
+        #     `n.attributes.ontology_type` was populated on 30/30 — the whole
+        #     structured payload came back empty and NOTHING errored.
+        #
+        # (b) TYPED EDGES. AGE materializes the relationship NAME as the edge
+        #     LABEL (graphiti_core age_graph_operations._edge_label), so this graph
+        #     has ZERO `RELATES_TO` edges: `[r:RELATES_TO]` between OntologyClass
+        #     nodes matched 0 rows while a generic match found 918 typed edges.
+        #     So the edge pattern drops its TYPE CONSTRAINT — and only that. The
+        #     relation NAME still comes from `r.name`, exactly as on the base
+        #     flavour: both AGE edge write paths persist `name` top-level (the same
+        #     props dict the `fact` read below relies on), and `r.name` is the ONE
+        #     source that is never lossy. `type(r)` is NOT a general substitute for
+        #     it here: `_edge_label`'s identifier test is ASCII-only, so a relation
+        #     whose name carries an accent (INVOLUCRA_MUNICIÓN — the ontology loader
+        #     does no accent folding) is stored under the `RELATES_TO` FALLBACK
+        #     label. Reading `type(r)` would rename that relation to "RELATES_TO"
+        #     and, because _edge_relationship_entry rebuilds the fact prefix from
+        #     the name, leave its summary unstripped as well.
+        #
+        # Aliases are IDENTICAL to the base variant's (the parsing is shared), all
+        # lowercase snake_case and unique, as AGE requires.
+        nested = (
+            "n.attributes.ontology_type AS ontology_type, "
+            "n.attributes.inherits_from AS inherits_from, "
+            "n.summary AS summary, "
+            "n.attributes.alt_labels AS alt_labels, "
+            "n.attributes.source_entity AS source_entity, "
+            "n.attributes.target_entity AS target_entity, "
+            "n.attributes.examples AS examples"
+        )
+        return {
+            "class_context": (
+                "MATCH (n:OntologyClass) "
+                "RETURN n.uuid AS uuid, "
+                "n.name AS name, "
+                f"{nested}, "
+                "n.attributes.properties AS properties, "
+                "n.attributes.identity AS identity"
+            ),
+            "structure": (
+                "MATCH (n:OntologyClass) "
+                "RETURN n.name AS name, "
+                f"{nested}"
+            ),
+            # A token-for-token mirror of the base text; the ONLY difference is
+            # the dropped `:RELATES_TO` type constraint.
+            # No SUBCLASS_OF filter: hierarchy edges are in the base row set too,
+            # and _combine_relationship_entries drops them for both arms — that
+            # shared filter keys on this same `name` value, which is another reason
+            # it must be the stored name and not the label.
+            # `name` and `fact` are top-level EDGE properties on AGE (edge_save
+            # writes them into the edge props; only custom `attributes` nest).
+            "relates": (
+                "MATCH (a:OntologyClass)-[r]->(b:OntologyClass) "
+                "RETURN a.name AS source, r.name AS name, r.fact AS fact, b.name AS target"
+            ),
+            # Same swap as the three tiers above: an AGE ontology vertex carries
+            # the LEAF label `OntologyClass`, and `:Entity` matches ~nothing on
+            # this graph. The base text therefore returned ZERO rows here, so
+            # every `entity_types[*].description` stayed empty and get_schema's
+            # description / sample_names enrichment never fired — blank Overview
+            # cards on the AGE arm. `name`/`summary` are genuinely top-level (the
+            # only two fields the AGE ontology payload ever populated), so the
+            # projection is the base one unchanged.
+            "summaries": (
+                "MATCH (n:OntologyClass) "
+                "WHERE n.summary IS NOT NULL "
+                "RETURN n.name AS name, n.summary AS summary"
+            ),
+        }
+
+    def subgraph_node_query(self) -> str:
+        # No :Entity scope (only a handful of AGE vertices carry it); the stored
+        # n.labels list is the hierarchy; `IS NOT NULL` excludes Episodic.
+        #
+        # ORDER BY n.created_at is a DIVERSIFIER, not a sort the caller asked for.
+        # AGE keeps ONE TABLE PER LABEL, so an unordered `MATCH (n)` scan is
+        # label-sequential: live on policia_partes_bench_v1 the first hundreds of
+        # vertices were all ParteDeIntervencion, giving 1 label set and 0 edges at
+        # limit 25 where falkor gave 10 sets and 26 edges.
+        #
+        # created_at is ingestion time, and a parte is written together with its
+        # roles and actors — so ordering by it breaks the per-label grouping while
+        # PRESERVING that cluster locality, which is what puts both endpoints of an
+        # edge in the same sample. Measured live against the alternatives:
+        #
+        #     limit 25   label_sets   edges
+        #     none            1         0
+        #     n.uuid          9         0     <- max diversity, locality destroyed
+        #     n.name          1         0
+        #     n.created_at    6        23     <- falkor for comparison: 10 / 26
+        #
+        # A uuid4 sort is the better pseudo-random draw and the worse SAMPLE: 25
+        # nodes scattered over ~1400 contain ~0.6 edges by expectation, so the view
+        # renders unconnected dots. Base and FalkorDB keep storage order (already
+        # interleaved) and stay byte-identical.
+        #
+        # `label(n) AS leaf`: the stored list `n.labels` is the hierarchy and it is
+        # UNORDERED, so a consumer typing a node by its first element gets whatever
+        # the list happens to start with — live, the UI collapsed 16 leaf types to
+        # Actor 94 / Event 67 / Ubicacion 39 and coloured this arm differently from
+        # falkor for the same graph. `label(n)` returns exactly the ONE stored leaf
+        # (dialect_reference, "Labels"), so the producer announces it rather than
+        # leaving every consumer to re-derive it wrongly. Base/FalkorDB derive it
+        # server-side from their [Entity, <leaf>] writer invariant, which is why
+        # their query text needs no change.
+        return (
+            "MATCH (n) WHERE n.labels IS NOT NULL "
+            "RETURN n.uuid AS uuid, n.name AS name, n.labels AS labels, "
+            "label(n) AS leaf, "
+            "n.created_at AS created_at, n.summary AS summary, n.group_id AS group_id "
+            "ORDER BY n.created_at "
+            "LIMIT $limit"
+        )
+
+    def subgraph_edge_query(self, uuids: list[str]) -> str:
+        # Unlabelled endpoints; the uuid IN-list already restricts both ends to
+        # sampled entity nodes, which is what excludes MENTIONS/Episodic edges.
+        lit = _uuid_list_literal(uuids)
+        return (
+            f"MATCH (s)-[r]->(t) "
+            f"WHERE s.uuid IN {lit} AND t.uuid IN {lit} "
+            "RETURN r.uuid AS uuid, type(r) AS name, r.fact AS fact, "
+            "s.uuid AS source_node_uuid, t.uuid AS target_node_uuid, "
+            "r.created_at AS created_at LIMIT $limit"
+        )
+
+    def node_sample_query(self) -> str:
+        # `RETURN n` is an UNALIASED variable projection and AGE names those
+        # `col0` (live: the driver returned header ['col0']), so the profiler's
+        # `rec.get('n')` found nothing while rows still existed — which is exactly
+        # how 19 AGE leaves came back `sampled: true` with `properties: {}`.
+        # Same fix as get_schema's `RETURN DISTINCT key AS key`.
+        return 'MATCH (n:`{label}`) RETURN n AS n LIMIT {limit}'
+
+    def flatten_node_props(self, props: dict[str, Any]) -> dict[str, Any]:
+        """Unwrap AGE's vertex envelope, then merge the nested `attributes` map up.
+
+        Two layers of transport sit between the query and the domain fields, both
+        confirmed against the live driver:
+
+        1. The value is the whole VERTEX — `{'id', 'label', 'properties': {...}}` —
+           not a flat property dict.
+        2. Inside it, only Graphiti's own columns (`_AGE_TOP_LEVEL_KEYS`) are real
+           properties; every DOMAIN field lives in the queryable `attributes` map.
+
+        A reader that walks neither layer finds no domain fields at all — live,
+        `properties: {}` on all 23 entity types, including the 19 the profiler
+        flags `sampled: true`.
+
+        Collision rule: the TOP LEVEL WINS. `name`/`summary` are Graphiti's own
+        columns and stay authoritative, so a same-named field inside the map can
+        never overwrite them. The `attributes` container itself is dropped — it is
+        the transport, not a domain property.
+        """
+        # Unwrap only a real vertex envelope: a `properties` MAP alongside the
+        # vertex identity. A domain field named `properties` cannot be mistaken
+        # for it — domain fields live under `attributes`, one level further down.
+        inner = props.get("properties")
+        if isinstance(inner, dict) and ("id" in props or "label" in props):
+            props = inner
+        nested = props.get("attributes")
+        if not isinstance(nested, dict):
+            return props
+        flat = dict(nested)
+        flat.update({k: v for k, v in props.items() if k != "attributes"})
+        return flat
+
+    def property_accessor(self, prop: str) -> str:
+        """Read `prop` through the nested map unless it is one of Graphiti's own
+        top-level columns — the mirror of :meth:`flatten_node_props`.
+
+        A full scan on the TOP-level path for a domain field is valid Cypher that
+        matches nothing: it returns 0/0 and silently overwrites a real sample-based
+        coverage with 0.0, which is worse than failing.
+        """
+        if prop in _AGE_TOP_LEVEL_KEYS:
+            return f"n.`{prop}`"
+        return f"n.attributes.`{prop}`"
 
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]:
         """Keys of the nested `attributes` agtype map, UNIONED across a small sample."""

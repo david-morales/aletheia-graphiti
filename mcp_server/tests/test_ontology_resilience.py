@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from flavours.falkordb import FalkorDbFlavour
+
 
 class TestConnectOntologyClient:
     """Tests for the GraphitiService._connect_ontology_client extracted method."""
@@ -217,6 +219,9 @@ class TestToolLazyReconnect:
         svc.config = GraphitiConfig()
         svc.config.graphiti.ontology_graph = 'test_ontology'
         svc.ontology_client = None  # simulate dropped connection
+        # A REAL flavour: the ontology query text is flavour-owned, so a MagicMock
+        # here hands the driver a MagicMock instead of Cypher.
+        svc.flavour = FalkorDbFlavour()
 
         rebuilt = MagicMock()
         rebuilt.driver = MagicMock()

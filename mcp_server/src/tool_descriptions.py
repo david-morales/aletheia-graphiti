@@ -62,6 +62,12 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
     parts.append('')
     parts.append('4. explore_ontology -- Expand a specific ontology class.')
     parts.append('   Use when: you want properties and parent classes for a specific type.')
+    parts.append('')
+    parts.append('5. sample_subgraph -- Sample nodes plus the edges among them, already')
+    parts.append('   normalized across backends (labels are the full hierarchy, unordered).')
+    parts.append('   Use when: a client needs a renderable slice of the graph (graph view).')
+    parts.append('   Use search instead when: you are answering a question -- this samples,')
+    parts.append('   it does not rank or filter by meaning.')
 
     # Tips
     if profile.entity_types or profile.edge_types:

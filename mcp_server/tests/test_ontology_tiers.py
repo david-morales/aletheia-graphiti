@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from config.schema import GraphitiConfig
+from flavours.age import AgeFlavour
+from flavours.falkordb import FalkorDbFlavour
 
 # ---------------------------------------------------------------------------
 # Fixture data — fake OntologyClass rows as the FalkorDB driver returns them
@@ -280,11 +282,16 @@ def make_service(rows: list[dict], edges: list[dict] | None = None):
 
     `rows` answers the OntologyClass node query; `edges` (default none)
     answers the RELATES_TO edge query used by object-property ontologies.
+
+    Carries a REAL FalkorDbFlavour: the ontology query texts are flavour-owned,
+    so a MagicMock flavour would hand the driver a MagicMock instead of Cypher
+    and every dispatch below would silently fall through to the node rows.
     """
     svc = MagicMock()
     svc.config = GraphitiConfig()
     svc.config.graphiti.ontology_graph = 'test_ontology'
     svc._ensure_ontology_client = AsyncMock(return_value=True)
+    svc.flavour = FalkorDbFlavour()
 
     edge_rows = edges or []
 
@@ -296,6 +303,257 @@ def make_service(rows: list[dict], edges: list[dict] | None = None):
     client = MagicMock()
     client.driver.execute_query = AsyncMock(side_effect=dispatch_query)
     # Semantic name-resolution fallback finds nothing unless a test overrides.
+    client.search_ = AsyncMock(return_value=MagicMock(nodes=[]))
+    svc.ontology_client = client
+    return svc
+
+
+# ---------------------------------------------------------------------------
+# AGE-shaped ontology storage — the Task 1 spike's DIVERGENT arm
+# ---------------------------------------------------------------------------
+#
+# Two storage differences, both proven on the live bench graph:
+#
+#  (a) NESTED ATTRIBUTES. Only uuid/name/summary/group_id/labels/created_at are
+#      top-level node properties on AGE; every descriptive ontology field lives in
+#      an `attributes` agtype map. `n.ontology_type` is NULL on 30/30 classes while
+#      `n.attributes.ontology_type` is populated on 30/30.
+#
+#  (b) TYPED EDGES. AGE materializes the relationship NAME as the edge LABEL
+#      (graphiti_core age_graph_operations._edge_label), so the bench ontology
+#      graph has ZERO RELATES_TO edges — `MATCH (a:OntologyClass)-[r:RELATES_TO]->
+#      (b:OntologyClass)` returned 0 while `MATCH ()-[r]->()` returned 918.
+#
+# Shipped result on AGE: every structured field empty, relationship_classes [].
+
+AGE_VEHICULO_PROPERTIES = [
+    {
+        'name': 'matricula',
+        'label': 'Matrícula',
+        'range': 'string',
+        'comment': 'Plate number.',
+        'required': True,
+    },
+]
+
+VEHICULO_SUMMARY = 'A vehicle involved in an intervention. Identified by its plate.'
+
+
+def age_vehiculo_node() -> dict:
+    """One AGE OntologyClass vertex AS STORED: top-level + nested `attributes`."""
+    return {
+        'uuid': 'vehiculo-uuid',
+        'name': 'Vehiculo',
+        'summary': VEHICULO_SUMMARY,
+        'attributes': {
+            'ontology_type': 'class',
+            'inherits_from': ['PhysicalObject'],
+            'alt_labels': ['Vehículo', 'Coche'],
+            'examples': ['Seat León 1234-ABC'],
+            'identity': True,
+            'properties': json.dumps(AGE_VEHICULO_PROPERTIES),
+            'source_entity': None,
+            'target_entity': None,
+        },
+    }
+
+
+def age_physical_object_node() -> dict:
+    return {
+        'uuid': 'physicalobject-uuid',
+        'name': 'PhysicalObject',
+        'summary': 'An abstract physical thing. Root of the object hierarchy.',
+        'attributes': {
+            'ontology_type': 'abstract_class',
+            'inherits_from': [],
+            'alt_labels': [],
+            'examples': [],
+            'identity': False,
+            'properties': None,
+            'source_entity': None,
+            'target_entity': None,
+        },
+    }
+
+
+def age_ubicacion_node() -> dict:
+    return {
+        'uuid': 'ubicacion-uuid',
+        'name': 'Ubicacion',
+        'summary': 'A place referenced by an event. Geocodable to an address.',
+        'attributes': {
+            'ontology_type': 'class',
+            'inherits_from': [],
+            'alt_labels': [],
+            'examples': [],
+            'identity': False,
+            'properties': None,
+            'source_entity': None,
+            'target_entity': None,
+        },
+    }
+
+
+def age_municion_node() -> dict:
+    return {
+        'uuid': 'municion-uuid',
+        'name': 'Municion',
+        'summary': 'Ammunition seized during an intervention. Counted by calibre.',
+        'attributes': {
+            'ontology_type': 'class',
+            'inherits_from': [],
+            'alt_labels': [],
+            'examples': [],
+            'identity': False,
+            'properties': None,
+            'source_entity': None,
+            'target_entity': None,
+        },
+    }
+
+
+OCURRE_EN_PROSE = 'Where the intervention involving the vehicle took place.'
+OCURRE_EN_AGE_FACT = f'Vehiculo OCURRE_EN Ubicacion: {OCURRE_EN_PROSE}'
+
+# An ACCENTED relation name. `_edge_label`'s `_IDENT_RE` is ASCII-only
+# (`^[A-Za-z_][A-Za-z0-9_]*$`) and the aletheia ontology loader does NO accent
+# folding — rdfs:label "Involucra Munición" becomes INVOLUCRA_MUNICIÓN, which
+# fails the regex — so AGE stores this edge under the RELATES_TO FALLBACK label
+# while `r.name` keeps the true name. `type(r)` reports the fallback; `r.name`
+# does not. This fixture is what makes the difference observable.
+INVOLUCRA_MUNICION_NAME = 'INVOLUCRA_MUNICIÓN'
+INVOLUCRA_MUNICION_PROSE = 'Ammunition found in the vehicle.'
+INVOLUCRA_MUNICION_FACT = (
+    f'Vehiculo {INVOLUCRA_MUNICION_NAME} Municion: {INVOLUCRA_MUNICION_PROSE}'
+)
+
+
+def age_typed_edges() -> list[dict]:
+    """AGE edges AS STORED.
+
+    `label` is the AGE edge LABEL (`_edge_label`: the relation name when
+    identifier-safe, else the RELATES_TO fallback); `name` and `fact` are TOP-LEVEL
+    edge properties written by both AGE edge write paths
+    (age_graph_operations.py edge_save + the bulk field writer). Only custom
+    `attributes` nest.
+    """
+    return [
+        {
+            'label': 'OCURRE_EN',
+            'name': 'OCURRE_EN',
+            'source': 'Vehiculo',
+            'fact': OCURRE_EN_AGE_FACT,
+            'target': 'Ubicacion',
+        },
+        {
+            # The accent case: LABEL degraded to the fallback, `name` intact.
+            'label': 'RELATES_TO',
+            'name': INVOLUCRA_MUNICION_NAME,
+            'source': 'Vehiculo',
+            'fact': INVOLUCRA_MUNICION_FACT,
+            'target': 'Municion',
+        },
+        {
+            # Hierarchy edge — present in the row set on BOTH flavours, dropped by
+            # the SHARED downstream filter, never by a flavour-side WHERE.
+            'label': 'SUBCLASS_OF',
+            'name': 'SUBCLASS_OF',
+            'source': 'Vehiculo',
+            'fact': 'Vehiculo SUBCLASS_OF PhysicalObject: Vehiculo inherits from it.',
+            'target': 'PhysicalObject',
+        },
+    ]
+
+
+class _AgeOntologyDriver:
+    """DISCRIMINATING AGE-shaped ontology driver.
+
+    Answers a TOP-LEVEL projection the way the live AGE graph answered the shipped
+    FalkorDB-shaped query — nulls for every attribute-backed column — and a NESTED
+    projection with the stored values. So a server that issues the wrong flavour's
+    class query does not merely miss an assertion: it reproduces the shipped bug's
+    payload exactly, and the population assertions fail loudly.
+
+    Likewise for relationships: a `[r:RELATES_TO]` match answers only with edges
+    actually stored under that LABEL, and the relation name comes from whichever
+    source the query asked for — `type(r)` (the label) or `r.name` (the property).
+    """
+
+    # Columns the base/FalkorDB query reads top-level and AGE stores nested.
+    _NESTED_COLUMNS = (
+        'ontology_type',
+        'inherits_from',
+        'alt_labels',
+        'examples',
+        'source_entity',
+        'target_entity',
+        'properties',
+        'identity',
+    )
+
+    def __init__(self, nodes: list[dict], edges: list[dict] | None = None):
+        self.nodes = nodes
+        self.edges = edges if edges is not None else []
+        self.queries: list[str] = []
+
+    def _project_class(self, node: dict, query: str) -> dict:
+        row = {
+            'uuid': node['uuid'],
+            'name': node['name'],
+            'summary': node['summary'],
+        }
+        attrs = node.get('attributes') or {}
+        for col in self._NESTED_COLUMNS:
+            # Keyed PER COLUMN, not off one sentinel: a partial regression that
+            # reverts a single column to the top-level form must show up in the
+            # PAYLOAD, not only in the query-text pins.
+            # The whole bug in one line: a top-level read of a nested field is
+            # NULL on AGE, it is not an error.
+            nested = f'n.attributes.{col} AS {col}' in query
+            row[col] = attrs.get(col) if nested else None
+        return row
+
+    async def execute_query(self, query: str, *a, **k):
+        self.queries.append(query)
+
+        if 'OntologyClass)-[' in query:
+            # A type-constrained match reaches only edges stored under that LABEL.
+            edges = (
+                [e for e in self.edges if e['label'] == 'RELATES_TO']
+                if '[r:RELATES_TO]' in query
+                else self.edges
+            )
+            # `r.name AS name` reads the stored property (always the true relation
+            # name); `type(r) AS name` reads the LABEL, which is the RELATES_TO
+            # fallback whenever the name is not ASCII-identifier-safe.
+            from_property = 'r.name AS name' in query
+            rows = [
+                {
+                    'source': e['source'],
+                    'name': e['name'] if from_property else e['label'],
+                    'fact': e['fact'],
+                    'target': e['target'],
+                }
+                for e in edges
+            ]
+            return rows, None, None
+
+        if 'MATCH (n:OntologyClass)' in query:
+            return [self._project_class(n, query) for n in self.nodes], None, None
+
+        return [], None, None
+
+
+def make_age_service(nodes: list[dict], edges: list[dict] | None = None):
+    """Fake GraphitiService on the AGE flavour, backed by _AgeOntologyDriver."""
+    svc = MagicMock()
+    svc.config = GraphitiConfig()
+    svc.config.graphiti.ontology_graph = 'test_ontology_age'
+    svc._ensure_ontology_client = AsyncMock(return_value=True)
+    svc.flavour = AgeFlavour()
+
+    client = MagicMock()
+    client.driver = _AgeOntologyDriver(nodes, edges)
     client.search_ = AsyncMock(return_value=MagicMock(nodes=[]))
     svc.ontology_client = client
     return svc
@@ -749,6 +1007,193 @@ class TestEdgeDerivedRelationships:
             {'name': 'LINKS_TO', 'target': 'Gadget', 'summary': LINKS_TO_SUMMARY}
         ]
         assert [n['name'] for n in result['neighbors']] == ['Gadget']
+
+
+# ---------------------------------------------------------------------------
+# AGE arm — the ontology read path is flavour-owned
+# ---------------------------------------------------------------------------
+
+class TestAgeOntologyReadPath:
+    """Regression for the Task 1 spike's DIVERGENT verdict.
+
+    Shipped, the AGE arm returned `ontology_type=0 inherits_from=0 alt_labels=0
+    identity=0 properties=0 examples=0` over 30 classes and `relationship_classes:
+    []`, because both ontology queries were FalkorDB-shaped. The data was there the
+    whole time — a corrected projection recovered every field.
+    """
+
+    @pytest.mark.asyncio
+    async def test_documentation_recovers_the_structured_fields_on_age(self):
+        from graphiti_mcp_server import get_ontology_documentation
+
+        svc = make_age_service(
+            [
+                age_vehiculo_node(),
+                age_physical_object_node(),
+                age_ubicacion_node(),
+                age_municion_node(),
+            ],
+            age_typed_edges(),
+        )
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_documentation()
+
+        assert 'error' not in result
+        entities = {e['name']: e for e in result['entity_classes']}
+        assert set(entities) == {'Vehiculo', 'PhysicalObject', 'Ubicacion', 'Municion'}
+
+        vehiculo = entities['Vehiculo']
+        # Every field that came back empty on the shipped AGE arm.
+        assert vehiculo['ontology_type'] == 'class'
+        assert vehiculo['inherits_from'] == ['PhysicalObject']
+        assert vehiculo['alt_labels'] == ['Vehículo', 'Coche']
+        assert vehiculo['examples'] == ['Seat León 1234-ABC']
+        assert vehiculo['identity'] is True
+        assert vehiculo['properties'] == AGE_VEHICULO_PROPERTIES
+        # ...and the two that always worked still do.
+        assert vehiculo['summary'] == VEHICULO_SUMMARY
+
+        # The abstract supertype keeps its own ontology_type, not the leaf's.
+        assert entities['PhysicalObject']['ontology_type'] == 'abstract_class'
+        assert entities['PhysicalObject']['identity'] is False
+
+        # The spike's recommended ship gate, in its own terms.
+        assert sum(1 for c in result['entity_classes'] if c['inherits_from']) > 0
+
+    @pytest.mark.asyncio
+    async def test_documentation_derives_relationships_from_typed_edges_on_age(self):
+        """AGE has ZERO RELATES_TO edges — the relation name is `type(r)`."""
+        from graphiti_mcp_server import get_ontology_documentation
+
+        svc = make_age_service(
+            [
+                age_vehiculo_node(),
+                age_physical_object_node(),
+                age_ubicacion_node(),
+                age_municion_node(),
+            ],
+            age_typed_edges(),
+        )
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_documentation()
+
+        assert 'error' not in result
+        relationships = {r['name']: r for r in result['relationship_classes']}
+        # SUBCLASS_OF is in the AGE row set and is dropped by the SHARED filter,
+        # exactly as on FalkorDB — the flavour never filters it. The shared drop
+        # keys on this same `name` value, so reading it from `r.name` keeps that
+        # filter working.
+        assert set(relationships) == {'OCURRE_EN', INVOLUCRA_MUNICION_NAME}
+        ocurre_en = relationships['OCURRE_EN']
+        assert ocurre_en['source_entity'] == 'Vehiculo'
+        assert ocurre_en['target_entity'] == 'Ubicacion'
+        assert ocurre_en['summary'] == OCURRE_EN_PROSE  # prefix stripped
+
+        # The accent case, and why `type(r)` is not good enough: this edge is
+        # STORED under the RELATES_TO fallback label, so `type(r)` would name it
+        # "RELATES_TO" — losing the relation outright AND breaking the prefix strip
+        # in _edge_relationship_entry, which rebuilds the prefix from this name.
+        municion = relationships[INVOLUCRA_MUNICION_NAME]
+        assert municion['source_entity'] == 'Vehiculo'
+        assert municion['target_entity'] == 'Municion'
+        assert municion['summary'] == INVOLUCRA_MUNICION_PROSE
+
+        # And the query the driver actually saw is an untyped edge match reading
+        # the stored name — a token-for-token mirror of the base projection.
+        rel_queries = [q for q in svc.ontology_client.driver.queries if 'OntologyClass)-[' in q]
+        assert rel_queries, svc.ontology_client.driver.queries
+        assert all('[r:RELATES_TO]' not in q for q in rel_queries), rel_queries
+        assert all('-[r]->' in q for q in rel_queries), rel_queries
+        assert all('r.name AS name' in q for q in rel_queries), rel_queries
+        assert all('type(r)' not in q for q in rel_queries), rel_queries
+
+    @pytest.mark.asyncio
+    async def test_structure_recovers_the_structured_fields_on_age(self):
+        """get_ontology_structure reads the same two dialect axes — and its FROZEN
+        per-entry key set is unchanged by the fix."""
+        from graphiti_mcp_server import get_ontology_structure
+
+        svc = make_age_service(
+            [age_vehiculo_node(), age_physical_object_node(), age_ubicacion_node()]
+        )
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await get_ontology_structure()
+
+        assert 'error' not in result
+        entities = {e['name']: e for e in result['entity_classes']}
+        assert entities['Vehiculo']['ontology_type'] == 'class'
+        assert entities['Vehiculo']['inherits_from'] == ['PhysicalObject']
+        assert entities['Vehiculo']['alt_labels'] == ['Vehículo', 'Coche']
+        assert entities['Vehiculo']['examples'] == ['Seat León 1234-ABC']
+        for entry in result['entity_classes']:
+            assert set(entry.keys()) == FROZEN_ENTITY_KEYS
+        # The map tier stays lightweight: no properties/identity crept in.
+        issued = [q for q in svc.ontology_client.driver.queries if 'MATCH (n:OntologyClass)' in q]
+        assert issued and all('n.uuid' not in q for q in issued), issued
+        assert issued and all('AS identity' not in q for q in issued), issued
+
+    @pytest.mark.asyncio
+    async def test_explore_gets_full_context_on_age(self):
+        from graphiti_mcp_server import explore_ontology
+
+        svc = make_age_service(
+            [
+                age_vehiculo_node(),
+                age_physical_object_node(),
+                age_ubicacion_node(),
+                age_municion_node(),
+            ],
+            age_typed_edges(),
+        )
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            result = await explore_ontology(node_name='Vehiculo')
+
+        assert 'error' not in result
+        center = result['center']
+        assert center['ontology_type'] == 'class'
+        assert center['properties'] == AGE_VEHICULO_PROPERTIES
+        assert center['identity'] is True
+
+        assert result['relationships']['outgoing'] == [
+            {'name': 'OCURRE_EN', 'target': 'Ubicacion', 'summary': OCURRE_EN_PROSE},
+            {
+                'name': INVOLUCRA_MUNICION_NAME,
+                'target': 'Municion',
+                'summary': INVOLUCRA_MUNICION_PROSE,
+            },
+        ]
+        # The hierarchy travels via inherits_from, which was [] on the shipped arm.
+        assert result['hierarchy']['parents'] == [
+            {
+                'name': 'PhysicalObject',
+                'summary_line': 'An abstract physical thing.',
+            }
+        ]
+        # ...and the SUBCLASS_OF edge does not double as a neighbour.
+        assert [n['name'] for n in result['neighbors']] == ['Ubicacion', 'Municion']
+
+    @pytest.mark.asyncio
+    async def test_age_arm_never_issues_the_falkordb_shaped_class_query(self):
+        """The loud form of the regression: a top-level projection returns nulls
+        on AGE, so this pins the query text the driver actually receives."""
+        from graphiti_mcp_server import get_ontology_documentation
+
+        svc = make_age_service([age_vehiculo_node()])
+
+        with patch('graphiti_mcp_server.graphiti_service', svc):
+            await get_ontology_documentation()
+
+        class_queries = [
+            q for q in svc.ontology_client.driver.queries if 'MATCH (n:OntologyClass)' in q
+        ]
+        assert class_queries, svc.ontology_client.driver.queries
+        for q in class_queries:
+            assert 'n.attributes.ontology_type AS ontology_type' in q, q
+            assert 'n.ontology_type AS ontology_type' not in q, q
 
 
 # ---------------------------------------------------------------------------

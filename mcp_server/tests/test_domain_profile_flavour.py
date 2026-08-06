@@ -33,6 +33,37 @@ class _RecordingDriver:
         return ([], [], None)
 
 
+class _OntologyStubDriver:
+    """An ontology graph with AGE's label semantics.
+
+    The DISCRIMINATOR: it answers the `OntologyClass`-scoped probe with real
+    summaries and the `:Entity`-scoped one with NOTHING — which is what the live
+    AGE ontology graph does, because its vertices carry the leaf label
+    `OntologyClass` and only a handful carry `:Entity`. A flavour-blind probe
+    therefore returns zero rows and silently leaves every description empty.
+
+    On FalkorDB the same vertices DO carry `:Entity`, so the base arm is answered
+    from the same canned rows — the stub distinguishes the two by scope alone.
+    """
+
+    _ROWS = [
+        {'name': 'Persona', 'summary': 'Una persona física.'},
+        {'name': 'En parte', 'summary': 'Pertenece a un parte.'},
+    ]
+
+    def __init__(self, shape: str = 'age'):
+        assert shape in ('age', 'falkor')
+        self.queries: list[str] = []
+        # The label whose scope this graph will actually answer.
+        self._answers = ':OntologyClass' if shape == 'age' else ':Entity'
+
+    async def execute_query(self, query, **kwargs):
+        self.queries.append(query)
+        if 'AS summary' not in query or self._answers not in query:
+            return ([], [], None)
+        return (self._ROWS, [], None)
+
+
 class TestProfileQueryContract:
     def test_every_flavour_exposes_the_four_probes(self):
         for flavour in (BaseFlavour(), FalkorDbFlavour(), AgeFlavour()):
@@ -94,6 +125,50 @@ class TestDomainProfileUsesTheFlavour:
         ]})
         types = await _query_entity_types(driver, 'g1', AgeFlavour())
         assert list(types) == ['Ubicacion']
+
+    @pytest.mark.asyncio
+    async def test_ontology_enrichment_reaches_the_age_ontology_graph(self):
+        """`_enrich_from_ontology` was the last flavour-blind probe in the module.
+
+        Its `MATCH (n:Entity)` matches ~nothing on an AGE ontology graph (those
+        vertices carry the leaf label `OntologyClass`), so every description stayed
+        '' and get_schema's description / sample_names enrichment never fired —
+        blank Overview cards on the AGE arm.
+        """
+        onto = _OntologyStubDriver(shape='age')
+        client, ontology_client = MagicMock(), MagicMock()
+        client.driver = _RecordingDriver({
+            'n.labels AS entity_type': [{'entity_type': ['Entity', 'Persona'], 'cnt': 196}],
+            'type(r) AS relationship_type': [{'relationship_type': 'EN_PARTE', 'cnt': 936}],
+        })
+        ontology_client.driver = onto
+
+        profile = await build_domain_profile(
+            client, 'g1', ontology_client=ontology_client, flavour=AgeFlavour()
+        )
+
+        probes = [q for q in onto.queries if 'AS summary' in q]
+        assert probes and all(':OntologyClass' in q for q in probes), probes
+        assert profile.entity_types['Persona'].description == 'Una persona física.'
+        assert profile.edge_types['EN_PARTE'].description == 'Pertenece a un parte.'
+
+    @pytest.mark.asyncio
+    async def test_ontology_enrichment_without_a_flavour_keeps_the_entity_scoped_probe(self):
+        """Back-compat pin: the FalkorDB arm is proven — it must not move a byte."""
+        onto = _OntologyStubDriver(shape='falkor')
+        client, ontology_client = MagicMock(), MagicMock()
+        client.driver = _RecordingDriver({
+            'labels(n) AS entity_type': [{'entity_type': ['Entity', 'Persona'], 'cnt': 196}],
+        })
+        ontology_client.driver = onto
+
+        profile = await build_domain_profile(client, 'g1', ontology_client=ontology_client)
+
+        assert (
+            'MATCH (n:Entity) WHERE n.summary IS NOT NULL '
+            'RETURN n.name AS name, n.summary AS summary'
+        ) in onto.queries, onto.queries
+        assert profile.entity_types['Persona'].description == 'Una persona física.'
 
     @pytest.mark.asyncio
     async def test_build_domain_profile_end_to_end_on_the_age_flavour(self):
