@@ -10,6 +10,9 @@ class _StubDriver:
     """Answers the get_schema probe queries with a tiny fixed graph."""
 
     async def execute_query(self, query: str, *a, **k):
+        if "AS storage_label" in query:
+            # FalkorDB stores every label it censuses — the sets are equal.
+            return [{"storage_label": "Entity"}, {"storage_label": "Persona"}], None, None
         if "count(n) AS cnt" in query:
             return [{"lbls": ["Entity", "Persona"], "cnt": 3}], None, None
         if "keys(n)" in query and "UNWIND" in query:
@@ -74,6 +77,10 @@ class _AgeStubDriver:
             if self.unmatchable_raises:
                 raise RuntimeError('label "Actor" does not exist')
             return [], None, None
+        if "AS storage_label" in query:
+            # Only the LEAF is a stored label on AGE; Actor exists in the
+            # hierarchy list alone, which is the whole distinction under test.
+            return [{"storage_label": lbl} for lbl in self._LEAF], None, None
         if "count(n) AS cnt" in query:
             lbls = self._HIERARCHY if "n.labels AS lbls" in query else self._LEAF
             return [{"lbls": lbls, "cnt": 5}, {"lbls": None, "cnt": 7}], None, None
@@ -261,3 +268,146 @@ async def test_get_schema_marks_an_empty_label_probe_unsampled(monkeypatch):
     assert labels["Actor"]["sampled"] is False, "an unsampled entry must not claim sampled"
     assert labels["Actor"]["count"] == 5
     assert labels["Persona"]["sampled"] is True
+
+
+# ---------------------------------------------------------------------------
+# hierarchy-only labels — censusable/searchable, but not storage types
+# ---------------------------------------------------------------------------
+
+
+class _AgeRichStubDriver(_AgeStubDriver):
+    """Two ontology branches, so a LOW-COUNT LEAF is in the picture.
+
+    `Arma` has one vertex on the live bench graph. A consumer guessing which
+    entries are abstract from counts, or from "does it appear in patterns",
+    would mis-flag exactly that kind of label — it is a real storage type that
+    happens to be rare and unconnected. The producer must flag on the storage
+    census alone.
+    """
+
+    _LEAF = ["Persona", "Arma"]
+    _BRANCHES = (["Entity", "Actor", "Persona"], ["Entity", "PhysicalObject", "Arma"])
+
+    async def execute_query(self, query: str, *a, **k):
+        self.queries.append(query)
+        if "AS storage_label" in query:
+            return [{"storage_label": lbl} for lbl in self._LEAF], None, None
+        if "count(n) AS cnt" in query:
+            if "n.labels AS lbls" in query:
+                rows = [{"lbls": list(b), "cnt": 5} for b in self._BRANCHES]
+            else:
+                rows = [{"lbls": [lbl], "cnt": 5} for lbl in self._LEAF]
+            return rows + [{"lbls": None, "cnt": 7}], None, None
+        return await super().execute_query(query, *a, **k)
+
+
+@pytest.mark.asyncio
+async def test_get_schema_age_flags_hierarchy_only_labels(monkeypatch):
+    """The abstracts are in node_labels on purpose (searchable) but no vertex is
+    STORED under them, so `MATCH (n:Actor)` matches nothing and they belong in no
+    pattern. The UI rendered them as disconnected schema nodes because nothing in
+    the payload told it they are not storage types. Now the producer says so.
+    """
+    driver = _AgeRichStubDriver()
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(AgeFlavour(), driver))
+    schema = await srv.get_schema()
+
+    labels = schema["node_labels"]
+    flagged = sorted(k for k, v in labels.items() if v.get("hierarchy"))
+    assert flagged == ["Actor", "PhysicalObject"], labels
+    # ...and every STORAGE type is unflagged — including the rare, unconnected one.
+    for leaf in ("Persona", "Arma"):
+        assert not labels[leaf].get("hierarchy"), (leaf, labels[leaf])
+    # The counts and the rest of the entry are untouched by the flag.
+    assert labels["Actor"]["count"] == 5
+    assert labels["Arma"]["count"] == 5
+
+    census = [q for q in driver.queries if "AS storage_label" in q]
+    assert census and all("label(n) AS storage_label" in q for q in census), census
+
+
+@pytest.mark.asyncio
+async def test_get_schema_falkordb_flags_nothing_as_hierarchy(monkeypatch):
+    """Every censused label on FalkorDB is a storage label, so the flag must be
+    absent/None on every entry — the proven arm's payload does not change."""
+    driver = _StubDriver()
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(FalkorDbFlavour(), driver))
+    schema = await srv.get_schema()
+
+    labels = schema["node_labels"]
+    assert labels, labels
+    assert all(not v.get("hierarchy") for v in labels.values()), labels
+
+
+@pytest.mark.asyncio
+async def test_a_failing_storage_census_flags_NOTHING(monkeypatch):
+    """The dangerous degrade: an empty storage set makes EVERY label look
+    hierarchy-only, which would blank the whole schema view. A census that cannot
+    answer must leave every entry unflagged, exactly as before the flag existed.
+    """
+
+    class _NoStorageCensus(_AgeRichStubDriver):
+        async def execute_query(self, query: str, *a, **k):
+            if "AS storage_label" in query:
+                raise RuntimeError('relation "storage" does not exist')
+            return await super().execute_query(query, *a, **k)
+
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(AgeFlavour(), _NoStorageCensus()))
+    schema = await srv.get_schema()
+
+    assert "error" not in schema, schema
+    labels = schema["node_labels"]
+    assert labels, labels
+    assert all(not v.get("hierarchy") for v in labels.values()), labels
+
+
+@pytest.mark.parametrize(
+    "case,rows",
+    [
+        ("zero_rows", []),
+        # AGE names an UNALIASED projection `col0`; every rec.get('storage_label')
+        # is then None and the set comes out empty while the query looks healthy.
+        ("mis_keyed_col0", [{"col0": "Persona"}, {"col0": "Arma"}]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_empty_storage_census_flags_NOTHING(monkeypatch, case, rows):
+    """The OTHER half of the safe degrade: the census SUCCEEDS but yields nothing
+    usable. `found` is then an empty set, and diffing against it flags EVERY
+    label as hierarchy-only — the same schema-blanking inversion as a raise, and
+    it reaches the diff through the happy path where no except clause guards it.
+
+    Two ways that happens, both live-plausible:
+
+    * zero rows — a graph whose vertices are all label-less, or a backend that
+      answers the census with nothing;
+    * rows whose column is not `storage_label`. AGE names an UNALIASED projection
+      `col0` (the failure mode this module has already been bitten by twice: the
+      `RETURN DISTINCT key AS key` fix and the `RETURN n AS n` fix). Every
+      `rec.get('storage_label')` is then None and the set comes out empty while
+      the query itself looks perfectly healthy.
+    """
+
+    class _EmptyStorageCensus(_AgeRichStubDriver):
+        def __init__(self, rows):
+            super().__init__()
+            self._storage_rows = rows
+
+        async def execute_query(self, query: str, *a, **k):
+            if "AS storage_label" in query:
+                self.queries.append(query)
+                return self._storage_rows, None, None
+            return await super().execute_query(query, *a, **k)
+
+    driver = _EmptyStorageCensus(rows)
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(AgeFlavour(), driver))
+    schema = await srv.get_schema()
+
+    assert "error" not in schema, (case, schema)
+    labels = schema["node_labels"]
+    # The schema is INTACT — same entries, counts untouched...
+    assert set(labels) == {"Actor", "Persona", "PhysicalObject", "Arma"}, (case, labels)
+    assert all(info["count"] == 5 for info in labels.values()), (case, labels)
+    # ...and NOT ONE of them is flagged.
+    flagged = sorted(k for k, v in labels.items() if v.get("hierarchy"))
+    assert flagged == [], (case, flagged)

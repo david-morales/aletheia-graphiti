@@ -249,6 +249,30 @@ def test_both_censuses_project_the_same_aliases():
         assert "count(n) AS cnt" in q["label_counts"], flavour.name
         assert "AS source_labels" in q["rel_patterns"], flavour.name
         assert "AS target_labels" in q["rel_patterns"], flavour.name
+        assert "AS storage_label" in q["storage_labels"], flavour.name
+
+
+def test_base_storage_label_census_unwinds_labels_fn():
+    """On openCypher/FalkorDB every censused label IS a storage label — a node
+    really carries each one — so the storage set equals the census and nothing
+    is ever flagged as hierarchy-only."""
+    q = BaseFlavour().census_queries()["storage_labels"]
+    assert q == (
+        "MATCH (n) UNWIND labels(n) AS storage_label RETURN DISTINCT storage_label"
+    ), q
+    assert FalkorDbFlavour().census_queries()["storage_labels"] == q
+
+
+def test_age_storage_label_census_reads_the_stored_leaf():
+    """`label(n)` is the ONE stored label on AGE. Everything else in `n.labels`
+    is hierarchy-only: censusable and searchable, but no vertex is stored under
+    it, so `MATCH (n:Actor)` matches nothing."""
+    q = AgeFlavour().census_queries()["storage_labels"]
+    assert "label(n) AS storage_label" in q, q
+    assert "n.labels IS NOT NULL" in q, q      # excludes Episodic
+    assert "DISTINCT" in q, q
+    # The hierarchy list is exactly what must NOT be the source here.
+    assert "n.labels AS storage_label" not in q, q
 
 
 def test_age_rel_patterns_also_announces_the_endpoint_leaf():

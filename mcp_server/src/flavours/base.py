@@ -130,12 +130,25 @@ class BaseFlavour:
         `source_leaf`/`target_leaf` — the single matchable endpoint label. Those
         columns are OPTIONAL: consumers prefer them when present and fall back to
         picking positionally from the label list when they are absent, which is
-        what keeps this base variant's behaviour unchanged."""
+        what keeps this base variant's behaviour unchanged.
+
+        `storage_labels` (alias `storage_label`) is the set of labels a vertex is
+        actually STORED under. get_schema diffs it against the label census to mark
+        the remainder `hierarchy: True` — labels that are censusable and searchable
+        but that no `MATCH (n:Label)` can reach."""
         return {
             "label_counts": "MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt",
             "rel_patterns": (
                 "MATCH (s)-[r:`{rel_type}`]->(t) "
                 "RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20"
+            ),
+            # The labels a vertex is actually STORED under, aliased `storage_label`
+            # on every flavour. Here that is the same set the label census returns
+            # — on openCypher/FalkorDB a node genuinely carries each of its labels,
+            # so nothing is ever hierarchy-only and the flag never fires. It is
+            # still issued rather than skipped so get_schema keeps ONE code path.
+            "storage_labels": (
+                "MATCH (n) UNWIND labels(n) AS storage_label RETURN DISTINCT storage_label"
             ),
         }
 
