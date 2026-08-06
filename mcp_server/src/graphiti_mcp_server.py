@@ -51,8 +51,8 @@ from graphiti_core.search.search_config_recipes import (
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.resources.types import TextResource
-from pydantic import BaseModel
+from mcp.server.fastmcp.resources.types import FunctionResource, TextResource
+from pydantic import AnyUrl, BaseModel
 from starlette.responses import JSONResponse
 
 from config.schema import GraphitiConfig, ServerConfig
@@ -2494,6 +2494,11 @@ def register_fallback_tools(reason: str) -> None:
 
     apply_canonical_tool_order(mcp._tool_manager._tools)
 
+    # The profile-rendered resources cannot be built without a profile, but the
+    # schema resource reads live — and a consumer reading static fallback
+    # descriptions is exactly the one that needs it.
+    _register_schema_resource()
+
     mcp._mcp_server.instructions = build_degraded_instructions(
         group_id=group_id,
         flavour=flavour,
@@ -2535,6 +2540,49 @@ async def _build_and_register_domain_surface() -> None:
         register_fallback_tools(reason=str(e))
 
 
+def _register_schema_resource() -> None:
+    """Serve the schema as a resource, not only as a tool (ADR-019 R4 / A-D8).
+
+    The schema is the one payload every consumer needs before it can do anything —
+    labels, relationship patterns, and the backend `dialect_reference` — and it is
+    already cached server-side, so requiring a tool round-trip to reach it is pure
+    friction.
+
+    Read through `get_schema()` rather than off `_schema_cache`: that honours the
+    dirty flag, so this resource can never serve a schema the tool would not. The
+    error path stays ADR-015 R4 — a failure is the in-band `{"error": ...}` payload
+    that `get_schema` already returns, not a second failure mode invented here.
+    """
+
+    async def _schema_json() -> str:
+        return json.dumps(await get_schema(), indent=2, default=str)
+
+    _replace_resource(
+        FunctionResource(
+            uri=AnyUrl('graphiti://schema'),
+            name='Graph Schema',
+            description=(
+                'Node labels with counts and property keys, relationship types with '
+                'source->target patterns, and this backend\'s Cypher dialect reference. '
+                'The same payload the get_schema tool returns.'
+            ),
+            mime_type='application/json',
+            fn=_schema_json,
+        )
+    )
+
+
+def _replace_resource(resource) -> None:
+    """Register a resource, REPLACING any existing one on the same URI.
+
+    FastMCP's `add_resource` keeps the incumbent and only logs a warning on a
+    duplicate URI, so re-registering after a re-profile would silently go on
+    serving text rendered from the previous profile.
+    """
+    mcp._resource_manager._resources.pop(str(resource.uri), None)
+    mcp.add_resource(resource)
+
+
 def register_resources(profile: DomainProfile) -> None:
     """Register MCP resources with rendered content from the DomainProfile."""
     domain_summary = TextResource(
@@ -2556,11 +2604,14 @@ def register_resources(profile: DomainProfile) -> None:
         text=profile.render_relationship_types(),
     )
 
-    mcp.add_resource(domain_summary)
-    mcp.add_resource(entity_catalog)
-    mcp.add_resource(relationship_types)
+    # REPLACE rather than add: FastMCP keeps the incumbent on a duplicate URI, so a
+    # re-profile would otherwise go on serving text rendered from the previous one.
+    _replace_resource(domain_summary)
+    _replace_resource(entity_catalog)
+    _replace_resource(relationship_types)
+    _register_schema_resource()
 
-    logger.info(f'Registered 3 MCP resources for {profile.group_id}')
+    logger.info(f'Registered 4 MCP resources for {profile.group_id}')
 
 
 async def initialize_server() -> ServerConfig:
