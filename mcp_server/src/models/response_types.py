@@ -126,6 +126,13 @@ class SchemaNodeInfo(TypedDict, total=False):
     sampled: bool | None
     description: str | None
     sample_names: list[str] | None
+    # True when the label is HIERARCHY-ONLY: censusable and searchable, but NOT a
+    # storage type — no vertex is stored under it, `MATCH (n:Label)` reaches
+    # nothing, and it can appear in no relationship pattern. Schema and graph
+    # views should render STORAGE TYPES ONLY; an unfiltered view draws these as
+    # disconnected nodes. Absent/None means "storage type" (always so on
+    # FalkorDB, where every censused label is stored).
+    hierarchy: bool | None
 
 
 class SchemaRelationshipInfo(TypedDict, total=False):

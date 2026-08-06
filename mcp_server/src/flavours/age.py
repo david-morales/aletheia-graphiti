@@ -750,6 +750,16 @@ class AgeFlavour(BaseFlavour):
                 "RETURN DISTINCT s.labels AS source_labels, t.labels AS target_labels, "
                 "label(s) AS source_leaf, label(t) AS target_leaf LIMIT 20"
             ),
+            # `label(n)` is the ONE label a vertex is stored under; everything else
+            # in `n.labels` is hierarchy-only — censusable and searchable, but
+            # `MATCH (n:Actor)` reaches nothing and no pattern can name it. The
+            # label census above deliberately counts the whole hierarchy, so this
+            # is what lets get_schema tell the two apart. `IS NOT NULL` excludes
+            # Episodic, matching the label census's own scope.
+            "storage_labels": (
+                "MATCH (n) WHERE n.labels IS NOT NULL "
+                "RETURN DISTINCT label(n) AS storage_label"
+            ),
         }
 
     def census_notes(self) -> list[str]:

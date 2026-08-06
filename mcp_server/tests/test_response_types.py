@@ -161,12 +161,31 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
         "type": "schema", "graph_name": "g", "domain": "G",
         "dialect": "falkordb-cypher", "dialect_reference": "ref",
         "node_labels": {"Persona": {"count": 3, "attribute_keys": ["dni"],
-                                    "properties": ["dni", "name"], "sampled": True}},
+                                    "properties": ["dni", "name"], "sampled": True},
+                        # A hierarchy-only label: censusable, but no vertex is
+                        # stored under it, so it belongs in no pattern.
+                        "Actor": {"count": 9, "attribute_keys": [], "properties": [],
+                                  "sampled": False, "hierarchy": True}},
         "relationship_types": {"ES_DETENIDO": {"count": 2,
                                                "patterns": [["Persona", "Detencion"]]}},
         "cypher_reference": "ref", "tool_capabilities": {},
     }
     get_schema_error = {"error": "Failed to retrieve schema: boom"}
+    # Every SchemaNodeInfo field None — same rule as the sample_subgraph case
+    # below: making `hierarchy` non-nullable would leave this green until a real
+    # None reached convert_result, which fails OUTSIDE the tool's try/except and
+    # so escapes the ADR-015 error envelope as a protocol error.
+    get_schema_all_null = {
+        "type": None, "graph_name": None, "domain": None,
+        "dialect": None, "dialect_reference": None,
+        "node_labels": {"Persona": {"count": None, "attribute_keys": None,
+                                    "properties": None, "sampled": None,
+                                    "description": None, "sample_names": None,
+                                    "hierarchy": None}},
+        "relationship_types": {"ES_DETENIDO": {"count": None, "patterns": None,
+                                               "description": None}},
+        "error": None,
+    }
     run_cypher_success = {"query": "MATCH (n) RETURN n", "type": "tabular",
                           "columns": ["n"], "rows": [[1]], "row_count": 1}
     run_cypher_error = {"error": "syntax error", "hint": "use <>",
@@ -200,6 +219,7 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
     cases = [
         ("get_schema", get_schema_success),
         ("get_schema", get_schema_error),
+        ("get_schema", get_schema_all_null),
         ("run_cypher", run_cypher_success),
         ("run_cypher", run_cypher_error),
         ("sample_subgraph", sample_subgraph_success),

@@ -1801,6 +1801,33 @@ async def get_schema() -> SchemaResponse:
                 if label not in internal_labels:
                     label_counts[label] = label_counts.get(label, 0) + rec.get('cnt', 0)
 
+        # 1b. Storage labels — the ones a vertex is actually STORED under. The
+        #     census above counts the full hierarchy on AGE, so the difference is
+        #     the hierarchy-only labels: searchable, but `MATCH (n:Actor)` reaches
+        #     nothing and they can appear in no pattern. Without saying so, a
+        #     schema view draws them as disconnected nodes (operator finding).
+        #
+        #     DEGRADE DIRECTION MATTERS: a census that cannot answer yields an
+        #     EMPTY set, and diffing against empty would flag EVERY label as
+        #     hierarchy-only — blanking the whole view. So a failure (or an empty
+        #     answer) disables the flag entirely rather than inverting the schema.
+        storage_labels: set[str] | None = None
+        try:
+            storage_records, _, _ = await driver.execute_query(census['storage_labels'])
+            found = {
+                rec.get('storage_label')
+                for rec in storage_records
+                if rec.get('storage_label')
+            }
+            storage_labels = found or None
+        except Exception as census_error:  # noqa: BLE001 — never invert the schema
+            logger.warning(
+                f'get_schema: storage-label census failed, leaving every label '
+                f'unflagged: {census_error}'
+            )
+        if storage_labels is None:
+            logger.debug('get_schema: no storage-label census; hierarchy flag disabled')
+
         # 2. Properties + attribute_keys per label (sample 50)
         #    `properties` = full top-level keys — feeds cypher_quality's schema_match and the
         #    documented aletheia-extraction contract (kept unchanged). `attribute_keys` = the
@@ -1842,6 +1869,10 @@ async def get_schema() -> SchemaResponse:
                 # "this type has no properties".
                 'sampled': bool(prop_records),
             }
+            # Set ONLY when true, so "storage type" reads as absent/None — the
+            # shape every existing consumer already sees on FalkorDB.
+            if storage_labels is not None and label not in storage_labels:
+                node_labels[label]['hierarchy'] = True
 
         # 3. Relationship counts (single-pass)
         rel_records, _, _ = await driver.execute_query(
