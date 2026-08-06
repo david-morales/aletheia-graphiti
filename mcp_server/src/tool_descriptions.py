@@ -11,11 +11,17 @@ if TYPE_CHECKING:
 
 
 def _key_tools_lines() -> list[str]:
-    """The capability catalog (ADR-019 R1).
+    """The capability catalog (ADR-019 R1) — ALL 18 served tools.
 
     Profile-independent on purpose: the tools a connector serves do not depend on
     what its graph happens to contain, so the healthy and the DEGRADED
     announcements serve the same catalog and cannot drift apart.
+
+    Completeness is the contract (A-D9). The catalog used to name 7 of 18, omitting
+    `add_memory` — the connector's only ingestion path — along with `profile_graph`
+    and both ontology-bulk tools, so an agent reading the announcement could not
+    learn that half the surface exists. The three destructive tools are named AND
+    marked: announcing one without saying what it does is worse than omitting it.
     """
     return [
         '',
@@ -41,6 +47,55 @@ def _key_tools_lines() -> list[str]:
         '   Use when: a client needs a renderable slice of the graph (graph view).',
         '   Use search instead when: you are answering a question -- this samples,',
         '   it does not rank or filter by meaning.',
+        '',
+        'Schema and structure:',
+        '',
+        '6. get_schema -- This graph\'s labels, relationship types, counts, property',
+        '   keys and the backend `dialect_reference`. Call it before writing Cypher.',
+        '',
+        '7. run_cypher -- Read-only Cypher for counts, aggregations and path queries.',
+        '   Writes are rejected; 200 rows are auto-limited.',
+        '',
+        '8. profile_graph -- Property coverage, sample values, detected languages and',
+        '   relationship cardinality. Use when you need to judge data QUALITY before',
+        '   trusting a count.',
+        '',
+        '9. get_ontology_structure -- Every ontology class in one compact call: the',
+        '   surface map. Cheaper than search_ontology when you want the whole list.',
+        '',
+        '10. get_ontology_documentation -- The FULL ontology reference: complete prose',
+        '    and per-class property definitions. LARGE -- prefer the three tools above',
+        '    for agent use; this one is for UIs, exports and batch consumers.',
+        '',
+        'Episodes (the ingested source documents):',
+        '',
+        '11. get_episodes -- List recent episodes for a graph partition.',
+        '',
+        '12. get_episode_context -- The nodes and edges a given episode produced.',
+        '    Use when: you need to trace a fact back to its source document.',
+        '',
+        'Writing to the graph:',
+        '',
+        '13. add_memory -- Ingest an episode (text, JSON or message). Single episodes',
+        '    are queued and processed asynchronously; pass `episodes` for a bulk load',
+        '    that returns when done. This is the ONLY ingestion path.',
+        '',
+        '14. build_communities -- Re-cluster entities into communities. Run after a',
+        '    significant ingestion, then search with search_mode="communities".',
+        '',
+        'Health:',
+        '',
+        '15. get_status -- Server and database reachability.',
+        '',
+        'Destructive -- these REMOVE data and cannot be undone:',
+        '',
+        '16. delete_entity_edge -- DESTRUCTIVE. Deletes one relationship by uuid.',
+        '',
+        '17. delete_episode -- DESTRUCTIVE. Deletes an episode AND everything extracted',
+        '    from it.',
+        '',
+        '18. clear_graph -- DESTRUCTIVE and IRREVERSIBLE. Deletes ALL data in the named',
+        '    graph partitions. There is no undo and no backup on this side.',
     ]
 
 
