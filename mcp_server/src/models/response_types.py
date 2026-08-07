@@ -45,8 +45,13 @@ class EpisodeSearchResponse(TypedDict):
 
 
 class StatusResponse(TypedDict):
-    """get_status. `version` is the CONNECTOR's build, not the MCP SDK's — the
-    wire's `serverInfo.version` reports the SDK and is identical fleet-wide."""
+    """get_status. `version` is the CONNECTOR's build (A-D11), which since the SDK
+    2.x migration is also what `serverInfo.version` carries — the two agree rather
+    than the handshake reporting the SDK. Kept because it answers a different
+    question than the handshake does, on a probe operators already make.
+
+    Deliberately `total=True`: all three fields are always returned, so the SDK
+    never injects None into them (see test_output_field_nullability)."""
     status: str
     message: str
     version: str

@@ -703,9 +703,13 @@ saying so. A miss is an answer.
 
 **Bump `mcp_server/pyproject.toml`'s `version` in the same change that will carry
 the release tag.** It is not bookkeeping: the connector announces that string as
-its own build, in `get_status.version` and in the header of the served
-`instructions`, because `serverInfo.version` on the wire is the MCP SDK's version
-and is identical on every connector in the fleet.
+its own build in three places — `serverInfo.version` on the wire,
+`get_status.version`, and the header of the served `instructions`.
+
+Historically only the last two carried it, because SDK 1.x filled
+`serverInfo.version` with the SDK's own version, identical on every connector in
+the fleet. SDK 2.x leaves that field empty unless the server supplies it, so the
+connector now supplies its own build there too and all three agree.
 
 `mcp-v1.3.0` and `mcp-v1.4.0` both shipped while pyproject still said `1.2.2`, so
 a connector reading it would have claimed to predate fixes it contained — a

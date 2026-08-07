@@ -1,9 +1,18 @@
 """The connector's own build identity (A-D11).
 
-`serverInfo.version` on the wire is the MCP SDK's version — the same string on
-every connector in the fleet — so it cannot tell an operator which build of THIS
-server they reached. The packaged version can, and it is already maintained: the
-release workflow refuses a tag that disagrees with `pyproject.toml`.
+This string is what the server announces as its build, in three places:
+`serverInfo.version` on the wire, `get_status.version`, and the header of the
+served `instructions`. It is already maintained — the release workflow refuses a
+tag that disagrees with `pyproject.toml`.
+
+A-D11 originally existed because `serverInfo.version` could NOT carry it: SDK 1.x
+filled that field with the SDK's own version, the same string on every connector
+in the fleet, so it could not say which build an operator had reached. SDK 2.x
+stopped populating the field at all (it defaults to the empty string), which made
+passing a value both possible and necessary — `graphiti_mcp_server` now hands this
+one to `MCPServer(version=...)`. The other two surfaces stay: they answer
+different questions (see `test_connector_version.py`) and they reach a consumer
+that never reads `serverInfo`.
 
 Read once at import. Two sources, because the two deployments differ: an installed
 package exposes `importlib.metadata`, while the Docker image copies

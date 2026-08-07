@@ -2772,9 +2772,17 @@ async def initialize_server() -> ServerConfig:
     # Initialize queue service with the client
     await queue_service.initialize(graphiti_client)
 
-    # SDK 2.x removed `mcp.settings`; the bind address is handed to `run_*_async()`
-    # instead. `config.server` already carries the resolved host/port (CLI > env >
-    # YAML > defaults), so it is the only thing the transport needs.
+    # `mcp.settings` still exists in SDK 2.x, but every TRANSPORT field moved off
+    # it — host, port, sse_path, message_path, streamable_http_path, json_response,
+    # stateless_http and transport_security are all `run_*_async()` arguments now,
+    # leaving settings with debug/log_level/auth/lifespan/dependencies and the
+    # warn_on_duplicate_* flags. So there is nothing to assign here any more.
+    #
+    # `config.server` carries the resolved bind address (env `SERVER__HOST` /
+    # `SERVER__PORT` > YAML > defaults) and is handed to the transport in
+    # `run_mcp_server`. Note the `--host`/`--port` CLI flags do NOT feed it:
+    # `apply_cli_overrides` never applied them, before this migration or after,
+    # which is why the compose overlays set the `SERVER__*` env vars as well.
     return config.server
 
 
