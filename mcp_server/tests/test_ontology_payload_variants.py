@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import jsonschema
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import graphiti_mcp_server as srv
 
@@ -29,7 +29,7 @@ ONTOLOGY_TOOLS = ('get_ontology_documentation', 'get_ontology_structure', 'explo
 
 @pytest.fixture(scope='module')
 def tools():
-    m = FastMCP('ontology-variants')
+    m = MCPServer('ontology-variants')
     for name in ONTOLOGY_TOOLS:
         m.add_tool(getattr(srv, name))
     return m._tool_manager._tools
@@ -51,8 +51,8 @@ def _entry(**overrides) -> dict:
 def _roundtrip(tool, payload):
     """Drive the real convert_result + schema validation the server performs."""
     meta = tool.fn_metadata
-    converted = meta.convert_result(payload)
-    structured = converted[1] if isinstance(converted, tuple) else converted
+    # SDK 2.x returns a `CallToolResult` here; 1.x returned `(content, structured)`.
+    structured = meta.convert_result(payload).structured_content
     jsonschema.validate(structured, meta.output_schema)
     return structured
 

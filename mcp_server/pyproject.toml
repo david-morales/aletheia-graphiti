@@ -1,11 +1,11 @@
 [project]
 name = "mcp-server"
-version = "1.5.0"
+version = "1.6.0"
 description = "Graphiti MCP Server"
 readme = "README.md"
 requires-python = ">=3.10,<4"
 dependencies = [
-    "mcp>=1.9.4,<2",
+    "mcp>=2,<3",
     "openai>=1.91.0",
     "graphiti-core[falkordb,age]",
     "langdetect>=1.0.9",
@@ -67,6 +67,11 @@ docstring-code-format = true
 [dependency-groups]
 dev = [
     "faker>=37.12.0",
+    # The test suite's own HTTP/ASGI client (four modules import it), NOT the MCP
+    # transport — the SDK brings its own `httpx2` as a runtime dependency. Swapping
+    # this to httpx2 during the SDK 2.x migration was a mistake: it changed the
+    # declaration without changing a single import, leaving those modules relying on
+    # a package that only arrived transitively.
     "httpx>=0.28.1",
     "psutil>=7.1.2",
     "pyright>=1.1.404",

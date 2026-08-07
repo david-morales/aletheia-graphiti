@@ -3,7 +3,7 @@
 WHY THIS MODULE EXISTS
 
 Wave 1 settled ADR-019 R2/A-D7 by giving every tool a concrete typed return, so
-FastMCP publishes a FLAT `structuredContent` and the ADR-015 R4 client rule
+the SDK publishes a FLAT `structured_content` and the ADR-015 R4 client rule
 `if "error" in result` works for the whole surface. That guarantee is not
 something the fork owns outright — it is a *property of the installed MCP SDK*:
 `func_metadata` synthesises a `{"result": ...}` envelope for any return
@@ -22,7 +22,30 @@ change the served envelope for every consumer while every existing test stayed
 green. This module drives a REAL in-process client session so the assertions are
 against wire shapes rather than an idealisation of them.
 
-What it measures is the *pinned* SDK: CI runs `uv sync`, so the round trip below
+MEASURED ACROSS THE 1.x -> 2.x BUMP (wave 6, 2026-08-07). The same five return
+shapes were driven through an identical in-process round trip on mcp 1.26.0 and
+mcp 2.0.0. Every observable was byte-identical — the envelope keys, the JSON in
+the text channel down to its indentation, the error flag:
+
+    return annotation      structured_content              1.26.0   2.0.0
+    -> str                 {"result": "plain text"}        wrapped  wrapped
+    -> A | B  (union)      {"result": {...}}               wrapped  wrapped
+    -> BaseModel           {"message": ..., "rows": ...}   FLAT     FLAT
+    -> dict[str, Any]      {"message": ..., "rows": ...}   FLAT     FLAT
+    raise (plain Exception) None, is_error=True, text      in-band  in-band
+
+The bump therefore required NO change to any consumer's wrapper-stripping logic.
+The `dict` and error rows are new here: the 1.x edition pinned only the first
+three, so `dict[str, Any]` (three tools carried it before wave 1) and the ADR-015
+R4 in-band error path were premises nothing measured. Both are pinned now.
+
+One 2.x behaviour that is NOT pinned as safe, recorded so the next reader does
+not have to rediscover it: raising `MCPError` from a tool no longer comes back
+in-band — the client re-raises it. The fork does not raise from tools (every
+error path returns a typed payload carrying `error`), which is why the surface is
+unaffected; `test_a_typed_error_payload_stays_in_band` pins the path it does use.
+
+What this measures is the *pinned* SDK: CI runs `uv sync`, so the round trip below
 exercises the version in `uv.lock`. That is the intent — the guard gates the bump
 rather than tracking whatever happens to be installed.
 
@@ -43,11 +66,12 @@ import pathlib
 import re
 import types
 import typing
+from typing import Any
 
 import pytest
 import yaml
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import Client
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel
 
 import graphiti_mcp_server as srv
@@ -60,7 +84,7 @@ REPO = MCP_SERVER.parent
 
 
 # ---------------------------------------------------------------------------
-# Probe server: the two shapes the SDK wraps, and one it does not
+# Probe server: the shapes the SDK wraps, and the ones it does not
 # ---------------------------------------------------------------------------
 
 class _Payload(BaseModel):
@@ -72,7 +96,12 @@ class _Failure(BaseModel):
     error: str
 
 
-_probe = FastMCP('wire-premise-probe')
+class _ErrorCapable(BaseModel):
+    message: str
+    error: str | None = None
+
+
+_probe = MCPServer('wire-premise-probe')
 
 
 @_probe.tool()
@@ -94,34 +123,94 @@ async def typed_return() -> _Payload:
     return _Payload(message='ok', rows=['r1'])
 
 
+@_probe.tool()
+async def dict_return() -> dict[str, Any]:
+    """Also NOT wrapped, but for a different reason than a typed model: the SDK can
+    express a mapping as an object schema, it just cannot say what is IN it. Three
+    tools carried this annotation before wave 1 replaced it (A-D6)."""
+    return {'message': 'ok', 'rows': ['r1']}
+
+
+@_probe.tool()
+async def raising_return() -> _Payload:
+    """A tool that raises rather than returning. Pins the ADR-015 R4 boundary."""
+    raise ValueError('boom in the tool')
+
+
+@_probe.tool()
+async def inband_error_return() -> _ErrorCapable:
+    """What the fork's error paths ACTUALLY do: return a typed payload carrying
+    `error`. No raise, so no JSON-RPC error — `if "error" in result` sees it."""
+    return _ErrorCapable(message='', error='something went wrong')
+
+
+# `mode='legacy'` is load-bearing, not a leftover. For an in-process server the
+# SDK's own connector docstring reads: "legacy mode drives the stream loop via
+# InMemoryTransport; any other mode drives the modern per-request path through a
+# DirectDispatcher peer pair (no streams, no JSON-RPC framing, no initialize
+# handshake)". The default `auto` would therefore skip the framing this module
+# claims to measure — the assertions would be against an idealisation, which is
+# exactly what the docstring above says they are not. Observables were compared
+# across both modes and are identical, so this costs nothing and keeps the claim
+# true.
+_WIRE_MODE = 'legacy'
+
+
 async def _call(name: str):
-    async with create_connected_server_and_client_session(_probe._mcp_server) as session:
-        await session.initialize()
-        return await session.call_tool(name, {})
+    async with Client(_probe, mode=_WIRE_MODE) as client:
+        return await client.call_tool(name, {})
 
 
 class TestTheSdkStillWrapsWhatWeThinkItWraps:
     async def test_a_bare_str_return_is_wrapped_under_result(self):
         result = await _call('primitive_return')
-        assert set(result.structuredContent) == {'result'}, (
+        assert set(result.structured_content) == {'result'}, (
             'the installed MCP SDK no longer wraps primitive returns — the fork chose '
             'typed returns precisely to avoid this envelope, and that reasoning needs '
             'rechecking before the next release'
         )
+        assert result.structured_content['result'] == 'plain text'
 
     async def test_a_union_return_is_wrapped_under_result(self):
         result = await _call('union_return')
-        assert set(result.structuredContent) == {'result'}, (
+        assert set(result.structured_content) == {'result'}, (
             'the installed MCP SDK no longer wraps union returns — A-D7 (two envelope '
             'families) was diagnosed from this behaviour'
         )
-        assert isinstance(result.structuredContent['result'], dict)
+        assert isinstance(result.structured_content['result'], dict)
 
     async def test_a_typed_model_return_is_not_wrapped(self):
         """The control: without this, the two assertions above could pass on an SDK
         that wraps everything, which would break the surface silently."""
         result = await _call('typed_return')
-        assert set(result.structuredContent) == {'message', 'rows'}
+        assert set(result.structured_content) == {'message', 'rows'}
+
+    async def test_a_bare_dict_return_is_not_wrapped(self):
+        """The second control, and a distinct code path from the typed model: a
+        mapping the SDK can call an object without knowing its fields. A-D6's three
+        tools returned this, so an SDK that started wrapping it would change the
+        envelope for anything that regressed to a `dict` annotation."""
+        result = await _call('dict_return')
+        assert set(result.structured_content) == {'message', 'rows'}
+
+    async def test_a_raising_tool_comes_back_in_band(self):
+        """ADR-015 R4's outer boundary. A plain exception must NOT reach the client
+        as a JSON-RPC error: it is reported in-band with `is_error` set and the
+        message in the text channel, which is what keeps a failed tool call a
+        readable result rather than a transport fault."""
+        result = await _call('raising_return')
+        assert result.is_error is True
+        assert result.structured_content is None
+        assert 'boom in the tool' in result.content[0].text
+
+    async def test_a_typed_error_payload_stays_in_band(self):
+        """ADR-015 R4 as the fork actually implements it: not a raise at all, but a
+        typed payload with `error` populated. This must stay a NON-error result with
+        flat structured content, or `if "error" in result` stops being reachable."""
+        result = await _call('inband_error_return')
+        assert result.is_error is False
+        assert set(result.structured_content) == {'message', 'error'}
+        assert result.structured_content['error'] == 'something went wrong'
 
 
 # ---------------------------------------------------------------------------
@@ -140,20 +229,20 @@ def test_no_served_tool_returns_a_shape_the_sdk_would_wrap(tool_name):
     annotation = _return_annotation(tool_name)
     assert annotation is not None, f'{tool_name} has no return annotation'
     assert annotation is not str, (
-        f'{tool_name} returns a bare `str` — FastMCP will nest its payload under '
+        f'{tool_name} returns a bare `str` — the SDK will nest its payload under '
         f'"result" and `if "error" in result` stops working for it (ADR-019 R2)'
     )
     origin = typing.get_origin(annotation)
     assert not isinstance(annotation, types.UnionType) and origin is not typing.Union, (
-        f'{tool_name} returns a union ({annotation}) — FastMCP nests union payloads '
+        f'{tool_name} returns a union ({annotation}) — the SDK nests union payloads '
         f'under "result", which is the second envelope family A-D7 removed'
     )
 
 
 @pytest.fixture(scope='module')
 def served_surface():
-    """The whole surface on a throwaway FastMCP — never the module global."""
-    m = FastMCP('served-surface-probe')
+    """The whole surface on a throwaway MCPServer — never the module global."""
+    m = MCPServer('served-surface-probe')
     for name in sorted(TOOL_ANNOTATIONS):
         m.add_tool(getattr(srv, name), annotations=annotations_for(name))
     return m
@@ -163,17 +252,14 @@ async def test_the_served_output_schemas_are_flat_over_a_real_client_session(
     served_surface,
 ):
     """The same claim as `test_typed_output_schemas.py`, made one layer out: what a
-    client actually receives from `tools/list`, not what `FastMCP.list_tools()`
+    client actually receives from `tools/list`, not what `MCPServer.list_tools()`
     returns in-process."""
-    async with create_connected_server_and_client_session(
-        served_surface._mcp_server
-    ) as session:
-        await session.initialize()
-        listed = (await session.list_tools()).tools
+    async with Client(served_surface, mode=_WIRE_MODE) as client:
+        listed = (await client.list_tools()).tools
 
     assert {t.name for t in listed} == set(TOOL_ANNOTATIONS)
     wrapped = [
-        t.name for t in listed if set((t.outputSchema or {}).get('properties') or {}) == {'result'}
+        t.name for t in listed if set((t.output_schema or {}).get('properties') or {}) == {'result'}
     ]
     assert wrapped == [], f'served with a wrapped envelope: {wrapped}'
 
@@ -191,6 +277,13 @@ CONTRACT_GUARDS = {
     'R3 truthful tool annotations': 'test_tool_annotations.py',
     'served text names no foreign domain': 'test_no_domain_leakage.py',
     'the SDK envelope premise': 'test_mcp_contract_lint.py',
+    # The three dimensions the SDK 2.x migration made load-bearing. Each is a
+    # property of the SERVED transport rather than of the tool surface, and each
+    # has a silent failure mode: a default that changed under the bump, or an
+    # invariant that was only ever a comment.
+    'output fields absent from a payload stay nullable': 'test_output_field_nullability.py',
+    'the DNS rebinding policy follows FASTMCP_HOST': 'test_transport_security.py',
+    'bulk request bodies are not capped at the SDK default': 'test_request_body_limit.py',
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'

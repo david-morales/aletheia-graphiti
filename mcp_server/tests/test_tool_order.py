@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
@@ -36,7 +36,7 @@ def _profile(group_id: str = 'order_graph') -> DomainProfile:
     )
 
 
-def _names(mcp_server: FastMCP) -> list[str]:
+def _names(mcp_server: MCPServer) -> list[str]:
     return [t.name for t in asyncio.run(mcp_server.list_tools())]
 
 
@@ -48,7 +48,7 @@ def test_the_order_contract_covers_exactly_the_served_surface():
 
 def test_two_independent_constructions_list_the_same_order():
     """The spec's requirement, stated directly."""
-    first, second = FastMCP('a'), FastMCP('b')
+    first, second = MCPServer('a'), MCPServer('b')
     # Register in DIFFERENT sequences: reversed on the second server. A guarantee
     # that only holds when both paths happen to append identically is no guarantee.
     for name in TOOL_ORDER:
@@ -63,7 +63,7 @@ def test_two_independent_constructions_list_the_same_order():
 
 
 def test_listing_twice_returns_the_same_order():
-    server = FastMCP('stable')
+    server = MCPServer('stable')
     for name in reversed(TOOL_ORDER):
         server.add_tool(getattr(srv, name), annotations=annotations_for(name))
     apply_canonical_tool_order(server._tool_manager._tools)
@@ -94,7 +94,7 @@ def test_the_degraded_path_emits_the_same_order_as_the_healthy_one():
 
 def test_an_unknown_tool_is_appended_rather_than_dropped():
     """Reordering must never lose a tool the table does not know about."""
-    server = FastMCP('extra')
+    server = MCPServer('extra')
     for name in TOOL_ORDER:
         server.add_tool(getattr(srv, name), annotations=annotations_for(name))
 
@@ -109,7 +109,7 @@ def test_an_unknown_tool_is_appended_rather_than_dropped():
 
 @pytest.mark.parametrize('missing', ['run_cypher', 'clear_graph'])
 def test_a_partial_surface_keeps_relative_order(missing):
-    server = FastMCP('partial')
+    server = MCPServer('partial')
     for name in TOOL_ORDER:
         if name != missing:
             server.add_tool(getattr(srv, name), annotations=annotations_for(name))

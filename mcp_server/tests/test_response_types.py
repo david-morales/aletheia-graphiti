@@ -110,15 +110,15 @@ def test_episode_added_response_empty_lists():
 
 def test_query_and_schema_tools_publish_output_schema():
     import asyncio
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
     import graphiti_mcp_server as srv
 
-    m = FastMCP("t")
+    m = MCPServer("t")
     m.add_tool(srv.run_cypher)
     m.add_tool(srv.get_schema)
     tools = {t.name: t for t in asyncio.run(m.list_tools())}
 
-    rc = tools["run_cypher"].outputSchema
+    rc = tools["run_cypher"].output_schema
     assert rc is not None
     rc_props = rc["properties"]
     # rich envelope + ADR-015 R4 error path both surfaced in the schema
@@ -126,18 +126,18 @@ def test_query_and_schema_tools_publish_output_schema():
                 "limit_applied", "execution_ms", "cypher_quality", "error", "hint", "error_detail"):
         assert key in rc_props, f"run_cypher outputSchema missing {key}"
 
-    gs = tools["get_schema"].outputSchema
+    gs = tools["get_schema"].output_schema
     assert gs is not None
     gs_props = gs["properties"]
     for key in ("dialect", "dialect_reference", "node_labels", "relationship_types"):
         assert key in gs_props, f"get_schema outputSchema missing {key}"
 
 
-def test_typed_tool_outputs_survive_fastmcp_output_validation():
+def test_typed_tool_outputs_survive_mcpserver_output_validation():
     """Regression: run_cypher / get_schema / sample_subgraph success AND error payloads
-    must pass FastMCP's structured-output path over the wire.
+    must pass MCPServer's structured-output path over the wire.
 
-    FastMCP builds a pydantic model from each total=False TypedDict with every
+    MCPServer builds a pydantic model from each total=False TypedDict with every
     optional field defaulted to None, then convert_result dumps it WITHOUT
     exclude_unset (mcp <=1.28.1) — so any field absent from a real payload is
     emitted as None in structuredContent. If the outputSchema types that field
@@ -148,10 +148,10 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
     nullable so the injected None validates.
     """
     import jsonschema
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
     import graphiti_mcp_server as srv
 
-    m = FastMCP("t")
+    m = MCPServer("t")
     m.add_tool(srv.run_cypher)
     m.add_tool(srv.get_schema)
     m.add_tool(srv.sample_subgraph)
@@ -228,7 +228,7 @@ def test_typed_tool_outputs_survive_fastmcp_output_validation():
     ]
     for name, payload in cases:
         meta = tools[name].fn_metadata
-        converted = meta.convert_result(payload)
-        structured = converted[1] if isinstance(converted, tuple) else converted
+        # SDK 2.x returns a `CallToolResult`; 1.x returned `(content, structured)`.
+        structured = meta.convert_result(payload).structured_content
         # Exactly what the lowlevel server validates before sending — must not raise.
         jsonschema.validate(structured, meta.output_schema)

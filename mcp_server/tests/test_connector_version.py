@@ -1,12 +1,19 @@
 """A-D11: the connector must say which build it is.
 
-`serverInfo.version` on the wire is `1.29.0` — the MCP SDK's version, which
-FastMCP reports and which is the same on every connector in the fleet. The
-connector's own build appeared nowhere in the surface, so an operator debugging a
-bad answer could not tell whether the arm in front of them predated a fix.
+Under SDK 1.x `serverInfo.version` on the wire was `1.29.0` — the SDK's own
+version, identical on every connector in the fleet — so the connector's build
+appeared nowhere in the surface and an operator debugging a bad answer could not
+tell whether the arm in front of them predated a fix. That is why A-D11 put the
+version somewhere the SDK did not own.
 
-Two places, because they answer different questions: `get_status` for "what am I
-talking to right now" (a probe an operator or health check already makes), and the
+SDK 2.x no longer fills that field (it defaults to the empty string), so the
+migration passes this string to `MCPServer(version=...)` and `serverInfo.version`
+now reports the connector build — measured `1.29.0` -> `1.6.0` across the bump,
+the one deliberate wire delta of that change.
+
+The two original surfaces stay, because they answer different questions and reach
+consumers that never read the handshake: `get_status` for "what am I talking to
+right now" (a probe an operator or health check already makes), and the
 instructions header for "what wrote this guidance" (it travels with the
 announcement a consumer captures and caches).
 """

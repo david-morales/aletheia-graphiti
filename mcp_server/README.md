@@ -162,6 +162,9 @@ The server supports multiple LLM providers (OpenAI, Anthropic, Gemini, Groq) and
 ```yaml
 server:
   transport: "http"  # Default. Options: stdio, http
+  # Maximum streamable-HTTP POST body, in bytes. Default 268435456 (256 MiB).
+  # See "Request body size" below before lowering it.
+  max_request_body_size: 268435456
 
 llm:
   provider: "openai"  # or "anthropic", "gemini", "groq", "azure_openai"
@@ -170,6 +173,20 @@ llm:
 database:
   provider: "falkordb"  # Default. Options: "falkordb", "neo4j"
 ```
+
+#### Request body size
+
+MCP Python SDK 2.x caps streamable-HTTP POST bodies at **4 MiB** by default; SDK 1.x
+had no cap at all. A request over the cap is answered `413 Request body too large`
+by transport middleware, *before* it reaches the MCP layer — so the caller does not
+get an in-band error it can read (see "Error contract" below), it gets a transport
+failure. The tool most likely to hit this is a bulk `add_memory`.
+
+This server therefore sets the limit **explicitly** and defaults it to 256 MiB,
+preserving pre-2.x behaviour. Override it with `server.max_request_body_size` in
+the config file or `SERVER__MAX_REQUEST_BODY_SIZE` in the environment — set it to
+`4194304` to adopt the SDK 2.x default instead. The value must be positive: the SDK
+has no "unlimited" sentinel and rejects anything `<= 0`.
 
 ### Using Ollama for Local LLM
 
@@ -250,6 +267,39 @@ The `config.yaml` file supports environment variable expansion using `${VAR_NAME
 - `SEMAPHORE_LIMIT`: Episode processing concurrency. See [Concurrency and LLM Provider 429 Rate Limit Errors](#concurrency-and-llm-provider-429-rate-limit-errors)
 
 You can set these variables in a `.env` file in the project directory.
+
+### `FASTMCP_*` variables and the MCP SDK 2.x migration
+
+Only **`FASTMCP_HOST` and `FASTMCP_PORT` have ever had an effect in this
+server** — it reads them itself and passes the values explicitly; the first
+also selects the DNS rebinding policy (see "Docker Deployment"). That is
+unchanged across the SDK 2.x migration.
+
+The other `FASTMCP_*` names (`FASTMCP_LOG_LEVEL`, `FASTMCP_DEBUG`,
+`FASTMCP_JSON_RESPONSE`, `FASTMCP_STATELESS_HTTP`, the path variables,
+`FASTMCP_WARN_ON_DUPLICATE_*`) **never worked here on either SDK**. Under
+SDK 1.x the settings model did carry `env_prefix="FASTMCP_"`, but `FastMCP`'s
+constructor passed an explicit value for every field and init arguments
+outrank the environment in pydantic-settings — measured: setting all of them
+under 1.x leaves every setting at its Python default. Under SDK 2.x the
+settings class reads no environment at all, so the outcome is the same:
+
+```console
+$ FASTMCP_LOG_LEVEL=DEBUG python -c "...; print(server.settings.log_level)"
+INFO
+```
+
+| variable | status | how to set it |
+|---|---|---|
+| `FASTMCP_HOST`, `FASTMCP_PORT` | **honoured** (read by this server) | unchanged |
+| `FASTMCP_LOG_LEVEL`, `FASTMCP_DEBUG` | never worked here | `LOG_LEVEL` env / config file |
+| `FASTMCP_JSON_RESPONSE`, `FASTMCP_STATELESS_HTTP` | never worked here | not exposed; would need a `run_streamable_http_async` argument |
+| `FASTMCP_SSE_PATH`, `FASTMCP_MESSAGE_PATH`, `FASTMCP_STREAMABLE_HTTP_PATH`, `FASTMCP_MOUNT_PATH` | never worked here | not exposed; same |
+| `FASTMCP_WARN_ON_DUPLICATE_*` | never worked here | constructor arguments |
+
+No deployment of this repo sets the non-working ones, so nothing changes with
+the upgrade; the table exists so nobody reaches for a knob that was never
+connected.
 
 ## Running the Server
 
@@ -648,7 +698,7 @@ returned, verbatim) and as **`structuredContent`** (the same payload validated
 against the published `outputSchema`). They are not identical, and the difference
 matters for error detection.
 
-Because every tool declares `error` as an optional field, FastMCP fills in **every
+Because every tool declares `error` as an optional field, the MCP SDK fills in **every
 declared-but-absent optional field as `null`** when it builds `structuredContent`.
 So on a *successful* call:
 
@@ -686,9 +736,13 @@ saying so. A miss is an answer.
 
 **Bump `mcp_server/pyproject.toml`'s `version` in the same change that will carry
 the release tag.** It is not bookkeeping: the connector announces that string as
-its own build, in `get_status.version` and in the header of the served
-`instructions`, because `serverInfo.version` on the wire is the MCP SDK's version
-and is identical on every connector in the fleet.
+its own build in three places — `serverInfo.version` on the wire,
+`get_status.version`, and the header of the served `instructions`.
+
+Historically only the last two carried it, because SDK 1.x filled
+`serverInfo.version` with the SDK's own version, identical on every connector in
+the fleet. SDK 2.x leaves that field empty unless the server supplies it, so the
+connector now supplies its own build there too and all three agree.
 
 `mcp-v1.3.0` and `mcp-v1.4.0` both shipped while pyproject still said `1.2.2`, so
 a connector reading it would have claimed to predate fixes it contained — a

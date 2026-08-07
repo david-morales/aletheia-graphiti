@@ -1,7 +1,37 @@
 #!/usr/bin/env python3
-"""
-Integration test for MCP server using HTTP streaming transport.
-This avoids the stdio subprocess timing issues.
+"""MANUAL diagnostic script for the HTTP and SSE transports. NOT a test module.
+
+Run by hand against a server you have already started:
+
+    uv run python tests/test_http_integration.py http localhost 8000
+    uv run python tests/test_http_integration.py sse  localhost 8000
+
+WHY IT IS SKIPPED UNDER PYTEST
+
+This file is a CLI script — `main()`, `sys.argv`, an `if __name__ == '__main__'`
+guard — that pytest happened to collect because two of its functions start with
+`test_`. Collected, it was worse than useless: it contains no assertion of any
+kind, every failure path `print`s and `return`s a bool that pytest ignores, and
+the whole body sits under `except Exception: return False`. It reported PASS on
+every run of this suite while connecting to nothing, because there is no server on
+localhost:8000 during a unit-test run. A green test that cannot fail is a claim
+of coverage that does not exist, so it is skipped explicitly rather than left to
+look like a passing integration test.
+
+The real over-the-wire coverage is `tests/live/test_tool_coverage_matrix_live.py`,
+which drives every retrieval tool through a live client, asserts, and is gated on
+`TOOL_COVERAGE_LIVE=1` so it cannot silently self-pass.
+
+Two things here are stale and deliberately NOT fixed, because fixing them would
+mean re-writing the script as the test it never was:
+  * the `expected` tool list below is the pre-ADR-019 ten-tool surface;
+  * `search` is called with a `search_mode` argument.
+Both are recorded as residuals of the SDK 2.x migration.
+
+The client construction IS migrated to the SDK 2.x single-`Client` form, so the
+script works if a human runs it. Left on the v1 three-layer stack it would have
+raised `send_raw_request called before run()` — a half-migration that read as
+working code.
 """
 
 import asyncio
@@ -9,7 +39,14 @@ import json
 import sys
 import time
 
-from mcp.client.session import ClientSession
+import pytest
+
+# Not a test module — see the docstring. Skipped at collection so it cannot report
+# coverage it does not provide.
+pytestmark = pytest.mark.skip(
+    reason='manual CLI diagnostic, not a test: no assertions and no live server here; '
+    'real over-the-wire coverage is tests/live/test_tool_coverage_matrix_live.py'
+)
 
 
 async def test_http_transport(base_url: str = 'http://localhost:8000'):
@@ -17,7 +54,8 @@ async def test_http_transport(base_url: str = 'http://localhost:8000'):
 
     # Import the streamable http client
     try:
-        from mcp.client.streamable_http import streamablehttp_client as http_client
+        from mcp import Client
+        from mcp.client.streamable_http import streamable_http_client as http_client
     except ImportError:
         print('❌ Streamable HTTP client not available in MCP SDK')
         return False
@@ -32,9 +70,8 @@ async def test_http_transport(base_url: str = 'http://localhost:8000'):
     try:
         # Connect to the server via HTTP
         print('\n🔌 Connecting to server...')
-        async with http_client(base_url) as (read_stream, write_stream):
-            session = ClientSession(read_stream, write_stream)
-            await session.initialize()
+        # SDK 2.x: one `Client` replaces transport + ClientSession + initialize().
+        async with Client(http_client(base_url)) as session:
             print('✅ Connected successfully')
 
             # Test 1: List tools
@@ -167,6 +204,7 @@ async def test_sse_transport(base_url: str = 'http://localhost:8000'):
 
     # Import the SSE client
     try:
+        from mcp import Client
         from mcp.client.sse import sse_client
     except ImportError:
         print('❌ SSE client not available in MCP SDK')
@@ -182,9 +220,8 @@ async def test_sse_transport(base_url: str = 'http://localhost:8000'):
     try:
         # Connect to the server via SSE
         print('\n🔌 Connecting to server...')
-        async with sse_client(f'{base_url}/sse') as (read_stream, write_stream):
-            session = ClientSession(read_stream, write_stream)
-            await session.initialize()
+        # SDK 2.x: one `Client` replaces transport + ClientSession + initialize().
+        async with Client(sse_client(f'{base_url}/sse')) as session:
             print('✅ Connected successfully')
 
             # Run same tests as HTTP

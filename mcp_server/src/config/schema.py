@@ -97,6 +97,19 @@ class YamlSettingsSource(PydanticBaseSettingsSource):
         return self._expand_env_vars(raw_config)
 
 
+# SDK 2.x caps streamable-HTTP POST bodies at 4 MiB; SDK 1.x had no cap at all.
+# Taking the new default would silently start answering `413` to bulk `add_memory`
+# calls that used to succeed — a transport failure, so not even an in-band
+# ADR-015 R4 error the caller could read. This migration restores the 1.x
+# behaviour instead.
+#
+# "No cap" cannot be requested: the SDK types the parameter `int` and rejects
+# `<= 0` ("must be a positive number of bytes"), so it is expressed as a bound
+# large enough not to be reachable by a legitimate episode payload while still
+# bounding what a single request can make the process buffer.
+DEFAULT_MAX_REQUEST_BODY_SIZE = 256 * 1024 * 1024
+
+
 class ServerConfig(BaseModel):
     """Server configuration."""
 
@@ -106,6 +119,16 @@ class ServerConfig(BaseModel):
     )
     host: str = Field(default='0.0.0.0', description='Server host')
     port: int = Field(default=8000, description='Server port')
+    max_request_body_size: int = Field(
+        default=DEFAULT_MAX_REQUEST_BODY_SIZE,
+        gt=0,
+        description=(
+            'Maximum streamable-HTTP POST body in bytes. The default restores the '
+            'pre-SDK-2.x behaviour of not rejecting large bulk ingests; set it to '
+            '4194304 to adopt the SDK 2.x default instead. Must be positive — the '
+            'SDK has no unlimited sentinel.'
+        ),
+    )
 
 
 class OpenAIProviderConfig(BaseModel):
