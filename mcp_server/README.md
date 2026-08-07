@@ -332,7 +332,10 @@ uv run main.py --config config/config-docker-falkordb.yaml
 - `--database-provider`: Database provider to use (falkordb, neo4j) - default: falkordb
 - `--model`: Model name to use with the LLM client
 - `--temperature`: Temperature setting for the LLM (0.0-2.0)
-- `--transport`: Choose the transport method (http or stdio, default: http)
+- `--transport`: Choose the transport method (`http` or `stdio`, default: `http`).
+  A third value, `sse`, is still accepted for old clients, but HTTP+SSE was formally
+  **deprecated** by the MCP specification (2026-07-28 revision, 12-month lifecycle).
+  Use `http` (streamable HTTP) for anything new.
 - `--group-id`: Set a namespace for the graph (optional). If not provided, defaults to "main"
 - `--destroy-graph`: If set, destroys all Graphiti graphs on startup
 
@@ -548,28 +551,153 @@ For HTTP transport (default), you can use this configuration:
 
 ## Available Tools
 
-The Graphiti MCP server exposes the following tools:
+The server exposes **18 tools**. Nine are registered statically; the other nine are
+registered at startup with descriptions rendered from the live graph, so their text
+names this graph's entity types, relationship types, sample values and Cypher
+dialect. Read the served `instructions` and each tool's `description` for the
+authoritative, per-deployment version of the table below — this file is a summary,
+not the contract.
 
-- `add_memory`: Add an episode to the knowledge graph (supports text, JSON, and message formats).
-  Supports the bi-temporal `reference_time`, `excluded_entity_types`, `custom_extraction_instructions`,
-  `previous_episode_uuids`, `update_communities`, and `saga` / `saga_previous_episode_uuid`.
-- `add_triplet`: Add a single fact (source entity -> fact -> target entity) directly, bypassing extraction.
-- `search_nodes`: Search the knowledge graph for relevant entities; supports `entity_types` and `center_node_uuid`.
-- `search_memory_facts`: Search for relevant facts (edges); supports `edge_types`, `center_node_uuid`,
-  and `valid_at` / `invalid_at` date-range filters.
-- `summarize_saga`: Generate or refresh the running summary of a saga's episodes.
-- `build_communities`: Detect entity communities and produce higher-level community summaries.
-- `get_episode_entities`: Trace provenance — the entities and facts created by specific episode UUIDs.
-- `delete_entity_edge`: Delete an entity edge from the knowledge graph.
-- `delete_episode`: Delete an episode and cascade-delete the entities/facts it solely created.
-- `get_entity_edge`: Get an entity edge by its UUID.
-- `get_episodes`: Get the most recent episodes for a specific group.
-- `clear_graph`: Clear all data from the knowledge graph for the given group(s).
-- `get_status`: Get the status of the Graphiti MCP server and database connection.
+The full contract is announced, not documented: every tool publishes a typed
+`outputSchema` and machine-readable `annotations` (`readOnlyHint`,
+`destructiveHint`), and `get_schema` returns the canonical schema payload.
+
+### Retrieval
+
+| Tool | Read-only | Purpose |
+|---|---|---|
+| `search` | yes | Semantic search over entities, facts and communities. Filter by `entity_types`, `edge_types`, `valid_at`; `intent` picks a strategy for you. |
+| `explore_node` | yes | One entity's neighborhood: connected nodes, facts, community memberships. |
+| `search_ontology` | yes | Semantic recall over the companion ontology graph. |
+| `explore_ontology` | yes | One ontology class in full context: properties, relationships, hierarchy. |
+| `sample_subgraph` | yes | Flavour-normalized node/edge sample for graph views. `leaf` is the producer-announced most-specific label — type and colour by it. |
+
+### Schema and structure
+
+| Tool | Read-only | Purpose |
+|---|---|---|
+| `get_schema` | yes | Canonical schema: node labels with counts and property keys, relationship types with source→target patterns, plus `dialect_reference` and `analysis_notes`. Call it before writing Cypher. |
+| `run_cypher` | yes | Read-only Cypher. Writes rejected, `LIMIT 200` auto-injected, common LLM syntax slips auto-corrected. |
+| `profile_graph` | yes | Property coverage, sample values, detected languages, relationship cardinality. |
+| `get_ontology_structure` | yes | Every ontology class in one compact call — the surface map. |
+| `get_ontology_documentation` | yes | The full ontology reference with prose and per-class properties. **Large**; intended for UIs, exports and batch consumers. |
+
+### Episodes
+
+| Tool | Read-only | Purpose |
+|---|---|---|
+| `get_episodes` | yes | Recent episodes for a group. |
+| `get_episode_context` | yes | The nodes and edges given episodes produced — provenance. |
+
+### Writing
+
+| Tool | Read-only | Purpose |
+|---|---|---|
+| `add_memory` | no | The only ingestion path. Single episodes (`name` + `episode_body`) are queued; pass `episodes` for a synchronous bulk load. Sources: `text`, `json`, `message`. |
+
+### Health
+
+| Tool | Read-only | Purpose |
+|---|---|---|
+| `get_status` | yes | Server and database reachability, plus this connector's version. |
+
+### Destructive
+
+These carry `destructiveHint: true`. They remove data and cannot be undone.
+
+| Tool | Purpose |
+|---|---|
+| `build_communities` | **Destructive despite the name.** It deletes EVERY community in the graph — including those of `group_id`s you did not ask for, which are **not** rebuilt — then re-clusters the requested ones. (`graphiti_core` calls `remove_communities(driver)` with no group filter; both drivers run an unscoped `MATCH (c:Community) DETACH DELETE c`.) |
+| `delete_entity_edge` | Delete one relationship by uuid. |
+| `delete_episode` | Delete an episode and everything extracted from it. |
+| `clear_graph` | **Irreversible.** Delete ALL data in the named group(s). |
 
 Custom entity types and edge (fact) types — including which edge types may connect which entity types —
 can be configured under the `graphiti` section of `config/config.yaml`. See the `entity_types`,
 `edge_types`, and `edge_type_map` keys there.
+
+## Error contract: failures come back in-band
+
+**This is a deliberate deviation from the MCP convention, not an oversight.**
+
+When a tool fails, this server returns a normal, successful tool result whose
+payload carries a top-level `error` string:
+
+```json
+{ "error": "FalkorDB returned an error: Unknown function 'nosuchfunction'",
+  "hint": "Check your Cypher syntax. Use get_schema to verify label and property names." }
+```
+
+`isError` stays **false**. The MCP specification's own convention for a
+tool-execution error is `isError: true` with the message in the content block; we
+do not use it. The rule is Aletheia ADR-015 R4, and it applies to every server in
+the fleet so that one client-side branch handles them all:
+
+- **`error` is always a string**, never a boolean, and it is **absent on success**
+  from the **text content** — the JSON dict in the result's content block. That
+  dict is the contract.
+- Query tools may add an optional **`hint`**, and this server adds an additive
+  `error_detail`. Both are advisory; `error` alone is the signal.
+- Every tool publishes `error` in its `outputSchema`, so the failure path is part
+  of the announced contract rather than something a client discovers by failing.
+
+### Which channel to read, and the one portable check
+
+A tool result carries the payload twice: as **text content** (the dict the tool
+returned, verbatim) and as **`structuredContent`** (the same payload validated
+against the published `outputSchema`). They are not identical, and the difference
+matters for error detection.
+
+Because every tool declares `error` as an optional field, FastMCP fills in **every
+declared-but-absent optional field as `null`** when it builds `structuredContent`.
+So on a *successful* call:
+
+| channel | payload |
+|---|---|
+| text content | `{"message": "cleared"}` |
+| `structuredContent` | `{"message": "cleared", "error": null}` |
+
+**`"error" in result` is therefore NOT a portable check** — it is false on the text
+channel and true on the structured channel for the very same successful call. Test
+the **value**, not the key:
+
+```python
+payload = json.loads(result.content[0].text)   # the text channel — the contract
+if payload.get("error"):                       # truthiness, not key presence
+    ...
+```
+
+`result.get("error")` is correct on both channels, which is why it is the rule.
+This applies to the whole surface: every tool returns one flat typed payload, so
+there is no `result` wrapper to unwrap and no per-tool knowledge required.
+
+Why in-band: these are *answers about the graph*, not transport faults. A
+malformed Cypher query, a missing ontology graph, or an unreachable label is
+information the model should read and act on — and `isError: true` invites clients
+to surface a protocol failure and discard the payload, which throws away the
+`hint` that would let the model fix its own query. Transport and protocol
+failures still surface as real MCP errors.
+
+One case is deliberately *not* an error at all: `explore_node` with a uuid that
+does not exist returns a normal response with `center_node: null` and a message
+saying so. A miss is an answer.
+
+## Releasing
+
+**Bump `mcp_server/pyproject.toml`'s `version` in the same change that will carry
+the release tag.** It is not bookkeeping: the connector announces that string as
+its own build, in `get_status.version` and in the header of the served
+`instructions`, because `serverInfo.version` on the wire is the MCP SDK's version
+and is identical on every connector in the fleet.
+
+`mcp-v1.3.0` and `mcp-v1.4.0` both shipped while pyproject still said `1.2.2`, so
+a connector reading it would have claimed to predate fixes it contained — a
+confident wrong answer, worse than no answer. `test_the_packaged_version_is_ahead_of_every_shipped_tag`
+now fails whenever the packaged version is not strictly greater than the newest
+`mcp-v*` tag reachable from HEAD, so the bump cannot be forgotten twice.
+
+Pick the bump from the change type (SemVer): patch for a fix, minor for
+backward-compatible new behaviour, major for a break.
 
 ## Working with JSON Data
 

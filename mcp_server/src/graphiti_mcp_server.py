@@ -51,13 +51,14 @@ from graphiti_core.search.search_config_recipes import (
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.resources.types import TextResource
-from pydantic import BaseModel
+from mcp.server.fastmcp.resources.types import FunctionResource, TextResource
+from pydantic import AnyUrl, BaseModel
 from starlette.responses import JSONResponse
 
 from config.schema import GraphitiConfig, ServerConfig
 from domain_profile import DomainProfile, build_domain_profile
 from tool_descriptions import (
+    build_degraded_instructions,
     build_instructions,
     build_search_description,
     build_explore_node_description,
@@ -67,20 +68,25 @@ from tool_descriptions import (
     build_run_cypher_description,
 )
 from models.response_types import (
-    CommunityBuildResponse,
+    AddMemoryResult,
+    CommunityBuildResult,
     CypherResultResponse,
-    EpisodeAddedResponse,
-    EpisodeContextResponse,
-    EpisodeSearchResponse,
-    ErrorResponse,
-    ExploreResponse,
+    EpisodeContextResult,
+    EpisodeListResult,
+    ExploreResult,
+    MutationResult,
+    OntologyClassContextResponse,
+    OntologyDocumentationResponse,
+    OntologyStructureResponse,
+    ProfileGraphResponse,
     SchemaResponse,
-    SearchResponse,
+    SearchResult,
     StatusResponse,
     SubgraphResponse,
-    SuccessResponse,
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
+from tool_annotations import annotations_for, apply_canonical_tool_order
+from version import CONNECTOR_VERSION
 from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
 from utils.cypher import (
@@ -174,50 +180,28 @@ logger = logging.getLogger(__name__)
 # Create global config instance - will be properly initialized later
 config: GraphitiConfig
 
-# MCP server instructions
-GRAPHITI_MCP_INSTRUCTIONS = """
-Graphiti is a knowledge graph memory service. It transforms information into a richly
-connected network of entities (nodes), facts (edges), and communities, organized by
-group_id for separate knowledge domains.
+# Leads the served `instructions` whenever the connector cannot describe its own
+# graph (BUG-50 / A-D2) — either because introspection failed, or because startup
+# has not reached it yet. A consumer that captures the announcement once must be
+# able to SEE that what it captured is a fallback.
+DEGRADED_INSTRUCTIONS_MARKER = (
+    '!! DEGRADED: domain profile unavailable !!'
+)
 
-Key tools:
-
-1. search — Unified search with control over strategy (nodes/edges/communities/combined),
-   reranking (rrf/mmr/cross_encoder/node_distance), temporal filters, type filters,
-   BFS traversal from known nodes, and cross-graph queries via group_ids.
-
-2. explore_node — Deep dive on a specific entity. Provide a name or UUID and get the
-   full neighborhood: connected nodes, relationships, and community memberships.
-
-3. add_memory — Add episodes (text, JSON, or messages) to the graph. Supports single
-   async episodes and bulk synchronous ingestion.
-
-4. build_communities — Cluster entities into communities for high-level overview queries.
-   Run after ingestion, then search with search_mode="communities".
-
-5. get_episode_context — Inspect what was extracted from specific episodes (nodes + edges).
-
-6. get_episodes — List recent episodes by group_id.
-
-7. delete_entity_edge / delete_episode — Remove specific relationships or episodes.
-
-8. clear_graph / get_status — Graph management and health checks.
-
-9. search_ontology — Search the companion ontology graph for schema definitions,
-   entity types, properties, and relationships. Use this to understand what types
-   of entities and relationships exist in the knowledge graph.
-
-10. explore_ontology — Deep dive on a specific ontology class. Shows properties,
-    relationships, and parent classes for a given type.
-
-Note: Ontology tools (9-10) are only available when an ontology graph is configured.
-
-Tips:
-- Use group_ids to search across multiple graphs simultaneously.
-- Use center_node_uuid with reranker="node_distance" to find nearby entities.
-- Use bfs_origin_node_uuids to traverse the graph from known starting points.
-- Use valid_at to filter for temporally valid facts.
-"""
+# The instructions FastMCP is constructed with, before startup has introspected
+# anything. `initialize_server` replaces them — and always before a transport
+# starts, so this string is not reachable on the wire today. It is nonetheless
+# built by the same builder as the runtime fallback rather than hand-written: the
+# hand-written seed it replaces was a 10-tool catalog that named `clear_graph`
+# without marking it destructive, and it is exactly the artifact that made BUG-50
+# dangerous. A dead announcement that contradicts the live one is a trap for the
+# next person who makes it reachable.
+GRAPHITI_MCP_INSTRUCTIONS = build_degraded_instructions(
+    group_id='not yet initialised',
+    flavour=None,
+    reason='the server is still starting up and has not introspected its graph',
+    marker=DEGRADED_INSTRUCTIONS_MARKER,
+)
 
 # MCP server instance — read host from env to set DNS rebinding policy at init time.
 # When FASTMCP_HOST=0.0.0.0 (Docker), FastMCP skips DNS rebinding protection so
@@ -603,7 +587,7 @@ def format_node_result(node: EntityNode) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('add_memory'))
 async def add_memory(
     name: str | None = None,
     episode_body: str | None = None,
@@ -613,7 +597,7 @@ async def add_memory(
     uuid: str | None = None,
     sync: bool = False,
     episodes: list[dict] | None = None,
-) -> SuccessResponse | EpisodeAddedResponse | ErrorResponse:
+) -> AddMemoryResult:
     """Add information to the knowledge graph.
 
     Use when:
@@ -637,7 +621,7 @@ async def add_memory(
 
     Examples:
         # Single episode
-        add_memory(name="Report", episode_body="Aircraft PH-KZB experienced...", source="text")
+        add_memory(name="Report 2024-11", episode_body="<the document text>", source="text")
 
         # Bulk ingestion
         add_memory(episodes=[
@@ -647,13 +631,14 @@ async def add_memory(
     Used by downstream services (e.g., aletheia-extraction) to persist extracted
     records into the knowledge graph after ontology mapping and human approval.
 
-    See docs/extraction-integration.md for the integration contract:
-    response shape, adapter recipe (where applicable), and error modes.
+    The integration contract is announced, not documented elsewhere: the response
+    shape is this tool's `outputSchema`, and a failure comes back in-band as
+    `{"error": "..."}` rather than as a protocol error.
     """
     global graphiti_service, queue_service
 
     if graphiti_service is None or queue_service is None:
-        return ErrorResponse(error='Services not initialized')
+        return AddMemoryResult(error='Services not initialized')
 
     effective_group_id = group_id or config.graphiti.group_id
 
@@ -661,7 +646,7 @@ async def add_memory(
         # Bulk mode
         if episodes is not None:
             if not episodes:
-                return ErrorResponse(error='Episodes list is empty')
+                return AddMemoryResult(error='Episodes list is empty')
 
             client = await graphiti_service.get_client()
 
@@ -669,7 +654,7 @@ async def add_memory(
             for i, ep in enumerate(episodes):
                 if 'name' not in ep or 'content' not in ep:
                     missing = [k for k in ('name', 'content') if k not in ep]
-                    return ErrorResponse(
+                    return AddMemoryResult(
                         error=f"Episode at index {i} missing required key(s): {', '.join(missing)}"
                     )
 
@@ -696,14 +681,14 @@ async def add_memory(
             # Invalidate schema cache after ingestion
             graphiti_service._schema_dirty = True
 
-            return SuccessResponse(
+            return AddMemoryResult(
                 message=f"Bulk ingested {len(raw_episodes)} episodes into '{effective_group_id}': "
                         f"{len(results.nodes)} nodes, {len(results.edges)} edges created"
             )
 
         # Single mode (existing behavior)
         if not name or not episode_body:
-            return ErrorResponse(error='Provide name + episode_body for single mode, or episodes for bulk mode')
+            return AddMemoryResult(error='Provide name + episode_body for single mode, or episodes for bulk mode')
 
         episode_type = EpisodeType.text
         if source:
@@ -729,7 +714,7 @@ async def add_memory(
 
             graphiti_service._schema_dirty = True
 
-            return EpisodeAddedResponse(
+            return AddMemoryResult(
                 message=f"Episode '{name}' processed synchronously in '{effective_group_id}': "
                         f"{len(results.nodes)} nodes, {len(results.edges)} edges",
                 node_uuids=[n.uuid for n in results.nodes],
@@ -749,13 +734,13 @@ async def add_memory(
         # Invalidate schema cache after ingestion
         graphiti_service._schema_dirty = True
 
-        return SuccessResponse(
+        return AddMemoryResult(
             message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
         )
 
     except Exception as e:
         logger.error(f'Error in add_memory: {e}')
-        return ErrorResponse(error=f'Error adding memory: {e}')
+        return AddMemoryResult(error=f'Error adding memory: {e}')
 
 
 async def search(
@@ -770,7 +755,7 @@ async def search(
     edge_types: list[str] | None = None,
     valid_at: str | None = None,
     limit: int = 10,
-) -> SearchResponse | ErrorResponse:
+) -> SearchResult:
     """Search the knowledge graph using a semantic intent or explicit parameters.
 
     Prefer passing `intent` to let the server choose the best strategy.
@@ -787,15 +772,17 @@ async def search(
                   "node_distance" (requires center_node_uuid), or "episode_mentions".
         center_node_uuid: Rerank results by proximity to this node.
         bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
-        entity_types: Only return nodes with these labels (e.g. ["Person", "Organization"]).
-        edge_types: Only return edges of these types (e.g. ["OWNERSHIP", "SANCTION"]).
+        entity_types: Only return nodes carrying these labels. This graph's labels are
+                      listed in this tool's description and in get_schema `node_labels`.
+        edge_types: Only return edges of these types -- see get_schema
+                    `relationship_types`.
         valid_at: ISO date string — only return facts valid at this date.
         limit: Maximum results to return (default 10).
     """
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return SearchResult(error='Graphiti service not initialized')
 
     try:
         start_time = time.time()
@@ -816,7 +803,7 @@ async def search(
         if intent:
             strategy = INTENT_STRATEGIES.get(intent)
             if strategy is None:
-                return ErrorResponse(
+                return SearchResult(
                     error=f"Unknown intent '{intent}'. "
                     f"Valid intents: {list(INTENT_STRATEGIES.keys())}"
                 )
@@ -888,7 +875,7 @@ async def search(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        return SearchResponse(
+        return SearchResult(
             message=f'Found {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
             nodes=node_results,
             edges=edge_results,
@@ -897,10 +884,10 @@ async def search(
         )
 
     except ValueError as e:
-        return ErrorResponse(error=str(e))
+        return SearchResult(error=str(e))
     except Exception as e:
         logger.error(f'Error in search: {e}')
-        return ErrorResponse(error=f'Search error: {e}')
+        return SearchResult(error=f'Search error: {e}')
 
 
 async def explore_node(
@@ -910,7 +897,7 @@ async def explore_node(
     depth: Literal[1, 2, 3, 4] = 2,
     edge_types: list[str] | None = None,
     limit: int = 20,
-) -> ExploreResponse | ErrorResponse:
+) -> ExploreResult:
     """Explore everything connected to a specific entity in the knowledge graph.
 
     Resolves a node by name or UUID, then expands outward via graph traversal.
@@ -921,16 +908,17 @@ async def explore_node(
         node_uuid: Expand directly from this node UUID. Provide this or node_name.
         group_ids: Which graph partitions to explore. Omit for default.
         depth: How many hops to traverse (1-4, default 2).
-        edge_types: Only traverse these relationship types (e.g. ["OWNERSHIP"]).
+        edge_types: Only traverse these relationship types -- see get_schema
+                    `relationship_types`.
         limit: Maximum results to return (default 20).
     """
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return ExploreResult(error='Graphiti service not initialized')
 
     if not node_name and not node_uuid:
-        return ErrorResponse(error='Provide either node_name or node_uuid')
+        return ExploreResult(error='Provide either node_name or node_uuid')
 
     try:
         client = await graphiti_service.get_client()
@@ -958,7 +946,7 @@ async def explore_node(
                 group_ids=effective_group_ids,
             )
             if not resolve_results.nodes:
-                return ExploreResponse(
+                return ExploreResult(
                     message=f'No node found matching "{node_name}"',
                     center_node=None,
                     nodes=[],
@@ -982,7 +970,7 @@ async def explore_node(
                 # match `(n:Entity …)` and raise. Changing that lookup has other
                 # callers and belongs to its own lane.
                 logger.info(f'explore_node: no node with uuid {node_uuid}')
-                return ExploreResponse(
+                return ExploreResult(
                     message=f'No node found with UUID "{node_uuid}"',
                     center_node=None,
                     nodes=[],
@@ -1032,7 +1020,7 @@ async def explore_node(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        return ExploreResponse(
+        return ExploreResult(
             message=f'Explored "{node_name or node_uuid}": {len(node_results)} nodes, {len(edge_results)} edges',
             center_node=center_node_result,
             nodes=node_results,
@@ -1042,13 +1030,13 @@ async def explore_node(
 
     except Exception as e:
         logger.error(f'Error in explore_node: {e}')
-        return ErrorResponse(error=f'Explore error: {e}')
+        return ExploreResult(error=f'Explore error: {e}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('get_episode_context'))
 async def get_episode_context(
     episode_uuids: list[str],
-) -> EpisodeContextResponse | ErrorResponse:
+) -> EpisodeContextResult:
     """Get all entities and relationships extracted from specific episodes.
 
     Use when:
@@ -1063,10 +1051,10 @@ async def get_episode_context(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return EpisodeContextResult(error='Graphiti service not initialized')
 
     if not episode_uuids:
-        return ErrorResponse(error='Provide at least one episode UUID')
+        return EpisodeContextResult(error='Provide at least one episode UUID')
 
     try:
         client = await graphiti_service.get_client()
@@ -1092,7 +1080,7 @@ async def get_episode_context(
 
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
 
-        return EpisodeContextResponse(
+        return EpisodeContextResult(
             message=f'Found {len(node_results)} nodes and {len(edge_results)} edges from {len(episode_uuids)} episodes',
             nodes=node_results,
             edges=edge_results,
@@ -1100,13 +1088,13 @@ async def get_episode_context(
 
     except Exception as e:
         logger.error(f'Error in get_episode_context: {e}')
-        return ErrorResponse(error=f'Episode context error: {e}')
+        return EpisodeContextResult(error=f'Episode context error: {e}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('build_communities'))
 async def build_communities(
     group_ids: list[str],
-) -> CommunityBuildResponse | ErrorResponse:
+) -> CommunityBuildResult:
     """Build communities by clustering entities in the knowledge graph.
 
     Use when:
@@ -1122,10 +1110,10 @@ async def build_communities(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return CommunityBuildResult(error='Graphiti service not initialized')
 
     if not group_ids:
-        return ErrorResponse(error='Provide at least one group_id')
+        return CommunityBuildResult(error='Provide at least one group_id')
 
     try:
         client = await graphiti_service.get_client()
@@ -1139,7 +1127,7 @@ async def build_communities(
             for c in community_nodes
         ]
 
-        return CommunityBuildResponse(
+        return CommunityBuildResult(
             message=f'Built {len(community_nodes)} communities across {len(group_ids)} graphs',
             community_count=len(community_nodes),
             communities=community_results,
@@ -1147,11 +1135,11 @@ async def build_communities(
 
     except Exception as e:
         logger.error(f'Error building communities: {e}')
-        return ErrorResponse(error=f'Community build error: {e}')
+        return CommunityBuildResult(error=f'Community build error: {e}')
 
 
-@mcp.tool()
-async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
+@mcp.tool(annotations=annotations_for('delete_entity_edge'))
+async def delete_entity_edge(uuid: str) -> MutationResult:
     """Delete a relationship (edge) from the knowledge graph.
 
     Use when:
@@ -1164,7 +1152,7 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return MutationResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1174,15 +1162,15 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
         # Delete the edge using its delete method
         await entity_edge.delete(client.driver)
         graphiti_service._schema_dirty = True
-        return SuccessResponse(message=f'Entity edge with UUID {uuid} deleted successfully')
+        return MutationResult(message=f'Entity edge with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error deleting entity edge: {error_msg}')
-        return ErrorResponse(error=f'Error deleting entity edge: {error_msg}')
+        return MutationResult(error=f'Error deleting entity edge: {error_msg}')
 
 
-@mcp.tool()
-async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
+@mcp.tool(annotations=annotations_for('delete_episode'))
+async def delete_episode(uuid: str) -> MutationResult:
     """Delete an episode and its extracted data from the knowledge graph.
 
     Use when:
@@ -1194,7 +1182,7 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return MutationResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1204,18 +1192,18 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
         # Delete the node using its delete method
         await episodic_node.delete(client.driver)
         graphiti_service._schema_dirty = True
-        return SuccessResponse(message=f'Episode with UUID {uuid} deleted successfully')
+        return MutationResult(message=f'Episode with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error deleting episode: {error_msg}')
-        return ErrorResponse(error=f'Error deleting episode: {error_msg}')
+        return MutationResult(error=f'Error deleting episode: {error_msg}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('get_episodes'))
 async def get_episodes(
     group_ids: list[str] | None = None,
     max_episodes: int = 10,
-) -> EpisodeSearchResponse | ErrorResponse:
+) -> EpisodeListResult:
     """List recent episodes (ingested documents) from the knowledge graph.
 
     Use when:
@@ -1229,7 +1217,7 @@ async def get_episodes(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return EpisodeListResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1256,7 +1244,7 @@ async def get_episodes(
             episodes = []
 
         if not episodes:
-            return EpisodeSearchResponse(message='No episodes found', episodes=[])
+            return EpisodeListResult(message='No episodes found', episodes=[])
 
         # Format the results
         episode_results = []
@@ -1274,17 +1262,17 @@ async def get_episodes(
             }
             episode_results.append(episode_dict)
 
-        return EpisodeSearchResponse(
+        return EpisodeListResult(
             message='Episodes retrieved successfully', episodes=episode_results
         )
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error getting episodes: {error_msg}')
-        return ErrorResponse(error=f'Error getting episodes: {error_msg}')
+        return EpisodeListResult(error=f'Error getting episodes: {error_msg}')
 
 
-@mcp.tool()
-async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | ErrorResponse:
+@mcp.tool(annotations=annotations_for('clear_graph'))
+async def clear_graph(group_ids: list[str] | None = None) -> MutationResult:
     """Delete all data from the knowledge graph for specified group IDs.
 
     Use when:
@@ -1299,7 +1287,7 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return MutationResult(error='Graphiti service not initialized')
 
     try:
         client = await graphiti_service.get_client()
@@ -1310,23 +1298,23 @@ async def clear_graph(group_ids: list[str] | None = None) -> SuccessResponse | E
         )
 
         if not effective_group_ids:
-            return ErrorResponse(error='No group IDs specified for clearing')
+            return MutationResult(error='No group IDs specified for clearing')
 
         # Clear data for the specified group IDs
         await clear_data(client.driver, group_ids=effective_group_ids)
 
         graphiti_service._schema_dirty = True
 
-        return SuccessResponse(
+        return MutationResult(
             message=f'Graph data cleared successfully for group IDs: {", ".join(effective_group_ids)}'
         )
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error clearing graph: {error_msg}')
-        return ErrorResponse(error=f'Error clearing graph: {error_msg}')
+        return MutationResult(error=f'Error clearing graph: {error_msg}')
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('get_status'))
 async def get_status() -> StatusResponse:
     """Check if the MCP server and database connection are healthy.
 
@@ -1337,7 +1325,11 @@ async def get_status() -> StatusResponse:
     global graphiti_service
 
     if graphiti_service is None:
-        return StatusResponse(status='error', message='Graphiti service not initialized')
+        return StatusResponse(
+            status='error',
+            message='Graphiti service not initialized',
+            version=CONNECTOR_VERSION,
+        )
 
     try:
         client = await graphiti_service.get_client()
@@ -1354,6 +1346,7 @@ async def get_status() -> StatusResponse:
         return StatusResponse(
             status='ok',
             message=f'Graphiti MCP server is running and connected to {provider_name} database',
+            version=CONNECTOR_VERSION,
         )
     except Exception as e:
         error_msg = str(e)
@@ -1361,6 +1354,7 @@ async def get_status() -> StatusResponse:
         return StatusResponse(
             status='error',
             message=f'Graphiti MCP server is running but database connection failed: {error_msg}',
+            version=CONNECTOR_VERSION,
         )
 
 
@@ -1369,7 +1363,7 @@ async def search_ontology(
     search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
     reranker: Literal['rrf', 'mmr', 'cross_encoder'] = 'rrf',
     limit: int = 10,
-) -> SearchResponse | ErrorResponse:
+) -> SearchResult:
     """Search the companion ontology graph for schema definitions, entity types, and relationships.
 
     Use this to understand what types of entities and relationships exist in the knowledge graph,
@@ -1382,7 +1376,9 @@ async def search_ontology(
     prose + property definitions, large) use get_ontology_documentation.
 
     Args:
-        query: Natural language search query (e.g., "AirworthinessDirective", "what properties does Aircraft have").
+        query: Natural language search query -- a class name, or a question about a
+               class ("what properties does <ClassName> have"). Call
+               get_ontology_structure for the class names in THIS ontology.
         search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
         reranker: Reranking strategy — "rrf" (default), "mmr", or "cross_encoder".
         limit: Maximum results to return (default 10).
@@ -1390,10 +1386,10 @@ async def search_ontology(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return SearchResult(error='Graphiti service not initialized')
 
     if not await graphiti_service._ensure_ontology_client():
-        return ErrorResponse(error='No ontology graph configured for this server')
+        return SearchResult(error='No ontology graph configured for this server')
     assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     try:
@@ -1428,7 +1424,7 @@ async def search_ontology(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
-        return SearchResponse(
+        return SearchResult(
             message=f'Ontology: {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
             nodes=node_results,
             edges=edge_results,
@@ -1437,10 +1433,10 @@ async def search_ontology(
         )
 
     except ValueError as e:
-        return ErrorResponse(error=str(e))
+        return SearchResult(error=str(e))
     except Exception as e:
         logger.error(f'Error in search_ontology: {e}')
-        return ErrorResponse(error=f'Ontology search error: {e}')
+        return SearchResult(error=f'Ontology search error: {e}')
 
 
 # The three ontology tiers read their rows through `flavour.ontology_queries()`
@@ -1554,7 +1550,7 @@ async def explore_ontology(
     node_uuid: str | None = None,
     depth: Literal[1, 2, 3, 4] = 2,
     limit: int = 20,
-) -> dict[str, Any] | ErrorResponse:
+) -> OntologyClassContextResponse:
     """Gather the full context of ONE ontology class.
 
     Returns its complete documentation, properties, and typed surroundings:
@@ -1571,7 +1567,9 @@ async def explore_ontology(
     than the full ontology relationship comment.
 
     Args:
-        node_name: Find the ontology class by name (e.g., "AirworthinessDirective"). Provide this or node_uuid.
+        node_name: Find the ontology class by name, spelled as this graph's ontology
+                   spells it (get_ontology_structure lists every class).
+                   Provide this or node_uuid.
         node_uuid: Resolve the class by its node UUID. Provide this or node_name.
         depth: 1 = direct neighbors only; >=2 adds a name-only second hop (default 2).
         limit: Maximum entries per surrounding list (default 20).
@@ -1583,14 +1581,14 @@ async def explore_ontology(
     global graphiti_service
 
     if graphiti_service is None:
-        return ErrorResponse(error='Graphiti service not initialized')
+        return OntologyClassContextResponse(error='Graphiti service not initialized')
 
     if not await graphiti_service._ensure_ontology_client():
-        return ErrorResponse(error='No ontology graph configured for this server')
+        return OntologyClassContextResponse(error='No ontology graph configured for this server')
     assert graphiti_service.ontology_client is not None  # type narrowing — _ensure_ontology_client guarantees non-None on True
 
     if not node_name and not node_uuid:
-        return ErrorResponse(error='Provide either node_name or node_uuid')
+        return OntologyClassContextResponse(error='Provide either node_name or node_uuid')
 
     try:
         ontology_client = graphiti_service.ontology_client
@@ -1627,7 +1625,7 @@ async def explore_ontology(
                         center_row = by_name[match.name]
                         break
         if center_row is None:
-            return ErrorResponse(
+            return OntologyClassContextResponse(
                 error=f'No ontology class found matching "{node_name or node_uuid}"'
             )
 
@@ -1728,7 +1726,7 @@ async def explore_ontology(
 
     except Exception as e:
         logger.error(f'Error in explore_ontology: {e}')
-        return ErrorResponse(error=f'Ontology explore error: {e}')
+        return OntologyClassContextResponse(error=f'Ontology explore error: {e}')
 
 
 @mcp.custom_route('/health', methods=['GET'])
@@ -1771,8 +1769,9 @@ async def get_schema() -> SchemaResponse:
     Used by downstream services (e.g., aletheia-extraction) to discover
     available entity and relationship types before generating extraction strategies.
 
-    See docs/extraction-integration.md for the integration contract:
-    response shape, adapter recipe (where applicable), and error modes.
+    The integration contract is announced, not documented elsewhere: the response
+    shape is this tool's `outputSchema`, and a failure comes back in-band as
+    `{"error": "..."}` rather than as a protocol error.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
@@ -2091,7 +2090,7 @@ def _subgraph_node_row(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=annotations_for('sample_subgraph'))
 async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
     """Flavour-normalized node/edge sample of the knowledge graph.
 
@@ -2148,7 +2147,7 @@ async def sample_subgraph(limit: int = 100) -> SubgraphResponse:
         return {'error': str(e)}
 
 
-async def get_ontology_structure() -> dict[str, Any]:
+async def get_ontology_structure() -> OntologyStructureResponse:
     """Return the full ontology class hierarchy in one call.
 
     Returns entity classes (with inheritance, alt_labels, descriptions)
@@ -2163,8 +2162,9 @@ async def get_ontology_structure() -> dict[str, Any]:
     to study ONE class in full context use explore_ontology; to find classes
     by meaning use search_ontology (semantic recall).
 
-    See docs/extraction-integration.md for the integration contract:
-    response shape, adapter recipe (where applicable), and error modes.
+    The integration contract is announced, not documented elsewhere: the response
+    shape is this tool's `outputSchema`, and a failure comes back in-band as
+    `{"error": "..."}` rather than as a protocol error.
     """
     if graphiti_service is None:
         return {'error': 'Service not initialized. Please wait for startup to complete.'}
@@ -2216,7 +2216,7 @@ async def get_ontology_structure() -> dict[str, Any]:
         return {'error': f'Failed to retrieve ontology structure: {e}'}
 
 
-async def get_ontology_documentation() -> dict[str, Any]:
+async def get_ontology_documentation() -> OntologyDocumentationResponse:
     """Complete ontology reference: every class with full documentation prose
     and per-class property definitions.
 
@@ -2333,7 +2333,7 @@ async def run_cypher(query: str) -> CypherResultResponse:
         return result
 
 
-async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
+async def profile_graph(sample_size: int = 5) -> ProfileGraphResponse:
     """Profile entity properties and relationship patterns in this knowledge graph.
 
     Returns property coverage, sample values, detected languages, relationship
@@ -2360,31 +2360,210 @@ async def profile_graph(sample_size: int = 5) -> dict[str, Any]:
         return {'error': f'Failed to profile graph: {e}'}
 
 
+# The nine tools registered at startup rather than by decorator, because their
+# descriptions are rendered from the live DomainProfile. ONE list: the dynamic
+# path and the degraded fallback both walk it, so a tool can never be served by
+# one and forgotten by the other (the bug behind A-D2).
+_DYNAMIC_TOOLS = (
+    search,
+    explore_node,
+    search_ontology,
+    explore_ontology,
+    get_schema,
+    get_ontology_structure,
+    get_ontology_documentation,
+    run_cypher,
+    profile_graph,
+)
+
+
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
-    for name in ('search', 'explore_node', 'search_ontology', 'explore_ontology', 'get_schema', 'get_ontology_structure', 'get_ontology_documentation', 'run_cypher', 'profile_graph'):
-        if name in mcp._tool_manager._tools:
-            del mcp._tool_manager._tools[name]
+    for fn in _DYNAMIC_TOOLS:
+        if fn.__name__ in mcp._tool_manager._tools:
+            del mcp._tool_manager._tools[fn.__name__]
 
     # Backend flavour drives the per-backend Cypher dialect surfaced in the run_cypher
     # description + server instructions (ADR-019 R1/R6).
     flavour = graphiti_service.flavour if graphiti_service is not None else None
 
-    mcp.add_tool(search, description=build_search_description(profile))
-    mcp.add_tool(explore_node, description=build_explore_node_description(profile))
-    mcp.add_tool(search_ontology, description=build_search_ontology_description(profile))
-    mcp.add_tool(explore_ontology, description=build_explore_ontology_description(profile))
-    mcp.add_tool(get_schema, description=build_get_schema_description(profile))
-    mcp.add_tool(get_ontology_structure)
-    mcp.add_tool(get_ontology_documentation)
-    mcp.add_tool(run_cypher, description=build_run_cypher_description(profile, flavour))
-    mcp.add_tool(profile_graph)
+    # Annotations (ADR-019 R3) come from the one table in tool_annotations.py, the same
+    # source the static @mcp.tool() decorators read — the two paths cannot drift.
+    mcp.add_tool(
+        search,
+        description=build_search_description(profile),
+        annotations=annotations_for('search'),
+    )
+    mcp.add_tool(
+        explore_node,
+        description=build_explore_node_description(profile),
+        annotations=annotations_for('explore_node'),
+    )
+    mcp.add_tool(
+        search_ontology,
+        description=build_search_ontology_description(profile),
+        annotations=annotations_for('search_ontology'),
+    )
+    mcp.add_tool(
+        explore_ontology,
+        description=build_explore_ontology_description(profile),
+        annotations=annotations_for('explore_ontology'),
+    )
+    mcp.add_tool(
+        get_schema,
+        description=build_get_schema_description(profile),
+        annotations=annotations_for('get_schema'),
+    )
+    mcp.add_tool(get_ontology_structure, annotations=annotations_for('get_ontology_structure'))
+    mcp.add_tool(
+        get_ontology_documentation,
+        annotations=annotations_for('get_ontology_documentation'),
+    )
+    mcp.add_tool(
+        run_cypher,
+        description=build_run_cypher_description(profile, flavour),
+        annotations=annotations_for('run_cypher'),
+    )
+    mcp.add_tool(profile_graph, annotations=annotations_for('profile_graph'))
+
+    # Deterministic tools/list order (2026-07-28 spec SHOULD). The re-adds above
+    # would otherwise migrate these nine to the end of the dict on every pass.
+    apply_canonical_tool_order(mcp._tool_manager._tools)
 
     # Update MCP instructions
     mcp._mcp_server.instructions = build_instructions(profile, flavour)
 
     logger.info('Registered tools with dynamic descriptions')
+
+
+def register_fallback_tools(reason: str) -> None:
+    """Serve the FULL surface with static descriptions when introspection fails.
+
+    The old fallback re-registered four tools and left the other five profile-driven
+    ones unregistered, so `get_schema` (the canonical ADR-019 R5 payload consumers
+    discover this connector through), `run_cypher`, `profile_graph` and both
+    ontology-bulk tools disappeared from `tools/list` while `/health` stayed green.
+    Losing the profile costs the DESCRIPTIONS, never the TOOLS: every tool still
+    works, it just describes itself from its docstring instead of from live data.
+
+    The announcement is rebuilt to say so, in the lead position, and keeps the
+    backend dialect (the flavour is known even when the graph cannot be read).
+    """
+    flavour = graphiti_service.flavour if graphiti_service is not None else None
+    # `config` is declared but not assigned at import time — read it defensively so a
+    # very early failure degrades honestly instead of raising NameError on the way out.
+    cfg = globals().get('config')
+    group_id = cfg.graphiti.group_id if cfg is not None else 'unknown'
+
+    for fn in _DYNAMIC_TOOLS:
+        name = fn.__name__
+        if name in mcp._tool_manager._tools:
+            del mcp._tool_manager._tools[name]
+        mcp.add_tool(fn, annotations=annotations_for(name))
+
+    apply_canonical_tool_order(mcp._tool_manager._tools)
+
+    # The profile-rendered resources cannot be built without a profile, but the
+    # schema resource reads live — and a consumer reading static fallback
+    # descriptions is exactly the one that needs it. `resources/list` therefore
+    # shrinks to 1; the announcement says so rather than letting a client infer it.
+    for uri in _PROFILE_RESOURCE_URIS:
+        mcp._resource_manager._resources.pop(uri, None)
+    _register_schema_resource()
+
+    mcp._mcp_server.instructions = build_degraded_instructions(
+        group_id=group_id,
+        flavour=flavour,
+        reason=reason,
+        marker=DEGRADED_INSTRUCTIONS_MARKER,
+    )
+
+    logger.error(
+        'Serving a DEGRADED surface for %s: all %d tools registered with static '
+        'descriptions, announcement marked degraded. Cause: %s',
+        group_id,
+        len(mcp._tool_manager._tools),
+        reason,
+    )
+
+
+async def _build_and_register_domain_surface() -> None:
+    """Introspect the graph and register the profile-driven tools and resources.
+
+    Split out of `initialize_server` so the failure path is reachable from a test:
+    it is the branch that used to collapse the served surface in silence.
+    """
+    try:
+        profile_client = await graphiti_service.get_client()
+        ontology_client = graphiti_service.ontology_client
+        domain_profile = await build_domain_profile(
+            profile_client,
+            group_id=config.graphiti.group_id,
+            ontology_client=ontology_client,
+            flavour=graphiti_service.flavour,
+        )
+        graphiti_service.domain_profile = domain_profile
+        register_dynamic_tools(domain_profile)
+        register_resources(domain_profile)
+    except Exception as e:
+        # ERROR, not warning: the connector is now answering with guidance it did
+        # not derive from this graph, and nothing else in the stack will say so.
+        logger.error(f'Failed to build domain profile, degrading to static descriptions: {e}')
+        register_fallback_tools(reason=str(e))
+
+
+def _register_schema_resource() -> None:
+    """Serve the schema as a resource, not only as a tool (ADR-019 R4 / A-D8).
+
+    The schema is the one payload every consumer needs before it can do anything —
+    labels, relationship patterns, and the backend `dialect_reference` — and it is
+    already cached server-side, so requiring a tool round-trip to reach it is pure
+    friction.
+
+    Read through `get_schema()` rather than off `_schema_cache`: that honours the
+    dirty flag, so this resource can never serve a schema the tool would not. The
+    error path stays ADR-015 R4 — a failure is the in-band `{"error": ...}` payload
+    that `get_schema` already returns, not a second failure mode invented here.
+    """
+
+    async def _schema_json() -> str:
+        return json.dumps(await get_schema(), indent=2, default=str)
+
+    _replace_resource(
+        FunctionResource(
+            uri=AnyUrl('graphiti://schema'),
+            name='Graph Schema',
+            description=(
+                'Node labels with counts and property keys, relationship types with '
+                'source->target patterns, and this backend\'s Cypher dialect reference. '
+                'The same payload the get_schema tool returns.'
+            ),
+            mime_type='application/json',
+            fn=_schema_json,
+        )
+    )
+
+
+def _replace_resource(resource) -> None:
+    """Register a resource, REPLACING any existing one on the same URI.
+
+    FastMCP's `add_resource` keeps the incumbent and only logs a warning on a
+    duplicate URI, so re-registering after a re-profile would silently go on
+    serving text rendered from the previous profile.
+    """
+    mcp._resource_manager._resources.pop(str(resource.uri), None)
+    mcp.add_resource(resource)
+
+
+# Rendered FROM the profile, so they cannot exist without one. The degraded path
+# prunes them rather than serving text rendered from a profile that no longer
+# describes this graph.
+_PROFILE_RESOURCE_URIS = (
+    'graphiti://domain_summary',
+    'graphiti://entity_catalog',
+    'graphiti://relationship_types',
+)
 
 
 def register_resources(profile: DomainProfile) -> None:
@@ -2408,11 +2587,14 @@ def register_resources(profile: DomainProfile) -> None:
         text=profile.render_relationship_types(),
     )
 
-    mcp.add_resource(domain_summary)
-    mcp.add_resource(entity_catalog)
-    mcp.add_resource(relationship_types)
+    # REPLACE rather than add: FastMCP keeps the incumbent on a duplicate URI, so a
+    # re-profile would otherwise go on serving text rendered from the previous one.
+    _replace_resource(domain_summary)
+    _replace_resource(entity_catalog)
+    _replace_resource(relationship_types)
+    _register_schema_resource()
 
-    logger.info(f'Registered 3 MCP resources for {profile.group_id}')
+    logger.info(f'Registered 4 MCP resources for {profile.group_id}')
 
 
 async def initialize_server() -> ServerConfig:
@@ -2549,25 +2731,9 @@ async def initialize_server() -> ServerConfig:
     queue_service = QueueService()
     await graphiti_service.initialize()
 
-    # Build domain profile from graph introspection
-    try:
-        profile_client = await graphiti_service.get_client()
-        ontology_client = graphiti_service.ontology_client
-        domain_profile = await build_domain_profile(
-            profile_client,
-            group_id=config.graphiti.group_id,
-            ontology_client=ontology_client,
-            flavour=graphiti_service.flavour,
-        )
-        graphiti_service.domain_profile = domain_profile
-        register_dynamic_tools(domain_profile)
-        register_resources(domain_profile)
-    except Exception as e:
-        logger.warning(f'Failed to build domain profile, using static descriptions: {e}')
-        # Fall back: register tools with their docstrings as descriptions
-        for fn in (search, explore_node, search_ontology, explore_ontology):
-            if fn.__name__ not in mcp._tool_manager._tools:
-                mcp.add_tool(fn)
+    # Build domain profile from graph introspection. On failure the surface stays
+    # complete and the announcement declares itself degraded (BUG-50 / A-D2).
+    await _build_and_register_domain_surface()
 
     # Set global client for backward compatibility
     graphiti_client = await graphiti_service.get_client()
