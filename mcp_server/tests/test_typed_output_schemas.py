@@ -236,7 +236,7 @@ def test_an_all_null_payload_survives_validation(isolated_tools, tool_name):
         ('get_episodes', {'message': '1 episode', 'episodes': [{'uuid': 'e1'}]}),
     ],
 )
-def test_the_unstructured_payload_is_byte_identical_after_flattening(
+def test_the_unstructured_payload_is_unchanged_after_flattening(
     isolated_tools, tool_name, payload
 ):
     """THE backward-compatibility guard for A-D7.
@@ -249,6 +249,9 @@ def test_the_unstructured_payload_is_byte_identical_after_flattening(
     tool = isolated_tools._tool_manager._tools[tool_name]
     unstructured, structured = tool.fn_metadata.convert_result(payload)
 
+    # Semantic equality, not byte equality: FastMCP re-serializes the dict, so
+    # whitespace and key order are its business. Round-tripping to the same object
+    # is the property consumers actually depend on.
     assert json.loads(unstructured[0].text) == payload, (
         'the text content a consumer parses must be unchanged by the typing'
     )

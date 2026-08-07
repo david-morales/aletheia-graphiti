@@ -180,50 +180,28 @@ logger = logging.getLogger(__name__)
 # Create global config instance - will be properly initialized later
 config: GraphitiConfig
 
-# MCP server instructions
-GRAPHITI_MCP_INSTRUCTIONS = """
-Graphiti is a knowledge graph memory service. It transforms information into a richly
-connected network of entities (nodes), facts (edges), and communities, organized by
-group_id for separate knowledge domains.
+# Leads the served `instructions` whenever the connector cannot describe its own
+# graph (BUG-50 / A-D2) — either because introspection failed, or because startup
+# has not reached it yet. A consumer that captures the announcement once must be
+# able to SEE that what it captured is a fallback.
+DEGRADED_INSTRUCTIONS_MARKER = (
+    '!! DEGRADED: domain profile unavailable !!'
+)
 
-Key tools:
-
-1. search — Unified search with control over strategy (nodes/edges/communities/combined),
-   reranking (rrf/mmr/cross_encoder/node_distance), temporal filters, type filters,
-   BFS traversal from known nodes, and cross-graph queries via group_ids.
-
-2. explore_node — Deep dive on a specific entity. Provide a name or UUID and get the
-   full neighborhood: connected nodes, relationships, and community memberships.
-
-3. add_memory — Add episodes (text, JSON, or messages) to the graph. Supports single
-   async episodes and bulk synchronous ingestion.
-
-4. build_communities — Cluster entities into communities for high-level overview queries.
-   Run after ingestion, then search with search_mode="communities".
-
-5. get_episode_context — Inspect what was extracted from specific episodes (nodes + edges).
-
-6. get_episodes — List recent episodes by group_id.
-
-7. delete_entity_edge / delete_episode — Remove specific relationships or episodes.
-
-8. clear_graph / get_status — Graph management and health checks.
-
-9. search_ontology — Search the companion ontology graph for schema definitions,
-   entity types, properties, and relationships. Use this to understand what types
-   of entities and relationships exist in the knowledge graph.
-
-10. explore_ontology — Deep dive on a specific ontology class. Shows properties,
-    relationships, and parent classes for a given type.
-
-Note: Ontology tools (9-10) are only available when an ontology graph is configured.
-
-Tips:
-- Use group_ids to search across multiple graphs simultaneously.
-- Use center_node_uuid with reranker="node_distance" to find nearby entities.
-- Use bfs_origin_node_uuids to traverse the graph from known starting points.
-- Use valid_at to filter for temporally valid facts.
-"""
+# The instructions FastMCP is constructed with, before startup has introspected
+# anything. `initialize_server` replaces them — and always before a transport
+# starts, so this string is not reachable on the wire today. It is nonetheless
+# built by the same builder as the runtime fallback rather than hand-written: the
+# hand-written seed it replaces was a 10-tool catalog that named `clear_graph`
+# without marking it destructive, and it is exactly the artifact that made BUG-50
+# dangerous. A dead announcement that contradicts the live one is a trap for the
+# next person who makes it reachable.
+GRAPHITI_MCP_INSTRUCTIONS = build_degraded_instructions(
+    group_id='not yet initialised',
+    flavour=None,
+    reason='the server is still starting up and has not introspected its graph',
+    marker=DEGRADED_INSTRUCTIONS_MARKER,
+)
 
 # MCP server instance — read host from env to set DNS rebinding policy at init time.
 # When FASTMCP_HOST=0.0.0.0 (Docker), FastMCP skips DNS rebinding protection so
@@ -2459,14 +2437,6 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     logger.info('Registered tools with dynamic descriptions')
 
 
-# Leads the served `instructions` whenever graph introspection failed at startup
-# (BUG-50 / A-D2). A consumer that captures the announcement once — which is the
-# common shape — must be able to SEE that what it captured is a fallback.
-DEGRADED_INSTRUCTIONS_MARKER = (
-    '!! DEGRADED: domain profile unavailable !!'
-)
-
-
 def register_fallback_tools(reason: str) -> None:
     """Serve the FULL surface with static descriptions when introspection fails.
 
@@ -2496,7 +2466,10 @@ def register_fallback_tools(reason: str) -> None:
 
     # The profile-rendered resources cannot be built without a profile, but the
     # schema resource reads live — and a consumer reading static fallback
-    # descriptions is exactly the one that needs it.
+    # descriptions is exactly the one that needs it. `resources/list` therefore
+    # shrinks to 1; the announcement says so rather than letting a client infer it.
+    for uri in _PROFILE_RESOURCE_URIS:
+        mcp._resource_manager._resources.pop(uri, None)
     _register_schema_resource()
 
     mcp._mcp_server.instructions = build_degraded_instructions(
@@ -2581,6 +2554,16 @@ def _replace_resource(resource) -> None:
     """
     mcp._resource_manager._resources.pop(str(resource.uri), None)
     mcp.add_resource(resource)
+
+
+# Rendered FROM the profile, so they cannot exist without one. The degraded path
+# prunes them rather than serving text rendered from a profile that no longer
+# describes this graph.
+_PROFILE_RESOURCE_URIS = (
+    'graphiti://domain_summary',
+    'graphiti://entity_catalog',
+    'graphiti://relationship_types',
+)
 
 
 def register_resources(profile: DomainProfile) -> None:

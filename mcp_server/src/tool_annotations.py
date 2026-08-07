@@ -31,7 +31,14 @@ def _read_only(title: str) -> ToolAnnotations:
 
 
 def _additive_write(title: str, *, idempotent: bool = False) -> ToolAnnotations:
-    """Mutates the graph by ADDING; never removes."""
+    """Mutates the graph by ADDING; never removes.
+
+    Judgement call recorded: `add_memory` with an explicit `uuid` overwrites that
+    episode in place, which the protocol arguably counts as a destructive update.
+    It stays additive here because the destructive sense that matters to a gating
+    client is "removes data you did not name", and an overwrite is scoped to a uuid
+    the caller supplied. Revisit if a client ever gates on updates too.
+    """
     return ToolAnnotations(
         title=title,
         readOnlyHint=False,

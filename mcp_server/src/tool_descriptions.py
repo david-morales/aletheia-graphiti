@@ -181,6 +181,10 @@ def build_degraded_instructions(
         '  graph\'s data.',
         '',
         f'Introspection failure: {reason}',
+        '',
+        'Resources: only `graphiti://schema` is served in this state. The',
+        '`domain_summary`, `entity_catalog` and `relationship_types` resources are',
+        'rendered from the domain profile and cannot be built without one.',
     ]
     parts += _key_tools_lines()
     parts += _analytical_queries_lines()

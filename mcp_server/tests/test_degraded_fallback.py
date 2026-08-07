@@ -149,3 +149,34 @@ async def test_a_healthy_profile_leaves_no_degraded_marker(monkeypatch):
     assert srv.DEGRADED_INSTRUCTIONS_MARKER not in instructions
     assert 'Widget' in instructions
     assert set(srv.mcp._tool_manager._tools) == set(TOOL_ANNOTATIONS)
+
+
+async def test_the_degraded_resource_set_is_pruned_and_declared(degraded):
+    """L5: `resources/list` shrinks under degradation — say so, don't let a client
+    infer it from an absence, and never serve profile-rendered text after the
+    profile that rendered it is gone."""
+    srv.register_resources(
+        __import__('domain_profile').DomainProfile(group_id='before_failure')
+    )
+    await srv._build_and_register_domain_surface()
+
+    uris = {str(r.uri) for r in await srv.mcp.list_resources()}
+    assert uris == {'graphiti://schema'}, uris
+
+    instructions = srv.mcp._mcp_server.instructions or ''
+    assert 'graphiti://schema' in instructions
+    assert 'cannot be built without one' in instructions
+
+
+async def test_the_pre_startup_announcement_is_itself_a_degraded_one():
+    """L6: the string FastMCP is constructed with used to be a hand-written 10-tool
+    catalog naming `clear_graph` without marking it destructive — the artifact that
+    made BUG-50 dangerous. It is unreachable on the wire today, and a dead
+    announcement contradicting the live one is a trap for whoever changes that.
+    """
+    seed = srv.GRAPHITI_MCP_INSTRUCTIONS
+    assert seed.startswith(srv.DEGRADED_INSTRUCTIONS_MARKER)
+    for name in TOOL_ANNOTATIONS:
+        assert name in seed, f'{name} missing from the pre-startup catalog'
+    entry = next(ln for ln in seed.split('\n') if 'clear_graph' in ln)
+    assert 'DESTRUCTIVE' in entry.upper()
