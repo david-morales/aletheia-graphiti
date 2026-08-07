@@ -265,6 +265,13 @@ CONTRACT_GUARDS = {
     'R3 truthful tool annotations': 'test_tool_annotations.py',
     'served text names no foreign domain': 'test_no_domain_leakage.py',
     'the SDK envelope premise': 'test_mcp_contract_lint.py',
+    # The three dimensions the SDK 2.x migration made load-bearing. Each is a
+    # property of the SERVED transport rather than of the tool surface, and each
+    # has a silent failure mode: a default that changed under the bump, or an
+    # invariant that was only ever a comment.
+    'output fields absent from a payload stay nullable': 'test_output_field_nullability.py',
+    'the DNS rebinding policy follows FASTMCP_HOST': 'test_transport_security.py',
+    'bulk request bodies are not capped at the SDK default': 'test_request_body_limit.py',
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'
