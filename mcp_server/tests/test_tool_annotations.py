@@ -87,30 +87,30 @@ def test_every_served_tool_declares_annotations(served_tools):
 
 def test_every_served_tool_declares_read_only_hint(served_tools):
     unset = sorted(
-        name for name, tool in served_tools.items() if tool.annotations.readOnlyHint is None
+        name for name, tool in served_tools.items() if tool.annotations.read_only_hint is None
     )
     assert unset == [], f'ADR-019 R3: readOnlyHint unset on: {unset}'
 
 
 def test_read_only_tools_are_flagged_read_only(served_tools):
     for name in sorted(READ_ONLY_TOOLS):
-        assert served_tools[name].annotations.readOnlyHint is True, name
+        assert served_tools[name].annotations.read_only_hint is True, name
 
 
 def test_writing_tools_are_not_flagged_read_only(served_tools):
     for name in sorted(MUTATING_TOOLS | DESTRUCTIVE_TOOLS):
-        assert served_tools[name].annotations.readOnlyHint is False, name
+        assert served_tools[name].annotations.read_only_hint is False, name
 
 
 def test_destructive_tools_declare_destructive_hint(served_tools):
     for name in sorted(DESTRUCTIVE_TOOLS):
-        assert served_tools[name].annotations.destructiveHint is True, name
+        assert served_tools[name].annotations.destructive_hint is True, name
 
 
 def test_additive_writers_declare_destructive_hint_false(served_tools):
     """`add_memory` mutates but never destroys — say so explicitly."""
     for name in sorted(MUTATING_TOOLS):
-        assert served_tools[name].annotations.destructiveHint is False, name
+        assert served_tools[name].annotations.destructive_hint is False, name
 
 
 def test_build_communities_is_destructive_because_it_wipes_every_community(served_tools):
@@ -130,19 +130,19 @@ def test_build_communities_is_destructive_because_it_wipes_every_community(serve
     fallen back to asking.
     """
     annotations = served_tools['build_communities'].annotations
-    assert annotations.readOnlyHint is False
-    assert annotations.destructiveHint is True
+    assert annotations.read_only_hint is False
+    assert annotations.destructive_hint is True
     # NOT idempotent: each run mints fresh uuid4 Community nodes with freshly
     # generated LLM summaries, so a repeat invalidates every uuid a caller holds
     # and pays for another summarization pass. A client auto-retrying on this hint
     # would re-wipe and re-pay.
-    assert annotations.idempotentHint is False
+    assert annotations.idempotent_hint is False
 
 
 def test_read_only_tools_do_not_claim_destructiveness(served_tools):
     """destructiveHint is only meaningful when readOnlyHint is false."""
     for name in sorted(READ_ONLY_TOOLS):
-        assert served_tools[name].annotations.destructiveHint in (None, False), name
+        assert served_tools[name].annotations.destructive_hint in (None, False), name
 
 
 def test_annotations_survive_a_dynamic_re_registration(served_tools):

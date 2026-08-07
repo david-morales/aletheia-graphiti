@@ -93,7 +93,7 @@ async def test_the_degraded_tools_carry_their_static_docstrings(degraded):
 async def test_the_served_instructions_declare_the_degradation(degraded):
     await srv._build_and_register_domain_surface()
 
-    instructions = srv.mcp._mcp_server.instructions or ''
+    instructions = srv.mcp._lowlevel_server.instructions or ''
     assert instructions.startswith(srv.DEGRADED_INSTRUCTIONS_MARKER), (
         'the degraded marker must LEAD the announcement, not be buried in it'
     )
@@ -104,13 +104,13 @@ async def test_the_served_instructions_declare_the_degradation(degraded):
 async def test_the_degraded_announcement_does_not_claim_an_empty_graph(degraded):
     """We could not introspect the graph — that is not the same as it being empty."""
     await srv._build_and_register_domain_surface()
-    assert 'no entities yet' not in (srv.mcp._mcp_server.instructions or '')
+    assert 'no entities yet' not in (srv.mcp._lowlevel_server.instructions or '')
 
 
 async def test_the_degraded_announcement_still_carries_the_backend_dialect(degraded):
     """The flavour is known even when introspection fails — ADR-019 R6 still applies."""
     await srv._build_and_register_domain_surface()
-    assert 'Cypher dialect:' in (srv.mcp._mcp_server.instructions or '')
+    assert 'Cypher dialect:' in (srv.mcp._lowlevel_server.instructions or '')
 
 
 async def test_the_degradation_is_logged_at_error(degraded, caplog):
@@ -145,7 +145,7 @@ async def test_a_healthy_profile_leaves_no_degraded_marker(monkeypatch):
     monkeypatch.setattr(srv, 'build_domain_profile', _ok)
     await srv._build_and_register_domain_surface()
 
-    instructions = srv.mcp._mcp_server.instructions or ''
+    instructions = srv.mcp._lowlevel_server.instructions or ''
     assert srv.DEGRADED_INSTRUCTIONS_MARKER not in instructions
     assert 'Widget' in instructions
     assert set(srv.mcp._tool_manager._tools) == set(TOOL_ANNOTATIONS)
@@ -163,13 +163,13 @@ async def test_the_degraded_resource_set_is_pruned_and_declared(degraded):
     uris = {str(r.uri) for r in await srv.mcp.list_resources()}
     assert uris == {'graphiti://schema'}, uris
 
-    instructions = srv.mcp._mcp_server.instructions or ''
+    instructions = srv.mcp._lowlevel_server.instructions or ''
     assert 'graphiti://schema' in instructions
     assert 'cannot be built without one' in instructions
 
 
 async def test_the_pre_startup_announcement_is_itself_a_degraded_one():
-    """L6: the string FastMCP is constructed with used to be a hand-written 10-tool
+    """L6: the string MCPServer is constructed with used to be a hand-written 10-tool
     catalog naming `clear_graph` without marking it destructive — the artifact that
     made BUG-50 dangerous. It is unreachable on the wire today, and a dead
     announcement contradicting the live one is a trap for whoever changes that.

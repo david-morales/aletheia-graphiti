@@ -164,7 +164,7 @@ async def test_sample_subgraph_clamps_the_limit_into_range(monkeypatch):
 @pytest.mark.asyncio
 async def test_sample_subgraph_normalizes_datetime_created_at(monkeypatch):
     """FalkorDB and AGE hand back strings, but the generic/Neo4j path returns a
-    neo4j.time.DateTime. Unnormalized it dies in FastMCP output validation —
+    neo4j.time.DateTime. Unnormalized it dies in MCPServer output validation —
     OUTSIDE this tool's try/except, so it escapes the ADR-015 error envelope as a
     protocol error rather than an `error` payload."""
     dt = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)

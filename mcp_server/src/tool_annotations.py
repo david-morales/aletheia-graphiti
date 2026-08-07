@@ -27,7 +27,7 @@ from mcp.types import ToolAnnotations
 def _read_only(title: str) -> ToolAnnotations:
     """Reads only. `run_cypher` qualifies by construction: writes are rejected by
     the Cypher validator and, on FalkorDB, again by DB-side `ro_query`."""
-    return ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=False)
+    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=False)
 
 
 def _additive_write(title: str, *, idempotent: bool = False) -> ToolAnnotations:
@@ -41,10 +41,10 @@ def _additive_write(title: str, *, idempotent: bool = False) -> ToolAnnotations:
     """
     return ToolAnnotations(
         title=title,
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=idempotent,
-        openWorldHint=False,
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=idempotent,
+        open_world_hint=False,
     )
 
 
@@ -58,10 +58,10 @@ def _destructive(title: str, *, idempotent: bool = True) -> ToolAnnotations:
     """
     return ToolAnnotations(
         title=title,
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=idempotent,
-        openWorldHint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=idempotent,
+        open_world_hint=False,
     )
 
 

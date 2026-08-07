@@ -1,7 +1,7 @@
 """A-D11: the connector must say which build it is.
 
 `serverInfo.version` on the wire is `1.29.0` — the MCP SDK's version, which
-FastMCP reports and which is the same on every connector in the fleet. The
+MCPServer reports and which is the same on every connector in the fleet. The
 connector's own build appeared nowhere in the surface, so an operator debugging a
 bad answer could not tell whether the arm in front of them predated a fix.
 

@@ -22,7 +22,7 @@ import pathlib
 import re
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
@@ -73,7 +73,7 @@ def _neutral_profile() -> DomainProfile:
 
 def _served_descriptions() -> dict[str, str]:
     """Every tool description as `tools/list` would serve it, on a neutral graph."""
-    m = FastMCP('leakage-probe')
+    m = MCPServer('leakage-probe')
     profile = _neutral_profile()
     from tool_descriptions import (
         build_explore_node_description,
@@ -108,7 +108,7 @@ def _degraded_descriptions() -> dict[str, str]:
     `explore_ontology`'s aviation examples are invisible on a healthy server and
     become the served text exactly when introspection fails.
     """
-    m = FastMCP('leakage-probe-degraded')
+    m = MCPServer('leakage-probe-degraded')
     for name in sorted(TOOL_ANNOTATIONS):
         m.add_tool(getattr(srv, name), annotations=annotations_for(name))
     return {t.name: t.description or '' for t in asyncio.run(m.list_tools())}

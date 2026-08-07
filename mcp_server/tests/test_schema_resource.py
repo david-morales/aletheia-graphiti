@@ -82,7 +82,7 @@ async def test_the_schema_resource_is_readable_and_is_the_schema(registered):
 
 async def test_the_schema_resource_is_announced_as_json(registered):
     resource = next(r for r in await srv.mcp.list_resources() if str(r.uri) == SCHEMA_URI)
-    assert resource.mimeType == 'application/json'
+    assert resource.mime_type == 'application/json'
     assert resource.description
 
 
@@ -134,7 +134,7 @@ async def test_the_degraded_path_still_serves_the_schema_resource(monkeypatch):
 
 
 async def test_re_registration_replaces_rather_than_keeps_the_stale_resource(monkeypatch):
-    """FastMCP's `add_resource` KEEPS the existing entry on a duplicate URI, so a
+    """MCPServer's `add_resource` KEEPS the existing entry on a duplicate URI, so a
     re-profile would otherwise go on serving the text rendered from the old one."""
 
     async def _stub():

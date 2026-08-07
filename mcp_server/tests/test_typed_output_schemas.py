@@ -8,14 +8,14 @@ nothing and, worse, hides the ADR-015 R4 error path from every consumer reading
 the surface. `explore_ontology` had the same problem one level in.
 
 A-D7 — the surface carried two envelope families: four tools returned a flat
-typed payload while eleven returned `X | ErrorResponse`, which makes FastMCP nest
+typed payload while eleven returned `X | ErrorResponse`, which makes MCPServer nest
 `structuredContent` under `result`. A consumer needed per-tool knowledge of which
 bucket a tool was in, and the ADR-015 R4 client rule `if "error" in result` held
 only for the flat four. The fork had already reasoned this out for `run_cypher`
 (`response_types.py`, "a union return would nest it under `result`") and never
 applied it to the rest.
 
-Every case below runs the payload through FastMCP's real `convert_result` and
+Every case below runs the payload through MCPServer's real `convert_result` and
 validates it against the tool's real `output_schema` — the exact check the
 lowlevel server performs before sending. A nullability slip fails HERE rather
 than in production, where it dies outside the tool's try/except and escapes the
@@ -29,7 +29,7 @@ import json
 
 import jsonschema
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import graphiti_mcp_server as srv
 from tool_annotations import TOOL_ANNOTATIONS, annotations_for
@@ -143,8 +143,8 @@ FLAT_SURFACE: dict[str, dict] = {
 
 @pytest.fixture(scope='module')
 def isolated_tools():
-    """A throwaway FastMCP carrying the whole surface — never the module global."""
-    m = FastMCP('typed-output-probe')
+    """A throwaway MCPServer carrying the whole surface — never the module global."""
+    m = MCPServer('typed-output-probe')
     for name in sorted(TOOL_ANNOTATIONS):
         m.add_tool(getattr(srv, name), annotations=annotations_for(name))
     return m
@@ -157,7 +157,7 @@ def listed(isolated_tools):
 
 @pytest.mark.parametrize('tool_name', sorted(FLAT_SURFACE))
 def test_previously_untyped_tools_publish_their_keys(listed, tool_name):
-    schema = listed[tool_name].outputSchema
+    schema = listed[tool_name].output_schema
     assert schema is not None, f'{tool_name} publishes no outputSchema'
     props = schema.get('properties')
     assert props, (
@@ -171,7 +171,7 @@ def test_previously_untyped_tools_publish_their_keys(listed, tool_name):
 @pytest.mark.parametrize('tool_name', sorted(TOOL_ANNOTATIONS))
 def test_no_tool_nests_its_payload_under_result(listed, tool_name):
     """A-D7: one envelope family. `if "error" in result` must work for EVERY tool."""
-    schema = listed[tool_name].outputSchema
+    schema = listed[tool_name].output_schema
     assert schema is not None, f'{tool_name} publishes no outputSchema'
     props = set(schema.get('properties') or {})
     assert props != {'result'}, (
@@ -192,7 +192,7 @@ NO_ERROR_KEY = {'get_status'}
 )
 def test_every_tool_publishes_the_error_key(listed, tool_name):
     """ADR-015 R4 is part of the CONTRACT, so it belongs in the published schema."""
-    props = set(listed[tool_name].outputSchema.get('properties') or {})
+    props = set(listed[tool_name].output_schema.get('properties') or {})
     assert 'error' in props, (
         f'{tool_name} does not publish its ADR-015 R4 error path in outputSchema'
     )
@@ -200,14 +200,14 @@ def test_every_tool_publishes_the_error_key(listed, tool_name):
 
 def test_get_status_reports_health_through_status_not_error(listed):
     """Pin the exemption above so it stays a decision, not an oversight."""
-    props = set(listed['get_status'].outputSchema.get('properties') or {})
+    props = set(listed['get_status'].output_schema.get('properties') or {})
     assert props == {'status', 'message', 'version'}
 
 
 def _validates(tool, payload):
     meta = tool.fn_metadata
-    converted = meta.convert_result(payload)
-    structured = converted[1] if isinstance(converted, tuple) else converted
+    # SDK 2.x returns a `CallToolResult` here; 1.x returned `(content, structured)`.
+    structured = meta.convert_result(payload).structured_content
     jsonschema.validate(structured, meta.output_schema)
     return structured
 
@@ -221,7 +221,7 @@ def test_payloads_survive_fastmcp_output_validation(isolated_tools, tool_name, k
 
 @pytest.mark.parametrize('tool_name', sorted(FLAT_SURFACE))
 def test_an_all_null_payload_survives_validation(isolated_tools, tool_name):
-    """FastMCP injects None for every absent optional field and dumps without
+    """MCPServer injects None for every absent optional field and dumps without
     exclude_unset, so a non-nullable field type rejects its own injected None."""
     tool = isolated_tools._tool_manager._tools[tool_name]
     all_null = dict.fromkeys(FLAT_SURFACE[tool_name]['required_keys'])
@@ -251,9 +251,10 @@ def test_the_unstructured_payload_is_unchanged_after_flattening(
     exactly the dict the tool returned, with no injected nulls and no new keys.
     """
     tool = isolated_tools._tool_manager._tools[tool_name]
-    unstructured, structured = tool.fn_metadata.convert_result(payload)
+    converted = tool.fn_metadata.convert_result(payload)
+    unstructured, structured = converted.content, converted.structured_content
 
-    # Semantic equality, not byte equality: FastMCP re-serializes the dict, so
+    # Semantic equality, not byte equality: MCPServer re-serializes the dict, so
     # whitespace and key order are its business. Round-tripping to the same object
     # is the property consumers actually depend on.
     assert json.loads(unstructured[0].text) == payload, (

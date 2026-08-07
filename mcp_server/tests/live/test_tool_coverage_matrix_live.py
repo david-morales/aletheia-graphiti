@@ -5,9 +5,9 @@ This is the producer-side conformance gate (ADR-019/015): the server self-verifi
 its whole announced retrieval surface, per flavour, over the wire — BEFORE any
 consumer integrates it. It exists because the P1–P4 parity gates ran at the
 *capability* level (calling the tool functions directly), which never hit the
-FastMCP wire pipeline nor a live client. That blind spot let two classes of bug
+MCPServer wire pipeline nor a live client. That blind spot let two classes of bug
 ship green:
-  * the FastMCP `total=False` TypedDict output-validation bug (fixed mcp-v1.1.1),
+  * the MCPServer `total=False` TypedDict output-validation bug (fixed mcp-v1.1.1),
   * the AGE `search`(combined)/`search_ontology`/`explore_node` failures
     (episode + community fanout raised; execute_query rejected params) —
     all of which pass every offline/structural test but fail the moment a real
@@ -59,7 +59,7 @@ def _text(result) -> str:
 
 
 def _is_error(result) -> bool:
-    if getattr(result, 'isError', False):
+    if getattr(result, 'is_error', False):
         return True
     try:
         payload = json.loads(_text(result))
@@ -113,10 +113,10 @@ async def test_all_retrieval_tools_green_over_the_wire(flavour):
         pytest.skip(f'{flavour}: set TOOL_COVERAGE_{flavour.upper()}_URL')
 
     from mcp.client.session import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
     failures: dict[str, str] = {}
-    async with streamablehttp_client(url) as (read, write, _):
+    async with streamable_http_client(url) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
