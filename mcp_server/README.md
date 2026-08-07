@@ -594,7 +594,6 @@ The full contract is announced, not documented: every tool publishes a typed
 | Tool | Read-only | Purpose |
 |---|---|---|
 | `add_memory` | no | The only ingestion path. Single episodes (`name` + `episode_body`) are queued; pass `episodes` for a synchronous bulk load. Sources: `text`, `json`, `message`. |
-| `build_communities` | no | Re-cluster entities into communities, then search with `search_mode="communities"`. |
 
 ### Health
 
@@ -608,6 +607,7 @@ These carry `destructiveHint: true`. They remove data and cannot be undone.
 
 | Tool | Purpose |
 |---|---|
+| `build_communities` | **Destructive despite the name.** It deletes EVERY community in the graph — including those of `group_id`s you did not ask for, which are **not** rebuilt — then re-clusters the requested ones. (`graphiti_core` calls `remove_communities(driver)` with no group filter; both drivers run an unscoped `MATCH (c:Community) DETACH DELETE c`.) |
 | `delete_entity_edge` | Delete one relationship by uuid. |
 | `delete_episode` | Delete an episode and everything extracted from it. |
 | `clear_graph` | **Irreversible.** Delete ALL data in the named group(s). |

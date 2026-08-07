@@ -20,7 +20,7 @@ from flavours.age import AgeFlavour
 from tool_annotations import TOOL_ANNOTATIONS
 from tool_descriptions import build_degraded_instructions, build_instructions
 
-DESTRUCTIVE = ('clear_graph', 'delete_entity_edge', 'delete_episode')
+DESTRUCTIVE = ('build_communities', 'clear_graph', 'delete_entity_edge', 'delete_episode')
 
 
 def _profile() -> DomainProfile:
@@ -53,19 +53,43 @@ def test_every_served_tool_appears_in_the_catalog(instructions, tool_name):
     )
 
 
+def _catalog_entry(instructions: str, tool_name: str) -> str:
+    """The tool's OWN catalog item: its line plus the indented continuation lines,
+    stopping at the blank line that ends the item.
+
+    Scoped deliberately. A fixed character window bleeds into the NEXT item — and
+    into the destructive section's own heading — which made this guard pass for a
+    tool announced under "Writing to the graph" with no warning of its own.
+    """
+    lines = instructions.split('\n')
+    start = next(i for i, ln in enumerate(lines) if tool_name in ln)
+    entry = [lines[start]]
+    for ln in lines[start + 1:]:
+        if not ln.strip():
+            break
+        entry.append(ln)
+    return '\n'.join(entry)
+
+
 @pytest.mark.parametrize('tool_name', DESTRUCTIVE)
 def test_destructive_tools_are_announced_as_destructive(instructions, tool_name):
     """Naming a destructive tool without saying so is worse than not naming it."""
-    line = next(ln for ln in instructions.split('\n') if tool_name in ln)
-    context = instructions.split(tool_name, 1)[1][:400]
-    assert 'DESTRUCTIVE' in (line + context).upper(), (
-        f'{tool_name} is announced without a destructive warning: {line!r}'
+    entry = _catalog_entry(instructions, tool_name)
+    assert 'DESTRUCTIVE' in entry.upper(), (
+        f'{tool_name} is announced without a destructive warning of its own: {entry!r}'
     )
 
 
 def test_clear_graph_says_it_is_irreversible(instructions):
-    context = instructions.split('clear_graph', 1)[1][:400]
-    assert 'cannot be undone' in context.lower() or 'irreversible' in context.lower()
+    entry = _catalog_entry(instructions, 'clear_graph')
+    assert 'cannot be undone' in entry.lower() or 'irreversible' in entry.lower()
+
+
+def test_build_communities_announces_the_global_wipe(instructions):
+    """Its name says "build"; it deletes every Community in the graph first."""
+    entry = _catalog_entry(instructions, 'build_communities').lower()
+    assert 'destructive' in entry
+    assert 'every' in entry or 'all' in entry, entry
 
 
 def test_the_catalog_does_not_announce_a_tool_that_is_not_served(instructions):

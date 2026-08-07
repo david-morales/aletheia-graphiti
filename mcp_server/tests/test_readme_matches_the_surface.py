@@ -60,7 +60,7 @@ def test_the_upstream_phantoms_are_gone(phantom):
 
 def test_the_destructive_tools_are_documented_as_destructive():
     section = TEXT.split('### Destructive', 1)[1].split('\n## ', 1)[0]
-    for name in ('delete_entity_edge', 'delete_episode', 'clear_graph'):
+    for name in ('build_communities', 'delete_entity_edge', 'delete_episode', 'clear_graph'):
         assert f'`{name}`' in section, f'{name} is not in the destructive table'
     assert 'cannot be undone' in section.lower()
     assert 'irreversible' in section.lower()

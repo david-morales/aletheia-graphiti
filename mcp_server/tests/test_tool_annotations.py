@@ -40,10 +40,14 @@ READ_ONLY_TOOLS = frozenset(
 )
 
 # Mutating but NOT destructive: they add to the graph, they never remove.
-MUTATING_TOOLS = frozenset({'add_memory', 'build_communities'})
+MUTATING_TOOLS = frozenset({'add_memory'})
 
 # Destructive: they remove data that cannot be recovered from the connector.
-DESTRUCTIVE_TOOLS = frozenset({'clear_graph', 'delete_entity_edge', 'delete_episode'})
+# `build_communities` belongs here despite its name — see
+# test_build_communities_is_destructive_because_it_wipes_every_community.
+DESTRUCTIVE_TOOLS = frozenset(
+    {'build_communities', 'clear_graph', 'delete_entity_edge', 'delete_episode'}
+)
 
 ALL_TOOLS = READ_ONLY_TOOLS | MUTATING_TOOLS | DESTRUCTIVE_TOOLS
 
@@ -100,9 +104,32 @@ def test_destructive_tools_declare_destructive_hint(served_tools):
 
 
 def test_additive_writers_declare_destructive_hint_false(served_tools):
-    """`add_memory`/`build_communities` mutate but never destroy — say so explicitly."""
+    """`add_memory` mutates but never destroys — say so explicitly."""
     for name in sorted(MUTATING_TOOLS):
         assert served_tools[name].annotations.destructiveHint is False, name
+
+
+def test_build_communities_is_destructive_because_it_wipes_every_community(served_tools):
+    """Pinned with its justification so nobody "corrects" it back by its name.
+
+    `build_communities(group_ids=["a"])` reads as additive and is not.
+    `graphiti_core.Graphiti.build_communities` calls `remove_communities(driver)`
+    with NO group filter, and both implementations —
+    `utils/maintenance/community_operations.remove_communities` and the FalkorDB
+    override in `driver/falkordb/operations/graph_ops.py` — run an unscoped
+    `MATCH (c:Community) DETACH DELETE c`. So it deletes every Community node and
+    every HAS_MEMBER edge in the WHOLE graph, then rebuilds only the requested
+    partition: communities in every other group_id are destroyed and not restored.
+
+    A false `readOnlyHint`/`destructiveHint` is worse than none — a HITL client
+    auto-approves on it, and with no annotation at all the client would have
+    fallen back to asking.
+    """
+    annotations = served_tools['build_communities'].annotations
+    assert annotations.readOnlyHint is False
+    assert annotations.destructiveHint is True
+    # Rebuilding twice lands on the same state.
+    assert annotations.idempotentHint is True
 
 
 def test_read_only_tools_do_not_claim_destructiveness(served_tools):

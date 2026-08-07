@@ -44,8 +44,9 @@ def _additive_write(title: str, *, idempotent: bool = False) -> ToolAnnotations:
 def _destructive(title: str) -> ToolAnnotations:
     """Removes data that cannot be recovered from this connector.
 
-    All three deletions are idempotent: deleting what is already gone changes
-    nothing further.
+    Membership is decided by BEHAVIOUR, not by the verb in the tool's name — see
+    `build_communities` below. All four are idempotent: removing what is already
+    gone, or rebuilding to the same state, changes nothing further.
     """
     return ToolAnnotations(
         title=title,
@@ -71,10 +72,18 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     'get_episodes': _read_only('List recent episodes'),
     'get_episode_context': _read_only('Get what an episode extracted'),
     'get_status': _read_only('Check server and database health'),
-    # --- additive writes (2) ----------------------------------------------
+    # --- additive writes (1) ----------------------------------------------
     'add_memory': _additive_write('Ingest an episode'),
-    'build_communities': _additive_write('Rebuild entity communities'),
-    # --- destructive (3) --------------------------------------------------
+    # --- destructive (4) --------------------------------------------------
+    # `build_communities` reads as additive and is not. graphiti_core's
+    # `Graphiti.build_communities` calls `remove_communities(driver)` with NO
+    # group filter, and both implementations run an unscoped
+    # `MATCH (c:Community) DETACH DELETE c`. It therefore deletes every Community
+    # node and HAS_MEMBER edge in the WHOLE graph before rebuilding only the
+    # requested partition — communities in every other group_id are destroyed and
+    # never restored. Annotating it additive would let a HITL client auto-approve
+    # exactly that.
+    'build_communities': _destructive('Rebuild communities (wipes ALL communities first)'),
     'delete_entity_edge': _destructive('Delete a relationship'),
     'delete_episode': _destructive('Delete an episode and its extracted data'),
     'clear_graph': _destructive('Delete ALL data in a graph partition'),
@@ -109,10 +118,10 @@ TOOL_ORDER: tuple[str, ...] = (
     'get_episode_context',
     # writing
     'add_memory',
-    'build_communities',
     # health
     'get_status',
     # destructive
+    'build_communities',
     'delete_entity_edge',
     'delete_episode',
     'clear_graph',
