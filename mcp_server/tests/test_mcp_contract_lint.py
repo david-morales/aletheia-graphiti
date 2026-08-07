@@ -278,7 +278,7 @@ def test_ci_triggers_on_the_branch_this_fork_develops_on():
 
 
 def test_no_contract_guard_hides_in_the_ci_ignore_list():
-    """The job skips five modules that fail at COLLECTION for reasons of their own.
+    """The job skips four modules that fail at COLLECTION (plus test_fixtures.py, which collects clean at 0 items) for reasons of their own.
     That list is the obvious place to quietly park an inconvenient guard, so pin
     that nothing in it carries the marker."""
     workflow = CI_WORKFLOW.read_text(encoding='utf-8')
