@@ -189,7 +189,7 @@ DEGRADED_INSTRUCTIONS_MARKER = (
     '!! DEGRADED: domain profile unavailable !!'
 )
 
-# The instructions FastMCP is constructed with, before startup has introspected
+# The instructions MCPServer is constructed with, before startup has introspected
 # anything. `initialize_server` replaces them — and always before a transport
 # starts, so this string is not reachable on the wire today. It is nonetheless
 # built by the same builder as the runtime fallback rather than hand-written: the
@@ -2068,7 +2068,7 @@ def _iso_or_raw(value: Any) -> Any:
     """Datetime-like values to ISO strings; everything else through untouched.
 
     FalkorDB and AGE deliver `created_at` as a string, but the generic/Neo4j path
-    returns a neo4j.time.DateTime, which FastMCP's output validation rejects. That
+    returns a neo4j.time.DateTime, which MCPServer's output validation rejects. That
     failure happens in convert_result — OUTSIDE this tool's try/except — so it escapes
     the ADR-015 error envelope as a protocol error instead of an `error` payload.
     Every sibling tool normalizes the same way (format_node_result, explore_node,
@@ -2578,7 +2578,7 @@ def _register_schema_resource() -> None:
 def _replace_resource(resource) -> None:
     """Register a resource, REPLACING any existing one on the same URI.
 
-    FastMCP's `add_resource` keeps the incumbent and only logs a warning on a
+    MCPServer's `add_resource` keeps the incumbent and only logs a warning on a
     duplicate URI, so re-registering after a re-profile would silently go on
     serving text rendered from the previous profile.
     """
@@ -2617,7 +2617,7 @@ def register_resources(profile: DomainProfile) -> None:
         text=profile.render_relationship_types(),
     )
 
-    # REPLACE rather than add: FastMCP keeps the incumbent on a duplicate URI, so a
+    # REPLACE rather than add: MCPServer keeps the incumbent on a duplicate URI, so a
     # re-profile would otherwise go on serving text rendered from the previous one.
     _replace_resource(domain_summary)
     _replace_resource(entity_catalog)

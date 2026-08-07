@@ -133,7 +133,7 @@ def test_query_and_schema_tools_publish_output_schema():
         assert key in gs_props, f"get_schema outputSchema missing {key}"
 
 
-def test_typed_tool_outputs_survive_fastmcp_output_validation():
+def test_typed_tool_outputs_survive_mcpserver_output_validation():
     """Regression: run_cypher / get_schema / sample_subgraph success AND error payloads
     must pass MCPServer's structured-output path over the wire.
 

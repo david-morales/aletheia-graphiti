@@ -144,10 +144,10 @@ TOOL_ORDER: tuple[str, ...] = (
 
 
 def apply_canonical_tool_order(tools: dict) -> None:
-    """Reorder a FastMCP tool-manager mapping in place into `TOOL_ORDER`.
+    """Reorder a MCPServer tool-manager mapping in place into `TOOL_ORDER`.
 
     Takes the mapping rather than the server so this module stays free of any
-    FastMCP import. A tool absent from `TOOL_ORDER` is APPENDED, never dropped:
+    MCPServer import. A tool absent from `TOOL_ORDER` is APPENDED, never dropped:
     reordering must not be able to unregister anything.
     """
     ordered = {name: tools[name] for name in TOOL_ORDER if name in tools}

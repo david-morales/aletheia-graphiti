@@ -648,7 +648,7 @@ returned, verbatim) and as **`structuredContent`** (the same payload validated
 against the published `outputSchema`). They are not identical, and the difference
 matters for error detection.
 
-Because every tool declares `error` as an optional field, FastMCP fills in **every
+Because every tool declares `error` as an optional field, the MCP SDK fills in **every
 declared-but-absent optional field as `null`** when it builds `structuredContent`.
 So on a *successful* call:
 

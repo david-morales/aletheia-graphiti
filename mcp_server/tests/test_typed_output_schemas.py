@@ -214,7 +214,7 @@ def _validates(tool, payload):
 
 @pytest.mark.parametrize('tool_name', sorted(FLAT_SURFACE))
 @pytest.mark.parametrize('kind', ['success', 'error'])
-def test_payloads_survive_fastmcp_output_validation(isolated_tools, tool_name, kind):
+def test_payloads_survive_mcpserver_output_validation(isolated_tools, tool_name, kind):
     tool = isolated_tools._tool_manager._tools[tool_name]
     _validates(tool, FLAT_SURFACE[tool_name][kind])
 

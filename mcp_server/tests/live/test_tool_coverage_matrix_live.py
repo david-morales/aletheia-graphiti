@@ -112,40 +112,41 @@ async def test_all_retrieval_tools_green_over_the_wire(flavour):
     if not url:
         pytest.skip(f'{flavour}: set TOOL_COVERAGE_{flavour.upper()}_URL')
 
-    from mcp.client.session import ClientSession
+    # SDK 2.x: one `Client` replaces the transport + ClientSession + initialize()
+    # layering. Constructing a bare `ClientSession` and calling it now raises
+    # (`send_raw_request called before run()`), so the layered form is not merely
+    # deprecated here — it does not work.
+    from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
 
     failures: dict[str, str] = {}
-    async with streamable_http_client(url) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
+    async with Client(streamable_http_client(url)) as session:
+        announced = {t.name for t in (await session.list_tools()).tools}
+        expected = {
+            'get_schema', 'run_cypher', 'search', 'search_ontology',
+            'explore_node', 'explore_ontology', 'get_ontology_structure',
+            'get_ontology_documentation', 'profile_graph',
+        }
+        missing = expected - announced
+        assert not missing, f'{flavour}: connector does not announce {sorted(missing)}'
 
-            announced = {t.name for t in (await session.list_tools()).tools}
-            expected = {
-                'get_schema', 'run_cypher', 'search', 'search_ontology',
-                'explore_node', 'explore_ontology', 'get_ontology_structure',
-                'get_ontology_documentation', 'profile_graph',
-            }
-            missing = expected - announced
-            assert not missing, f'{flavour}: connector does not announce {sorted(missing)}'
+        calls = list(NOARG_TOOLS)
+        node_name = await _discover_node_name(session)
+        if node_name:
+            calls.append(('explore_node', {'node_name': node_name, 'depth': 1, 'limit': 3}))
+        else:
+            failures['explore_node'] = 'could not discover a named node to explore'
+        onto_class = await _discover_ontology_class(session)
+        if onto_class:
+            calls.append(('explore_ontology', {'node_name': onto_class, 'depth': 1, 'limit': 3}))
+        else:
+            failures['explore_ontology'] = 'could not discover an ontology class to explore'
 
-            calls = list(NOARG_TOOLS)
-            node_name = await _discover_node_name(session)
-            if node_name:
-                calls.append(('explore_node', {'node_name': node_name, 'depth': 1, 'limit': 3}))
-            else:
-                failures['explore_node'] = 'could not discover a named node to explore'
-            onto_class = await _discover_ontology_class(session)
-            if onto_class:
-                calls.append(('explore_ontology', {'node_name': onto_class, 'depth': 1, 'limit': 3}))
-            else:
-                failures['explore_ontology'] = 'could not discover an ontology class to explore'
-
-            for tool, args in calls:
-                label = f'{tool}({args.get("search_mode", "")})' if tool == 'search' else tool
-                ok, detail = await _call(session, tool, args)
-                if not ok:
-                    failures[label] = detail
+        for tool, args in calls:
+            label = f'{tool}({args.get("search_mode", "")})' if tool == 'search' else tool
+            ok, detail = await _call(session, tool, args)
+            if not ok:
+                failures[label] = detail
 
     assert not failures, f'{flavour}: tools returned an error envelope over the wire:\n' + '\n'.join(
         f'  {name}: {detail}' for name, detail in failures.items()
