@@ -268,6 +268,35 @@ The `config.yaml` file supports environment variable expansion using `${VAR_NAME
 
 You can set these variables in a `.env` file in the project directory.
 
+### `FASTMCP_*` variables after the MCP SDK 2.x migration
+
+SDK 1.x built its settings from a `pydantic-settings` model with
+`env_prefix="FASTMCP_"`, so **every** server setting could be driven from the
+environment. SDK 2.x made that class a plain `BaseModel`, so it reads no
+environment at all — a `FASTMCP_*` variable is now simply ignored:
+
+```console
+$ FASTMCP_LOG_LEVEL=DEBUG python -c "...; print(server.settings.log_level)"
+INFO
+```
+
+**`FASTMCP_HOST` and `FASTMCP_PORT` still work**, because this server reads them
+itself rather than relying on the SDK — the first also selects the DNS rebinding
+policy (see "Docker Deployment"). Everything else that used to be settable this
+way is now inert, including:
+
+| variable | status | how to set it now |
+|---|---|---|
+| `FASTMCP_HOST`, `FASTMCP_PORT` | **still honoured** | unchanged |
+| `FASTMCP_LOG_LEVEL`, `FASTMCP_DEBUG` | inert | `LOG_LEVEL` env / config file |
+| `FASTMCP_JSON_RESPONSE`, `FASTMCP_STATELESS_HTTP` | inert | not exposed; would need a `run_streamable_http_async` argument |
+| `FASTMCP_SSE_PATH`, `FASTMCP_MESSAGE_PATH`, `FASTMCP_STREAMABLE_HTTP_PATH`, `FASTMCP_MOUNT_PATH` | inert | not exposed; same |
+| `FASTMCP_WARN_ON_DUPLICATE_*` | inert | constructor arguments |
+
+Nothing in this repo's deployments used the inert ones, so no configuration
+changes with the upgrade — but a variable that silently stops taking effect is
+worth knowing about before it is reached for.
+
 ## Running the Server
 
 ### Default Setup (FalkorDB Combined Container)
