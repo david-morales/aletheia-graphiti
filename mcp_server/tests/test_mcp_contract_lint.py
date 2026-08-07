@@ -144,8 +144,20 @@ async def inband_error_return() -> _ErrorCapable:
     return _ErrorCapable(message='', error='something went wrong')
 
 
+# `mode='legacy'` is load-bearing, not a leftover. For an in-process server the
+# SDK's own connector docstring reads: "legacy mode drives the stream loop via
+# InMemoryTransport; any other mode drives the modern per-request path through a
+# DirectDispatcher peer pair (no streams, no JSON-RPC framing, no initialize
+# handshake)". The default `auto` would therefore skip the framing this module
+# claims to measure — the assertions would be against an idealisation, which is
+# exactly what the docstring above says they are not. Observables were compared
+# across both modes and are identical, so this costs nothing and keeps the claim
+# true.
+_WIRE_MODE = 'legacy'
+
+
 async def _call(name: str):
-    async with Client(_probe) as client:
+    async with Client(_probe, mode=_WIRE_MODE) as client:
         return await client.call_tool(name, {})
 
 
@@ -242,7 +254,7 @@ async def test_the_served_output_schemas_are_flat_over_a_real_client_session(
     """The same claim as `test_typed_output_schemas.py`, made one layer out: what a
     client actually receives from `tools/list`, not what `MCPServer.list_tools()`
     returns in-process."""
-    async with Client(served_surface) as client:
+    async with Client(served_surface, mode=_WIRE_MODE) as client:
         listed = (await client.list_tools()).tools
 
     assert {t.name for t in listed} == set(TOOL_ANNOTATIONS)
