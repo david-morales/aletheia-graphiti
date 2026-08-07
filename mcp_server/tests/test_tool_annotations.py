@@ -128,8 +128,11 @@ def test_build_communities_is_destructive_because_it_wipes_every_community(serve
     annotations = served_tools['build_communities'].annotations
     assert annotations.readOnlyHint is False
     assert annotations.destructiveHint is True
-    # Rebuilding twice lands on the same state.
-    assert annotations.idempotentHint is True
+    # NOT idempotent: each run mints fresh uuid4 Community nodes with freshly
+    # generated LLM summaries, so a repeat invalidates every uuid a caller holds
+    # and pays for another summarization pass. A client auto-retrying on this hint
+    # would re-wipe and re-pay.
+    assert annotations.idempotentHint is False
 
 
 def test_read_only_tools_do_not_claim_destructiveness(served_tools):

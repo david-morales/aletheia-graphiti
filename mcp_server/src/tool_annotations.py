@@ -48,18 +48,19 @@ def _additive_write(title: str, *, idempotent: bool = False) -> ToolAnnotations:
     )
 
 
-def _destructive(title: str) -> ToolAnnotations:
+def _destructive(title: str, *, idempotent: bool = True) -> ToolAnnotations:
     """Removes data that cannot be recovered from this connector.
 
     Membership is decided by BEHAVIOUR, not by the verb in the tool's name — see
-    `build_communities` below. All four are idempotent: removing what is already
-    gone, or rebuilding to the same state, changes nothing further.
+    `build_communities` below. The three deletions are idempotent: removing what is
+    already gone changes nothing further. `build_communities` is NOT, which is why
+    the flag is a parameter rather than a constant.
     """
     return ToolAnnotations(
         title=title,
         readOnlyHint=False,
         destructiveHint=True,
-        idempotentHint=True,
+        idempotentHint=idempotent,
         openWorldHint=False,
     )
 
@@ -90,7 +91,14 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     # requested partition — communities in every other group_id are destroyed and
     # never restored. Annotating it additive would let a HITL client auto-approve
     # exactly that.
-    'build_communities': _destructive('Rebuild communities (wipes ALL communities first)'),
+    # NOT idempotent, despite landing on an equivalent clustering: each run mints
+    # fresh uuid4 Community nodes with freshly generated LLM summaries, so every
+    # uuid a caller holds is invalidated and every repeat costs another full
+    # summarization pass. A client auto-retrying on `idempotentHint` would re-wipe
+    # and re-pay.
+    'build_communities': _destructive(
+        'Rebuild communities (wipes ALL communities first)', idempotent=False
+    ),
     'delete_entity_edge': _destructive('Delete a relationship'),
     'delete_episode': _destructive('Delete an episode and its extracted data'),
     'clear_graph': _destructive('Delete ALL data in a graph partition'),
