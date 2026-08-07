@@ -2820,7 +2820,13 @@ async def run_mcp_server():
         configure_uvicorn_logging()
 
         await mcp.run_streamable_http_async(
-            host=host, port=port, transport_security=_transport_security()
+            host=host,
+            port=port,
+            transport_security=_transport_security(),
+            # Passed explicitly, never left to the SDK: 2.x defaults this to 4 MiB
+            # and 1.x had no cap, so the default would silently turn a large bulk
+            # `add_memory` into a transport-level 413 (see config.schema).
+            max_request_body_size=mcp_config.max_request_body_size,
         )
     else:
         raise ValueError(

@@ -162,6 +162,9 @@ The server supports multiple LLM providers (OpenAI, Anthropic, Gemini, Groq) and
 ```yaml
 server:
   transport: "http"  # Default. Options: stdio, http
+  # Maximum streamable-HTTP POST body, in bytes. Default 268435456 (256 MiB).
+  # See "Request body size" below before lowering it.
+  max_request_body_size: 268435456
 
 llm:
   provider: "openai"  # or "anthropic", "gemini", "groq", "azure_openai"
@@ -170,6 +173,20 @@ llm:
 database:
   provider: "falkordb"  # Default. Options: "falkordb", "neo4j"
 ```
+
+#### Request body size
+
+MCP Python SDK 2.x caps streamable-HTTP POST bodies at **4 MiB** by default; SDK 1.x
+had no cap at all. A request over the cap is answered `413 Request body too large`
+by transport middleware, *before* it reaches the MCP layer — so the caller does not
+get an in-band error it can read (see "Error contract" below), it gets a transport
+failure. The tool most likely to hit this is a bulk `add_memory`.
+
+This server therefore sets the limit **explicitly** and defaults it to 256 MiB,
+preserving pre-2.x behaviour. Override it with `server.max_request_body_size` in
+the config file or `SERVER__MAX_REQUEST_BODY_SIZE` in the environment — set it to
+`4194304` to adopt the SDK 2.x default instead. The value must be positive: the SDK
+has no "unlimited" sentinel and rejects anything `<= 0`.
 
 ### Using Ollama for Local LLM
 
