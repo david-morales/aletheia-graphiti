@@ -41,11 +41,11 @@ def test_the_version_matches_the_packaging_metadata():
     )
 
 
-def _newest_reachable_tag() -> str | None:
-    """The newest `mcp-v*` tag reachable from HEAD, or None outside a git checkout."""
+def _git_tags(*args: str) -> list[str] | None:
+    """`mcp-v*` tags matching the given git selector, or None outside a checkout."""
     try:
         out = subprocess.run(
-            ['git', 'tag', '--merged', 'HEAD', '--list', 'mcp-v*'],
+            ['git', 'tag', *args, '--list', 'mcp-v*'],
             cwd=PYPROJECT.parent,
             capture_output=True,
             text=True,
@@ -54,10 +54,25 @@ def _newest_reachable_tag() -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    tags = [t.strip().removeprefix('mcp-v') for t in out.stdout.split('\n') if t.strip()]
-    if not tags:
+    return [t.strip().removeprefix('mcp-v') for t in out.stdout.split('\n') if t.strip()]
+
+
+def _newest_prior_tag() -> str | None:
+    """The newest `mcp-v*` tag reachable from HEAD but NOT pointing at it.
+
+    Tags AT HEAD are excluded on purpose. Cutting `mcp-v1.5.0` on the merge commit
+    would otherwise make this test fail on main from the moment of release until
+    somebody bumped again — turning a release into a red suite. A tag at HEAD is
+    this build being released; the rule is only about releases that came BEFORE it.
+    """
+    reachable = _git_tags('--merged', 'HEAD')
+    if reachable is None:
         return None
-    return max(tags, key=lambda v: tuple(int(p) for p in v.split('.')[:3]))
+    at_head = set(_git_tags('--points-at', 'HEAD') or ())
+    prior = [t for t in reachable if t not in at_head]
+    if not prior:
+        return None
+    return max(prior, key=lambda v: tuple(int(p) for p in v.split('.')[:3]))
 
 
 def test_the_packaged_version_is_ahead_of_every_shipped_tag():
@@ -70,11 +85,12 @@ def test_the_packaged_version_is_ahead_of_every_shipped_tag():
     the SDK-version noise it replaces.
 
     A tag reachable from HEAD is a release this build already contains, so the
-    packaged version must be strictly greater than the newest of them.
+    packaged version must be strictly greater than the newest of them. Tags AT
+    HEAD are excluded — see `_newest_prior_tag`.
     """
-    newest = _newest_reachable_tag()
+    newest = _newest_prior_tag()
     if newest is None:
-        pytest.skip('not a git checkout with mcp-v* tags')
+        pytest.skip('not a git checkout with prior mcp-v* tags')
 
     def _parts(v: str) -> tuple[int, ...]:
         return tuple(int(p) for p in v.split('.')[:3])
