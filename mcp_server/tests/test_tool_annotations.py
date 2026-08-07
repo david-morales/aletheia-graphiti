@@ -19,6 +19,10 @@ import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 from tool_annotations import TOOL_ANNOTATIONS, annotations_for
 
+# Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
+# these guards need no database and no API key, so they gate every change.
+pytestmark = pytest.mark.contract
+
 # The 13 tools that only ever read. `run_cypher` belongs here: it is read-only by
 # construction (writes are rejected by the validator and, on FalkorDB, by ro_query).
 READ_ONLY_TOOLS = frozenset(

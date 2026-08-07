@@ -5,14 +5,22 @@ name: MCP Server Tests
 # MCP server. The OpenAI key comes from the `development` GitHub environment; fork
 # PRs receive no secrets, so the suite skips itself there (the test module skips
 # when OPENAI_API_KEY is unset).
+# `aletheia` is this fork's development branch (origin/HEAD, and the target of every
+# fork MR); `main` is inherited from upstream and kept so the file stays mergeable
+# both ways. Every other workflow here still triggers on `main` alone — which is why
+# nothing in CI had ever run against a fork change. Release tags follow the pattern
+# release-mcp-server.yml already uses. (`paths` applies to tag pushes as well, so a
+# tag placed on an already-pushed commit may not re-run — the branch trigger will
+# have covered that commit.)
 on:
   push:
-    branches: [main]
+    branches: [main, aletheia]
+    tags: ["mcp-v*.*.*"]
     paths:
       - "mcp_server/**"
       - ".github/workflows/mcp-server-tests.yml"
   pull_request:
-    branches: [main]
+    branches: [main, aletheia]
     paths:
       - "mcp_server/**"
       - ".github/workflows/mcp-server-tests.yml"
@@ -27,6 +35,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The ADR-015/019 surface guards: annotations, typed flat output schemas, the
+  # instructions catalog, domain-free served text, and the SDK envelope premise
+  # they all rest on. They need no database and no API key, so unlike the live job
+  # below they also run on fork PRs — which is the point: until this job existed,
+  # nothing in CI executed them at all (2026-08-06 MCP analysis, F3).
+  #
+  # Selection is by marker, not by filename: a new guard joins CI by declaring
+  # `pytestmark = pytest.mark.contract`, and tests/test_mcp_contract_lint.py
+  # asserts each known guard has done so.
+  contract-lint:
+    runs-on: depot-ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
+        with:
+          version: "latest"
+      - name: Install dependencies
+        working-directory: mcp_server
+        run: uv sync
+      - name: Run the MCP contract guards
+        working-directory: mcp_server
+        # No `exit 5` tolerance here, deliberately: these tests never self-skip, so
+        # an empty collection means the marker stopped selecting them.
+        #
+        # The --ignore list is four modules that fail at COLLECTION on `aletheia`
+        # today — stale imports (`is_non_openai_provider`, `EdgeTypeConfig`) and a
+        # `from test_fixtures import ...` that a packaged tests/ directory cannot
+        # resolve — plus test_fixtures.py itself, which collects cleanly with zero
+        # items (it is the helper the other four import, ignored for symmetry).
+        # Marker selection happens after collection, so one broken import anywhere
+        # under tests/ would take this job down with it. None of the five carries
+        # the contract marker, and test_mcp_contract_lint.py asserts that — so this
+        # list cannot become a way to silence a guard.
+        run: |
+          uv run pytest tests/ -m contract -p no:cacheprovider \
+            --ignore=tests/test_async_operations.py \
+            --ignore=tests/test_core_parity.py \
+            --ignore=tests/test_factories.py \
+            --ignore=tests/test_fixtures.py \
+            --ignore=tests/test_stress_load.py
+
   live-mcp-tests:
     runs-on: depot-ubuntu-22.04
     environment: development

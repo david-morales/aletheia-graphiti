@@ -29,6 +29,10 @@ from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 from tool_annotations import TOOL_ANNOTATIONS, annotations_for
 from tool_descriptions import build_degraded_instructions, build_instructions
 
+# Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
+# these guards need no database and no API key, so they gate every change.
+pytestmark = pytest.mark.contract
+
 # Terms from domains this connector must know nothing about. A connector that
 # names one is describing a graph it is not looking at.
 BANNED_TERMS = (

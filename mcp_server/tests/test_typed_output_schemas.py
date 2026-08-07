@@ -34,6 +34,10 @@ from mcp.server.fastmcp import FastMCP
 import graphiti_mcp_server as srv
 from tool_annotations import TOOL_ANNOTATIONS, annotations_for
 
+# Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
+# these guards need no database and no API key, so they gate every change.
+pytestmark = pytest.mark.contract
+
 # Every tool that must publish a flat, non-degenerate outputSchema, with a
 # success payload and the ADR-015 R4 error payload for each.
 FLAT_SURFACE: dict[str, dict] = {
