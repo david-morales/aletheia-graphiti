@@ -92,7 +92,7 @@ def _minimal_payload(return_type) -> dict:
     for key in getattr(return_type, '__required_keys__', frozenset()):
         annotation = hints[key]
         origin = typing.get_origin(annotation) or annotation
-        payload[key] = dummies.get(origin, None)
+        payload[key] = dummies.get(origin)
     return payload
 
 
