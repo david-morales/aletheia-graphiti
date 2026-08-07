@@ -27,14 +27,19 @@ _PYPROJECT = Path(__file__).parent.parent / 'pyproject.toml'
 
 
 def connector_version() -> str:
-    """This connector's version, or `'unknown'` if it cannot be determined."""
-    try:
-        return importlib.metadata.version(_DISTRIBUTION)
-    except importlib.metadata.PackageNotFoundError:
-        pass
-    except Exception as e:  # noqa: BLE001 — identity must never break a probe
-        logger.debug(f'connector version: packaging metadata unreadable: {e}')
+    """This connector's version, or `'unknown'` if it cannot be determined.
 
+    `pyproject.toml` is read FIRST and installed packaging metadata only as a
+    fallback. That order is deliberate: pyproject is the file the release gate
+    checks against the tag and the file a version bump touches, while an installed
+    distribution's metadata is a snapshot that can be older than the source it sits
+    beside. Reading metadata first would let a stale editable install shadow the
+    source of truth — announcing a version this build is not.
+
+    In both real deployments pyproject is the live path anyway: the Docker image
+    copies it next to `src/` without installing the project, and the dev venv has
+    no `mcp-server` distribution either.
+    """
     # Parsed with a regex rather than a TOML library: `tomllib` is 3.11+ and this
     # package supports 3.10, and pulling a parser in for one scalar would make the
     # connector's identity depend on a package that is currently only transitive.
@@ -46,8 +51,15 @@ def connector_version() -> str:
         )
         if match:
             return match.group('v')
-    except Exception as e:  # noqa: BLE001 — same
+    except Exception as e:  # noqa: BLE001 — identity must never break a probe
         logger.debug(f'connector version: {_PYPROJECT} unreadable: {e}')
+
+    try:
+        return importlib.metadata.version(_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    except Exception as e:  # noqa: BLE001 — same
+        logger.debug(f'connector version: packaging metadata unreadable: {e}')
 
     return 'unknown'
 

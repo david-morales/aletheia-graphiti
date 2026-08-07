@@ -110,3 +110,15 @@ def test_the_readme_does_not_invent_add_memory_parameters():
         'update_communities',
     ):
         assert invented not in TEXT, f'README documents a nonexistent parameter: {invented}'
+
+
+def test_the_readme_tells_maintainers_to_bump_the_version():
+    """M4: the announced build is only true if someone bumps pyproject at release.
+
+    Two tags shipped without it, so the instruction has to live where a releaser
+    reads it, not only in a test failure message.
+    """
+    section = TEXT.split('## Releasing', 1)[1].split('\n## ', 1)[0]
+    assert 'pyproject.toml' in section
+    assert 'get_status' in section
+    assert 'SemVer' in section or 'semver' in section

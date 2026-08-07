@@ -682,6 +682,23 @@ One case is deliberately *not* an error at all: `explore_node` with a uuid that
 does not exist returns a normal response with `center_node: null` and a message
 saying so. A miss is an answer.
 
+## Releasing
+
+**Bump `mcp_server/pyproject.toml`'s `version` in the same change that will carry
+the release tag.** It is not bookkeeping: the connector announces that string as
+its own build, in `get_status.version` and in the header of the served
+`instructions`, because `serverInfo.version` on the wire is the MCP SDK's version
+and is identical on every connector in the fleet.
+
+`mcp-v1.3.0` and `mcp-v1.4.0` both shipped while pyproject still said `1.2.2`, so
+a connector reading it would have claimed to predate fixes it contained — a
+confident wrong answer, worse than no answer. `test_the_packaged_version_is_ahead_of_every_shipped_tag`
+now fails whenever the packaged version is not strictly greater than the newest
+`mcp-v*` tag reachable from HEAD, so the bump cannot be forgotten twice.
+
+Pick the bump from the change type (SemVer): patch for a fix, minor for
+backward-compatible new behaviour, major for a break.
+
 ## Working with JSON Data
 
 The Graphiti MCP server can process structured JSON data through the `add_episode` tool with `source="json"`. This

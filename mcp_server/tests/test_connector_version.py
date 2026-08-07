@@ -13,7 +13,9 @@ announcement a consumer captures and caches).
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
+import subprocess
 from pathlib import Path
 
 try:  # 3.11+
@@ -32,10 +34,68 @@ PYPROJECT = Path(__file__).parent.parent / 'pyproject.toml'
 
 
 def test_the_version_matches_the_packaging_metadata():
+    """Read independently, with a real TOML parser rather than the impl's regex."""
     declared = tomllib.loads(PYPROJECT.read_text())['project']['version']
     assert declared == CONNECTOR_VERSION, (
         'the announced version must be the packaged one, not a hand-maintained copy'
     )
+
+
+def _newest_reachable_tag() -> str | None:
+    """The newest `mcp-v*` tag reachable from HEAD, or None outside a git checkout."""
+    try:
+        out = subprocess.run(
+            ['git', 'tag', '--merged', 'HEAD', '--list', 'mcp-v*'],
+            cwd=PYPROJECT.parent,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    tags = [t.strip().removeprefix('mcp-v') for t in out.stdout.split('\n') if t.strip()]
+    if not tags:
+        return None
+    return max(tags, key=lambda v: tuple(int(p) for p in v.split('.')[:3]))
+
+
+def test_the_packaged_version_is_ahead_of_every_shipped_tag():
+    """THE check the test above cannot make.
+
+    Comparing `CONNECTOR_VERSION` to the pyproject it is read from is tautological
+    — it passes no matter how stale that file is. `mcp-v1.3.0` and `mcp-v1.4.0`
+    both shipped while pyproject still said `1.2.2`, so the connector would have
+    announced a version two releases behind. A confident wrong answer is worse than
+    the SDK-version noise it replaces.
+
+    A tag reachable from HEAD is a release this build already contains, so the
+    packaged version must be strictly greater than the newest of them.
+    """
+    newest = _newest_reachable_tag()
+    if newest is None:
+        pytest.skip('not a git checkout with mcp-v* tags')
+
+    def _parts(v: str) -> tuple[int, ...]:
+        return tuple(int(p) for p in v.split('.')[:3])
+
+    assert _parts(CONNECTOR_VERSION) > _parts(newest), (
+        f'pyproject says {CONNECTOR_VERSION} but mcp-v{newest} is already reachable '
+        f'from HEAD — bump mcp_server/pyproject.toml before shipping'
+    )
+
+
+def test_the_wire_value_agrees_with_installed_metadata_when_there_is_any():
+    """Where the project IS installed, the served value must match its metadata.
+
+    Skips where no distribution exists — the dev venv and the Docker image both run
+    from source, which is precisely why pyproject is read first.
+    """
+    try:
+        installed = importlib.metadata.version('mcp-server')
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip('mcp-server is not installed as a distribution here')
+    assert installed == CONNECTOR_VERSION
 
 
 def test_the_version_looks_like_a_version():
@@ -48,7 +108,6 @@ def test_the_version_is_never_empty_even_without_packaging_metadata(monkeypatch)
     Returning '' or raising here would make `get_status` fail for a reason that has
     nothing to do with the graph.
     """
-    import importlib.metadata
 
     def _missing(_name):
         raise importlib.metadata.PackageNotFoundError
@@ -58,15 +117,14 @@ def test_the_version_is_never_empty_even_without_packaging_metadata(monkeypatch)
     assert connector_version() == 'unknown'
 
 
-def test_the_pyproject_fallback_reads_the_real_file(monkeypatch):
-    """Docker installs the project without packaging metadata; pyproject is copied
-    beside src/, so the fallback is the path that actually runs in the image."""
-    import importlib.metadata
+def test_pyproject_wins_over_stale_installed_metadata(monkeypatch):
+    """pyproject is the source of truth; installed metadata is only the fallback.
 
-    def _missing(_name):
-        raise importlib.metadata.PackageNotFoundError
-
-    monkeypatch.setattr(importlib.metadata, 'version', _missing)
+    An editable install can carry metadata older than the source beside it. Reading
+    metadata first would let that stale snapshot shadow a freshly bumped pyproject
+    — announcing a version this build is not, which is the defect M4 is about.
+    """
+    monkeypatch.setattr(importlib.metadata, 'version', lambda _name: '0.0.1')
     declared = tomllib.loads(PYPROJECT.read_text())['project']['version']
     assert connector_version() == declared
 
