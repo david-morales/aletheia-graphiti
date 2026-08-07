@@ -296,21 +296,6 @@ class ExploreResult(TypedDict, total=False):
     error: str | None
 
 
-class OntologyProperty(TypedDict, total=False):
-    """One parsed entry of an OntologyClass `properties` JSON attribute.
-
-    The ontology author owns these keys; the shape below is what the fork's own
-    generators emit. Declared open (`extra` unconstrained is not expressible in a
-    TypedDict, so unknown keys simply do not appear in structuredContent) —
-    consumers read the unstructured payload for anything exotic.
-    """
-    name: str | None
-    label: str | None
-    range: str | None
-    comment: str | None
-    required: bool | None
-
-
 class OntologyClassEntry(TypedDict, total=False):
     """One ontology class, as served by the structure and documentation tiers.
 
@@ -318,17 +303,36 @@ class OntologyClassEntry(TypedDict, total=False):
     `identity`/`properties` (it is the cheap surface map) and the documentation
     tier fills them in. `source_entity`/`target_entity` are present only when
     `ontology_type == 'relationship_class'`.
+
+    THE FOUR `Any` FIELDS ARE AUTHOR-OWNED, AND DELIBERATELY UNTYPED. They are
+    whatever JSON the ontology author stored, handed back verbatim by
+    `_parse_properties`. Typing them was a real regression: pydantic validates
+    this payload inside `FuncMetadata.convert_result`, which the lowlevel server
+    calls AFTER the tool returned — outside its `try/except` — so a class whose
+    `properties` is a list of strings, or whose `required` is "sometimes", turned
+    a working connector into one serving PROTOCOL errors, invisibly to the tool's
+    own logging. Constraining them also silently dropped every key the model did
+    not name, including `inherited_from`, which aletheia's own ontology generator
+    emits on every property.
+
+    A-D6 was about the TOP LEVEL publishing `{"type":"object"}` and hiding the
+    error path. That goal is met by the typed keys here; it never required
+    policing content the connector does not own.
+
+    Conventional `properties` entry (documentation tier), by convention only:
+    `{name, label, range, comment, required, inherited_from}`.
     """
     name: str | None
     ontology_type: str | None
     summary: str | None
-    alt_labels: list[str] | str | None
-    inherits_from: list[str] | str | None
-    examples: list[str] | str | None
     source_entity: str | None
     target_entity: str | None
     identity: bool | None
-    properties: list[OntologyProperty] | None
+    # author-owned — see the note above
+    alt_labels: Any
+    inherits_from: Any
+    examples: Any
+    properties: Any
 
 
 class OntologyStructureResponse(TypedDict, total=False):
