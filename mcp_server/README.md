@@ -268,34 +268,38 @@ The `config.yaml` file supports environment variable expansion using `${VAR_NAME
 
 You can set these variables in a `.env` file in the project directory.
 
-### `FASTMCP_*` variables after the MCP SDK 2.x migration
+### `FASTMCP_*` variables and the MCP SDK 2.x migration
 
-SDK 1.x built its settings from a `pydantic-settings` model with
-`env_prefix="FASTMCP_"`, so **every** server setting could be driven from the
-environment. SDK 2.x made that class a plain `BaseModel`, so it reads no
-environment at all — a `FASTMCP_*` variable is now simply ignored:
+Only **`FASTMCP_HOST` and `FASTMCP_PORT` have ever had an effect in this
+server** — it reads them itself and passes the values explicitly; the first
+also selects the DNS rebinding policy (see "Docker Deployment"). That is
+unchanged across the SDK 2.x migration.
+
+The other `FASTMCP_*` names (`FASTMCP_LOG_LEVEL`, `FASTMCP_DEBUG`,
+`FASTMCP_JSON_RESPONSE`, `FASTMCP_STATELESS_HTTP`, the path variables,
+`FASTMCP_WARN_ON_DUPLICATE_*`) **never worked here on either SDK**. Under
+SDK 1.x the settings model did carry `env_prefix="FASTMCP_"`, but `FastMCP`'s
+constructor passed an explicit value for every field and init arguments
+outrank the environment in pydantic-settings — measured: setting all of them
+under 1.x leaves every setting at its Python default. Under SDK 2.x the
+settings class reads no environment at all, so the outcome is the same:
 
 ```console
 $ FASTMCP_LOG_LEVEL=DEBUG python -c "...; print(server.settings.log_level)"
 INFO
 ```
 
-**`FASTMCP_HOST` and `FASTMCP_PORT` still work**, because this server reads them
-itself rather than relying on the SDK — the first also selects the DNS rebinding
-policy (see "Docker Deployment"). Everything else that used to be settable this
-way is now inert, including:
-
-| variable | status | how to set it now |
+| variable | status | how to set it |
 |---|---|---|
-| `FASTMCP_HOST`, `FASTMCP_PORT` | **still honoured** | unchanged |
-| `FASTMCP_LOG_LEVEL`, `FASTMCP_DEBUG` | inert | `LOG_LEVEL` env / config file |
-| `FASTMCP_JSON_RESPONSE`, `FASTMCP_STATELESS_HTTP` | inert | not exposed; would need a `run_streamable_http_async` argument |
-| `FASTMCP_SSE_PATH`, `FASTMCP_MESSAGE_PATH`, `FASTMCP_STREAMABLE_HTTP_PATH`, `FASTMCP_MOUNT_PATH` | inert | not exposed; same |
-| `FASTMCP_WARN_ON_DUPLICATE_*` | inert | constructor arguments |
+| `FASTMCP_HOST`, `FASTMCP_PORT` | **honoured** (read by this server) | unchanged |
+| `FASTMCP_LOG_LEVEL`, `FASTMCP_DEBUG` | never worked here | `LOG_LEVEL` env / config file |
+| `FASTMCP_JSON_RESPONSE`, `FASTMCP_STATELESS_HTTP` | never worked here | not exposed; would need a `run_streamable_http_async` argument |
+| `FASTMCP_SSE_PATH`, `FASTMCP_MESSAGE_PATH`, `FASTMCP_STREAMABLE_HTTP_PATH`, `FASTMCP_MOUNT_PATH` | never worked here | not exposed; same |
+| `FASTMCP_WARN_ON_DUPLICATE_*` | never worked here | constructor arguments |
 
-Nothing in this repo's deployments used the inert ones, so no configuration
-changes with the upgrade — but a variable that silently stops taking effect is
-worth knowing about before it is reached for.
+No deployment of this repo sets the non-working ones, so nothing changes with
+the upgrade; the table exists so nobody reaches for a knob that was never
+connected.
 
 ## Running the Server
 
