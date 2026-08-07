@@ -45,6 +45,7 @@ import types
 import typing
 
 import pytest
+import yaml
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 from pydantic import BaseModel
@@ -263,6 +264,17 @@ def test_every_pytest_ini_registers_the_marker(ini):
     """Belt to the brace above: whichever ini a future invocation resolves, the
     marker is there. Two config files is the condition that produced F-1."""
     assert 'contract:' in (MCP_SERVER / ini).read_text(encoding='utf-8')
+
+
+def test_ci_triggers_on_the_branch_this_fork_develops_on():
+    """F-2: the workflow was inherited from upstream and fired on `main` only, while
+    every fork MR targets `aletheia`. A job wired correctly and triggered on a branch
+    nobody pushes is still a job that never runs."""
+    on_block = yaml.safe_load(CI_WORKFLOW.read_text(encoding='utf-8'))[True]
+    for event in ('push', 'pull_request'):
+        assert 'aletheia' in on_block[event]['branches'], (
+            f'{event} does not trigger on `aletheia`, the branch this fork develops on'
+        )
 
 
 def test_no_contract_guard_hides_in_the_ci_ignore_list():

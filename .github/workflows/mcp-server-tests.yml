@@ -5,14 +5,22 @@ name: MCP Server Tests
 # MCP server. The OpenAI key comes from the `development` GitHub environment; fork
 # PRs receive no secrets, so the suite skips itself there (the test module skips
 # when OPENAI_API_KEY is unset).
+# `aletheia` is this fork's development branch (origin/HEAD, and the target of every
+# fork MR); `main` is inherited from upstream and kept so the file stays mergeable
+# both ways. Every other workflow here still triggers on `main` alone — which is why
+# nothing in CI had ever run against a fork change. Release tags follow the pattern
+# release-mcp-server.yml already uses. (`paths` applies to tag pushes as well, so a
+# tag placed on an already-pushed commit may not re-run — the branch trigger will
+# have covered that commit.)
 on:
   push:
-    branches: [main]
+    branches: [main, aletheia]
+    tags: ["mcp-v*.*.*"]
     paths:
       - "mcp_server/**"
       - ".github/workflows/mcp-server-tests.yml"
   pull_request:
-    branches: [main]
+    branches: [main, aletheia]
     paths:
       - "mcp_server/**"
       - ".github/workflows/mcp-server-tests.yml"
@@ -57,13 +65,15 @@ jobs:
         # No `exit 5` tolerance here, deliberately: these tests never self-skip, so
         # an empty collection means the marker stopped selecting them.
         #
-        # The --ignore list is five modules that fail at COLLECTION on `aletheia`
+        # The --ignore list is four modules that fail at COLLECTION on `aletheia`
         # today — stale imports (`is_non_openai_provider`, `EdgeTypeConfig`) and a
         # `from test_fixtures import ...` that a packaged tests/ directory cannot
-        # resolve. Marker selection happens after collection, so one broken import
-        # anywhere under tests/ would take this job down with it. None of the five
-        # carries the contract marker, and test_mcp_contract_lint.py asserts that —
-        # so this list cannot become a way to silence a guard.
+        # resolve — plus test_fixtures.py itself, which collects cleanly with zero
+        # items (it is the helper the other four import, ignored for symmetry).
+        # Marker selection happens after collection, so one broken import anywhere
+        # under tests/ would take this job down with it. None of the five carries
+        # the contract marker, and test_mcp_contract_lint.py asserts that — so this
+        # list cannot become a way to silence a guard.
         run: |
           uv run pytest tests/ -m contract -p no:cacheprovider \
             --ignore=tests/test_async_operations.py \
