@@ -1,11 +1,11 @@
 [project]
 name = "mcp-server"
-version = "1.5.0"
+version = "1.6.0"
 description = "Graphiti MCP Server"
 readme = "README.md"
 requires-python = ">=3.10,<4"
 dependencies = [
-    "mcp>=1.9.4,<2",
+    "mcp>=2,<3",
     "openai>=1.91.0",
     "graphiti-core[falkordb,age]",
     "langdetect>=1.0.9",
@@ -67,7 +67,7 @@ docstring-code-format = true
 [dependency-groups]
 dev = [
     "faker>=37.12.0",
-    "httpx>=0.28.1",
+    "httpx2>=2.5.0",
     "psutil>=7.1.2",
     "pyright>=1.1.404",
     "pytest>=8.0.0",

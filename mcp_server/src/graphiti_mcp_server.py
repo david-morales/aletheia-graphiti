@@ -50,9 +50,10 @@ from graphiti_core.search.search_config_recipes import (
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.resources.types import FunctionResource, TextResource
-from pydantic import AnyUrl, BaseModel
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.resources.types import FunctionResource, TextResource
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from config.schema import GraphitiConfig, ServerConfig
@@ -203,16 +204,43 @@ GRAPHITI_MCP_INSTRUCTIONS = build_degraded_instructions(
     marker=DEGRADED_INSTRUCTIONS_MARKER,
 )
 
-# MCP server instance — read host from env to set DNS rebinding policy at init time.
-# When FASTMCP_HOST=0.0.0.0 (Docker), FastMCP skips DNS rebinding protection so
-# inter-container requests with Docker hostnames in the Host header are accepted.
+# Read host from env to set the DNS rebinding policy. When FASTMCP_HOST=0.0.0.0
+# (Docker), protection is skipped so inter-container requests carrying Docker
+# hostnames in the Host header are accepted.
 _init_host = os.environ.get('FASTMCP_HOST', '127.0.0.1')
 _init_port = int(os.environ.get('FASTMCP_PORT', '8000'))
-mcp = FastMCP(
+
+
+def _transport_security() -> TransportSecuritySettings | None:
+    """The DNS rebinding policy, decided from FASTMCP_HOST — not from the bind host.
+
+    SDK 2.x moved transport settings from the constructor to `run_*_async()`, and it
+    applies the same localhost auto-enable rule 1.x had — but now against the host
+    it is actually binding. That is NOT the rule this server ran under: 1.x froze the
+    decision at construction from FASTMCP_HOST, while the bind host was overwritten
+    later from config (`server.host`, which defaults to 0.0.0.0). Letting the bind
+    host decide would silently disable protection for every default deployment.
+
+    So the policy stays keyed to FASTMCP_HOST and is passed explicitly, which also
+    makes it visible rather than inherited from an SDK default that just moved.
+    """
+    if _init_host in ('127.0.0.1', 'localhost', '::1'):
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=['127.0.0.1:*', 'localhost:*', '[::1]:*'],
+            allowed_origins=['http://127.0.0.1:*', 'http://localhost:*', 'http://[::1]:*'],
+        )
+    return None
+
+
+# MCP server instance. `version` is served as `serverInfo.version`: 1.x reported the
+# SDK's own version there (A-D11) and 2.x defaults it to the empty string, so the
+# connector's build is passed in explicitly — the value A-D11 wanted and could not
+# have while the SDK owned the field.
+mcp = MCPServer(
     'Graphiti Agent Memory',
     instructions=GRAPHITI_MCP_INSTRUCTIONS,
-    host=_init_host,
-    port=_init_port,
+    version=CONNECTOR_VERSION,
 )
 
 # Global services
@@ -2432,7 +2460,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     apply_canonical_tool_order(mcp._tool_manager._tools)
 
     # Update MCP instructions
-    mcp._mcp_server.instructions = build_instructions(profile, flavour)
+    mcp._lowlevel_server.instructions = build_instructions(profile, flavour)
 
     logger.info('Registered tools with dynamic descriptions')
 
@@ -2472,7 +2500,7 @@ def register_fallback_tools(reason: str) -> None:
         mcp._resource_manager._resources.pop(uri, None)
     _register_schema_resource()
 
-    mcp._mcp_server.instructions = build_degraded_instructions(
+    mcp._lowlevel_server.instructions = build_degraded_instructions(
         group_id=group_id,
         flavour=flavour,
         reason=reason,
@@ -2532,7 +2560,9 @@ def _register_schema_resource() -> None:
 
     _replace_resource(
         FunctionResource(
-            uri=AnyUrl('graphiti://schema'),
+            # Plain `str`, not `AnyUrl`: SDK 2.x types resource URIs as `str` and
+            # rejects an AnyUrl outright.
+            uri='graphiti://schema',
             name='Graph Schema',
             description=(
                 'Node labels with counts and property keys, relationship types with '
@@ -2700,7 +2730,7 @@ async def initialize_server() -> ServerConfig:
     logger.info(f'  - Transport: {config.server.transport}')
 
     # Set dynamic MCP server name based on group_id
-    mcp._mcp_server.name = f'Graphiti - {config.graphiti.group_id}'
+    mcp._lowlevel_server.name = f'Graphiti - {config.graphiti.group_id}'
 
     # Log graphiti-core version
     try:
@@ -2742,14 +2772,9 @@ async def initialize_server() -> ServerConfig:
     # Initialize queue service with the client
     await queue_service.initialize(graphiti_client)
 
-    # Set MCP server settings (only for HTTP/SSE — stdio doesn't bind a port)
-    if config.server.transport != 'stdio':
-        if config.server.host:
-            mcp.settings.host = config.server.host
-        if config.server.port:
-            mcp.settings.port = config.server.port
-
-    # Return MCP configuration for transport
+    # SDK 2.x removed `mcp.settings`; the bind address is handed to `run_*_async()`
+    # instead. `config.server` already carries the resolved host/port (CLI > env >
+    # YAML > defaults), so it is the only thing the transport needs.
     return config.server
 
 
@@ -2758,26 +2783,30 @@ async def run_mcp_server():
     # Initialize the server
     mcp_config = await initialize_server()
 
+    # The bind address, which SDK 2.x takes at run() rather than at construction.
+    # `_init_host`/`_init_port` remain the fallback for a config that leaves them
+    # empty, exactly as the constructor defaults did under 1.x.
+    host = mcp_config.host or _init_host
+    port = mcp_config.port or _init_port
+
     # Run the server with configured transport
     logger.info(f'Starting MCP server with transport: {mcp_config.transport}')
     if mcp_config.transport == 'stdio':
         await mcp.run_stdio_async()
     elif mcp_config.transport == 'sse':
-        logger.info(
-            f'Running MCP server with SSE transport on {mcp.settings.host}:{mcp.settings.port}'
+        logger.info(f'Running MCP server with SSE transport on {host}:{port}')
+        logger.info(f'Access the server at: http://{host}:{port}/sse')
+        await mcp.run_sse_async(
+            host=host, port=port, transport_security=_transport_security()
         )
-        logger.info(f'Access the server at: http://{mcp.settings.host}:{mcp.settings.port}/sse')
-        await mcp.run_sse_async()
     elif mcp_config.transport == 'http':
         # Use localhost for display if binding to 0.0.0.0
-        display_host = 'localhost' if mcp.settings.host == '0.0.0.0' else mcp.settings.host
-        logger.info(
-            f'Running MCP server with streamable HTTP transport on {mcp.settings.host}:{mcp.settings.port}'
-        )
+        display_host = 'localhost' if host == '0.0.0.0' else host
+        logger.info(f'Running MCP server with streamable HTTP transport on {host}:{port}')
         logger.info('=' * 60)
         logger.info('MCP Server Access Information:')
-        logger.info(f'  Base URL: http://{display_host}:{mcp.settings.port}/')
-        logger.info(f'  MCP Endpoint: http://{display_host}:{mcp.settings.port}/mcp/')
+        logger.info(f'  Base URL: http://{display_host}:{port}/')
+        logger.info(f'  MCP Endpoint: http://{display_host}:{port}/mcp/')
         logger.info('  Transport: HTTP (streamable)')
 
         # Show FalkorDB Browser UI access if enabled
@@ -2790,7 +2819,9 @@ async def run_mcp_server():
         # Configure uvicorn logging to match our format
         configure_uvicorn_logging()
 
-        await mcp.run_streamable_http_async()
+        await mcp.run_streamable_http_async(
+            host=host, port=port, transport_security=_transport_security()
+        )
     else:
         raise ValueError(
             f'Unsupported transport: {mcp_config.transport}. Use "sse", "stdio", or "http"'
