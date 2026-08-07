@@ -20,6 +20,10 @@ from flavours.age import AgeFlavour
 from tool_annotations import TOOL_ANNOTATIONS
 from tool_descriptions import build_degraded_instructions, build_instructions
 
+# Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
+# these guards need no database and no API key, so they gate every change.
+pytestmark = pytest.mark.contract
+
 DESTRUCTIVE = ('build_communities', 'clear_graph', 'delete_entity_edge', 'delete_episode')
 
 
