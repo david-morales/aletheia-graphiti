@@ -67,7 +67,12 @@ docstring-code-format = true
 [dependency-groups]
 dev = [
     "faker>=37.12.0",
-    "httpx2>=2.5.0",
+    # The test suite's own HTTP/ASGI client (four modules import it), NOT the MCP
+    # transport — the SDK brings its own `httpx2` as a runtime dependency. Swapping
+    # this to httpx2 during the SDK 2.x migration was a mistake: it changed the
+    # declaration without changing a single import, leaving those modules relying on
+    # a package that only arrived transitively.
+    "httpx>=0.28.1",
     "psutil>=7.1.2",
     "pyright>=1.1.404",
     "pytest>=8.0.0",

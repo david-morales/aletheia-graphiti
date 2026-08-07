@@ -1273,7 +1273,7 @@ providers = [
 [package.dev-dependencies]
 dev = [
     { name = "faker" },
-    { name = "httpx2" },
+    { name = "httpx" },
     { name = "psutil" },
     { name = "pyright" },
     { name = "pytest" },
@@ -1305,7 +1305,7 @@ provides-extras = ["azure", "providers"]
 [package.metadata.requires-dev]
 dev = [
     { name = "faker", specifier = ">=37.12.0" },
-    { name = "httpx2", specifier = ">=2.5.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "psutil", specifier = ">=7.1.2" },
     { name = "pyright", specifier = ">=1.1.404" },
     { name = "pytest", specifier = ">=8.0.0" },
