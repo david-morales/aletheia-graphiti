@@ -22,6 +22,10 @@ change the served envelope for every consumer while every existing test stayed
 green. This module drives a REAL in-process client session so the assertions are
 against wire shapes rather than an idealisation of them.
 
+What it measures is the *pinned* SDK: CI runs `uv sync`, so the round trip below
+exercises the version in `uv.lock`. That is the intent — the guard gates the bump
+rather than tracking whatever happens to be installed.
+
 The consumer half of this premise lives in aletheia
 (`tests/mcp/test_structured_content_wire.py::TestWirePremise`) and measures
 *aletheia's* installed SDK. This one measures the fork's. Two repos, two
@@ -208,10 +212,57 @@ def test_ci_runs_the_contract_marker():
     )
 
 
-def test_the_contract_marker_is_registered():
-    """An unregistered marker is a warning, and with `-m` it silently selects nothing."""
-    ini = (MCP_SERVER / 'pytest.ini').read_text(encoding='utf-8')
-    assert 'contract:' in ini
+def _ci_pytest_target() -> str:
+    """The positional path the CI job hands pytest (`tests/`)."""
+    workflow = CI_WORKFLOW.read_text(encoding='utf-8')
+    match = re.search(r'uv run pytest (\S+)', workflow)
+    assert match, 'cannot find the pytest invocation in the workflow'
+    return match.group(1)
+
+
+def _resolved_ini() -> pathlib.Path:
+    """The pytest.ini the CI invocation actually loads.
+
+    pytest takes the rootdir from the common ancestor of the positional args and
+    then walks UP looking for a config file, so `pytest tests/` from mcp_server
+    resolves `mcp_server/tests/pytest.ini` — not `mcp_server/pytest.ini`.
+    """
+    start = (MCP_SERVER / _ci_pytest_target()).resolve()
+    for candidate in [start, *start.parents]:
+        ini = candidate / 'pytest.ini'
+        if ini.is_file():
+            return ini
+    raise AssertionError('no pytest.ini found above the CI target')
+
+
+def test_the_contract_marker_is_registered_in_the_ini_ci_resolves():
+    """The guard that missed F-1 by reading the wrong file.
+
+    mcp_server carries two pytest.ini files and the CI command loads the deeper
+    one, which sets `--strict-markers`. Asserting against a hardcoded path let
+    this test pass green while the job it describes failed collection on all five
+    guard modules. It now resolves the file the way pytest does.
+    """
+    ini = _resolved_ini()
+    assert 'contract:' in ini.read_text(encoding='utf-8'), (
+        f'{ini.relative_to(REPO)} is the config the CI command loads and it does not '
+        f'register the `contract` marker — with --strict-markers that is a collection '
+        f'error on every guard module'
+    )
+
+
+_TRACKED_INIS = sorted(
+    p.relative_to(MCP_SERVER).as_posix()
+    for p in MCP_SERVER.rglob('pytest.ini')
+    if not {'.venv', 'node_modules', '__pycache__', 'site-packages'} & set(p.parts)
+)
+
+
+@pytest.mark.parametrize('ini', _TRACKED_INIS)
+def test_every_pytest_ini_registers_the_marker(ini):
+    """Belt to the brace above: whichever ini a future invocation resolves, the
+    marker is there. Two config files is the condition that produced F-1."""
+    assert 'contract:' in (MCP_SERVER / ini).read_text(encoding='utf-8')
 
 
 def test_no_contract_guard_hides_in_the_ci_ignore_list():
