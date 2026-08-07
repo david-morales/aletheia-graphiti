@@ -634,11 +634,42 @@ do not use it. The rule is Aletheia ADR-015 R4, and it applies to every server i
 the fleet so that one client-side branch handles them all:
 
 - **`error` is always a string**, never a boolean, and it is **absent on success**
-  — so `if "error" in result` is the entire check a consumer needs.
+  from the **text content** — the JSON dict in the result's content block. That
+  dict is the contract.
 - Query tools may add an optional **`hint`**, and this server adds an additive
   `error_detail`. Both are advisory; `error` alone is the signal.
 - Every tool publishes `error` in its `outputSchema`, so the failure path is part
   of the announced contract rather than something a client discovers by failing.
+
+### Which channel to read, and the one portable check
+
+A tool result carries the payload twice: as **text content** (the dict the tool
+returned, verbatim) and as **`structuredContent`** (the same payload validated
+against the published `outputSchema`). They are not identical, and the difference
+matters for error detection.
+
+Because every tool declares `error` as an optional field, FastMCP fills in **every
+declared-but-absent optional field as `null`** when it builds `structuredContent`.
+So on a *successful* call:
+
+| channel | payload |
+|---|---|
+| text content | `{"message": "cleared"}` |
+| `structuredContent` | `{"message": "cleared", "error": null}` |
+
+**`"error" in result` is therefore NOT a portable check** — it is false on the text
+channel and true on the structured channel for the very same successful call. Test
+the **value**, not the key:
+
+```python
+payload = json.loads(result.content[0].text)   # the text channel — the contract
+if payload.get("error"):                       # truthiness, not key presence
+    ...
+```
+
+`result.get("error")` is correct on both channels, which is why it is the rule.
+This applies to the whole surface: every tool returns one flat typed payload, so
+there is no `result` wrapper to unwrap and no per-tool knowledge required.
 
 Why in-band: these are *answers about the graph*, not transport faults. A
 malformed Cypher query, a missing ontology graph, or an unreachable label is

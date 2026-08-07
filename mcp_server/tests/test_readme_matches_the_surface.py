@@ -77,6 +77,22 @@ def test_the_error_contract_deviation_is_documented_as_a_decision():
         assert claim in section, f'the error contract does not state: {claim}'
 
 
+def test_the_error_contract_names_the_channel_and_the_portable_check():
+    """The flattened models emit an explicit `error: null` in structuredContent on
+    success, so key presence is NOT a portable check.
+
+    Saying "absent on success" without naming the channel tells a
+    structured-channel client — Claude Desktop, MCP Inspector, the TS SDK's
+    structured path — to read every successful call as a failure.
+    """
+    section = TEXT.split('## Error contract', 1)[1].split('\n## ', 1)[0]
+    assert 'text content' in section
+    assert 'structuredContent' in section
+    assert '"error": null' in section
+    assert 'result.get("error")' in section
+    assert 'NOT a portable check' in section
+
+
 def test_the_deprecated_transport_is_labelled():
     """`sse` still works; the spec deprecated HTTP+SSE. Say so where it is chosen."""
     section = TEXT.split('### Available Command-Line Arguments', 1)[1].split('\n### ', 1)[0]
