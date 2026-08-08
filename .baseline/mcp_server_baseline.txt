@@ -1,0 +1,702 @@
+/Users/dmorales/git/graphiti/.worktrees/wave7-mcp-hardening/mcp_server/tests/test_comprehensive_integration.py:19: PytestCollectionWarning: cannot collect test class 'TestMetrics' because it has a __init__ constructor (from: test_comprehensive_integration.py)
+  @dataclass
+[1m============================= test session starts ==============================[0m
+platform darwin -- Python 3.11.15, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/dmorales/git/graphiti/.worktrees/wave7-mcp-hardening/mcp_server/tests
+configfile: pytest.ini
+plugins: xdist-3.8.0, anyio-4.14.2, asyncio-1.3.0, httpx-0.36.2, langsmith-0.8.5
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1156 items / 1 skipped
+
+tests/live/test_tool_coverage_matrix_live.py [33ms[0m[33ms[0m[32m                          [  0%][0m
+tests/live/test_two_flavour_parity_live.py [33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[33ms[0m[32m              [  1%][0m
+tests/test_add_memory_sync.py [32m.[0m[32m.[0m[32m                                         [  1%][0m
+tests/test_age_flavour.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [  5%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                             [  9%][0m
+tests/test_bedrock_embedder_provider.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                            [  9%][0m
+tests/test_bedrock_provider.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                     [ 10%][0m
+tests/test_comprehensive_integration.py [31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[32m.[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[31mF[0m[32m.[0m[32m.[0m[31m               [ 11%][0m
+tests/test_config_merge.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                    [ 12%][0m
+tests/test_configuration.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                      [ 13%][0m
+tests/test_connector_version.py [32m.[0m[32m.[0m[33ms[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                              [ 14%][0m
+tests/test_cypher.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 18%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 25%]
+[0m[32m.[0m[33ms[0m[33ms[0m[33ms[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                            [ 28%][0m
+tests/test_cypher_extractor.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                        [ 30%][0m
+tests/test_cypher_quality.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m            [ 33%][0m
+tests/test_cypher_regression.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                        [ 34%][0m
+tests/test_degraded_fallback.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                          [ 35%][0m
+tests/test_domain_profile.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                             [ 37%][0m
+tests/test_domain_profile_flavour.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                    [ 38%][0m
+tests/test_falkordb_dialect_integration.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                     [ 39%][0m
+tests/test_flavours.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                             [ 41%][0m
+tests/test_get_schema_canonical.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                           [ 42%][0m
+tests/test_graph_profiler.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 45%]
+[0m[31m                                                                         [ 45%][0m
+tests/test_hierarchy_caveat_propagation.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                 [ 47%][0m
+tests/test_http_integration.py [33ms[0m[33ms[0m[31m                                        [ 47%][0m
+tests/test_instructions_catalog.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 50%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                [ 53%][0m
+tests/test_main_client_resilience.py [32m.[0m[32m.[0m[31m                                  [ 54%][0m
+tests/test_mcp_contract_lint.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m  [ 57%][0m
+tests/test_no_domain_leakage.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 60%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m           [ 66%][0m
+tests/test_ontology_age_gate.py [32m.[0m[32m.[0m[31m                                       [ 66%][0m
+tests/test_ontology_payload_variants.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m         [ 68%][0m
+tests/test_ontology_resilience.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                             [ 69%][0m
+tests/test_ontology_tiers.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                       [ 71%][0m
+tests/test_output_field_nullability.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 74%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                                                    [ 74%][0m
+tests/test_queue_gc.py [32m.[0m[32m.[0m[32m.[0m[31m                                               [ 74%][0m
+tests/test_readme_matches_the_surface.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 77%]
+[0m[31m                                                                         [ 77%][0m
+tests/test_request_body_limit.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                  [ 78%][0m
+tests/test_response_types.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                  [ 78%][0m
+tests/test_sample_subgraph.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                           [ 80%][0m
+tests/test_schema_resource.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                  [ 81%][0m
+tests/test_stdio_simple.py [32m.[0m[31m                                             [ 81%][0m
+tests/test_subgraph_flavours.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 84%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                                                     [ 84%][0m
+tests/test_tool_annotations.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                              [ 85%][0m
+tests/test_tool_descriptions.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                       [ 87%][0m
+tests/test_tool_order.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                       [ 88%][0m
+tests/test_tools.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 92%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                                                 [ 93%][0m
+tests/test_transport_security.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                           [ 94%][0m
+tests/test_typed_output_schemas.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m [ 97%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                                [100%][0m
+
+=================================== FAILURES ===================================
+[31m[1m________________ TestCoreOperations.test_server_initialization _________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:153: in test_server_initialization
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x11a1471c0>
+asyncgen: <async_generator object stdio_client at 0x11a1471c0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m___________________ TestCoreOperations.test_add_text_memory ____________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:176: in test_add_text_memory
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120746980>
+asyncgen: <async_generator object stdio_client at 0x120746980>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m___________________ TestCoreOperations.test_add_json_memory ____________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:199: in test_add_json_memory
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120746f00>
+asyncgen: <async_generator object stdio_client at 0x120746f00>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m__________________ TestCoreOperations.test_add_message_memory __________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:226: in test_add_message_memory
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120747480>
+asyncgen: <async_generator object stdio_client at 0x120747480>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m_______________ TestSearchOperations.test_search_nodes_semantic ________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:255: in test_search_nodes_semantic
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120747a00>
+asyncgen: <async_generator object stdio_client at 0x120747a00>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m_____________ TestSearchOperations.test_search_facts_with_filters ______________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:283: in test_search_facts_with_filters
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x1209301a0>
+asyncgen: <async_generator object stdio_client at 0x1209301a0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m___________________ TestSearchOperations.test_hybrid_search ____________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:315: in test_hybrid_search
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x1209305c0>
+asyncgen: <async_generator object stdio_client at 0x1209305c0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m______________ TestEpisodeManagement.test_get_episodes_pagination ______________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:352: in test_get_episodes_pagination
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120930b40>
+asyncgen: <async_generator object stdio_client at 0x120930b40>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m__________________ TestEpisodeManagement.test_delete_episode ___________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:380: in test_delete_episode
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x1209310c0>
+asyncgen: <async_generator object stdio_client at 0x1209310c0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m_______________ TestEntityAndEdgeOperations.test_get_entity_edge _______________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:418: in test_get_entity_edge
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x1209317a0>
+asyncgen: <async_generator object stdio_client at 0x1209317a0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m________________ TestErrorHandling.test_invalid_tool_arguments _________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:455: in test_invalid_tool_arguments
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120931d20>
+asyncgen: <async_generator object stdio_client at 0x120931d20>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m___________________ TestErrorHandling.test_timeout_handling ____________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:468: in test_timeout_handling
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120932400>
+asyncgen: <async_generator object stdio_client at 0x120932400>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m_________________ TestErrorHandling.test_concurrent_operations _________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:491: in test_concurrent_operations
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120932ae0>
+asyncgen: <async_generator object stdio_client at 0x120932ae0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m_____________________ TestPerformance.test_latency_metrics _____________________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:520: in test_latency_metrics
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x120933060>
+asyncgen: <async_generator object stdio_client at 0x120933060>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[31m[1m_______________ TestPerformance.test_batch_processing_efficiency _______________[0m
+[1m[31mtests/test_comprehensive_integration.py[0m:554: in test_batch_processing_efficiency
+    [0m[94masync[39;49;00m [94mwith[39;49;00m GraphitiTestClient() [94mas[39;49;00m client:[90m[39;49;00m
+[1m[31mtests/test_comprehensive_integration.py[0m:61: in __aenter__
+    [0m[94mawait[39;49;00m [96mself[39;49;00m.session.initialize()[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:616: in initialize
+    [0mresult = [94mawait[39;49;00m [96mself[39;49;00m.send_request([90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/client/session.py[0m:553: in send_request
+    [0mraw = [94mawait[39;49;00m [96mself[39;49;00m._dispatcher.send_raw_request(method, data.get([33m"[39;49;00m[33mparams[39;49;00m[33m"[39;49;00m), opts)[90m[39;49;00m
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31m/opt/homebrew/lib/python3.11/site-packages/mcp/shared/jsonrpc_dispatcher.py[0m:338: in send_raw_request
+    [0m[94mraise[39;49;00m [96mRuntimeError[39;49;00m([33m"[39;49;00m[33mJSONRPCDispatcher.send_raw_request called before run()[39;49;00m[33m"[39;49;00m)[90m[39;49;00m
+[1m[31mE   RuntimeError: JSONRPCDispatcher.send_raw_request called before run()[0m
+--------------------------- Captured stderr teardown ---------------------------
+error: Failed to spawn: `../main.py`
+  Caused by: No such file or directory (os error 2)
+---------------------------- Captured log teardown -----------------------------
+[1m[31mERROR   [0m asyncio:base_events.py:1785 an error occurred during closing of asynchronous generator <async_generator object stdio_client at 0x1209335e0>
+asyncgen: <async_generator object stdio_client at 0x1209335e0>
+  + Exception Group Traceback (most recent call last):
+  |   File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | BaseExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 204, in stdio_client
+    |     yield read_stream, write_stream
+    | GeneratorExit
+    +------------------------------------
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.11/site-packages/mcp/client/stdio.py", line 200, in stdio_client
+    async with anyio.create_task_group() as tg:
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 821, in __aexit__
+    if self.cancel_scope.__exit__(type(exc), exc, exc.__traceback__):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 464, in __exit__
+    raise RuntimeError(
+RuntimeError: Attempted to exit cancel scope in a different task than it was entered in
+[36m[1m=========================== short test summary info ============================[0m
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestCoreOperations::test_server_initialization[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestCoreOperations::test_add_text_memory[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestCoreOperations::test_add_json_memory[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestCoreOperations::test_add_message_memory[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestSearchOperations::test_search_nodes_semantic[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestSearchOperations::test_search_facts_with_filters[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestSearchOperations::test_hybrid_search[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestEpisodeManagement::test_get_episodes_pagination[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestEpisodeManagement::test_delete_episode[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestEntityAndEdgeOperations::test_get_entity_edge[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestErrorHandling::test_invalid_tool_arguments[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestErrorHandling::test_timeout_handling[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestErrorHandling::test_concurrent_operations[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestPerformance::test_latency_metrics[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31mFAILED[0m tests/test_comprehensive_integration.py::[1mTestPerformance::test_batch_processing_efficiency[0m - RuntimeError: JSONRPCDispatcher.send_raw_request called before run()
+[31m================= [31m[1m15 failed[0m, [32m1117 passed[0m, [33m25 skipped[0m[31m in 10.98s[0m[31m =================[0m
+EXIT=1

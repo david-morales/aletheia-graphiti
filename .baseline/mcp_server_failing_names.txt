@@ -1,0 +1,15 @@
+FAILED tests/test_comprehensive_integration.py::TestCoreOperations::test_add_json_memory
+FAILED tests/test_comprehensive_integration.py::TestCoreOperations::test_add_message_memory
+FAILED tests/test_comprehensive_integration.py::TestCoreOperations::test_add_text_memory
+FAILED tests/test_comprehensive_integration.py::TestCoreOperations::test_server_initialization
+FAILED tests/test_comprehensive_integration.py::TestEntityAndEdgeOperations::test_get_entity_edge
+FAILED tests/test_comprehensive_integration.py::TestEpisodeManagement::test_delete_episode
+FAILED tests/test_comprehensive_integration.py::TestEpisodeManagement::test_get_episodes_pagination
+FAILED tests/test_comprehensive_integration.py::TestErrorHandling::test_concurrent_operations
+FAILED tests/test_comprehensive_integration.py::TestErrorHandling::test_invalid_tool_arguments
+FAILED tests/test_comprehensive_integration.py::TestErrorHandling::test_timeout_handling
+FAILED tests/test_comprehensive_integration.py::TestPerformance::test_batch_processing_efficiency
+FAILED tests/test_comprehensive_integration.py::TestPerformance::test_latency_metrics
+FAILED tests/test_comprehensive_integration.py::TestSearchOperations::test_hybrid_search
+FAILED tests/test_comprehensive_integration.py::TestSearchOperations::test_search_facts_with_filters
+FAILED tests/test_comprehensive_integration.py::TestSearchOperations::test_search_nodes_semantic
