@@ -647,12 +647,20 @@ def format_result(
     return envelope
 
 
-def format_error(query: str, error: CypherError) -> dict[str, Any]:
+def format_error(query: str, error: CypherError, execution_ms: float = 0.0) -> dict[str, Any]:
     """Format a CypherError into the standard error envelope.
 
     ADR-015 R4: the top-level ``error`` is a STRING (so the workbench's existing error handling
     and the alias layer keep working); ``hint`` is the actionable rewrite; the full structured
     detail is additive under ``error_detail``.
+
+    ``execution_ms`` is the wall clock this call actually spent, on the same footing as
+    ``format_result``'s. It used to be hardcoded to 0 on every path, which made a
+    validator rejection made before touching the database indistinguishable from a query
+    the database ran for four seconds and then failed (BUG-33a) — two very different
+    costs a consumer's retry/breaker policy has to tell apart. The default stays 0.0
+    because it is the true reading for the pre-flight paths; callers that executed
+    anything pass their measurement.
     """
     outcome = 'error' if error.stage == 'execution' else 'rejected'
     return {
@@ -668,7 +676,7 @@ def format_error(query: str, error: CypherError) -> dict[str, Any]:
             'suggestion': error.suggestion,
             'doc_hint': error.doc_hint,
         },
-        'execution_ms': 0,
+        'execution_ms': execution_ms,
         'cypher_quality': {
             'outcome': outcome,
             'verdict': outcome,

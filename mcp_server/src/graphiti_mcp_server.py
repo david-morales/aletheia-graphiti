@@ -2339,13 +2339,17 @@ async def run_cypher(query: str) -> CypherResultResponse:
     sanitized = result
     limit = sanitized.effective_limit
 
+    # Started BEFORE the try, so the failure path has a reading no matter where it
+    # broke — including inside get_client(), which does connection setup and can be the
+    # expensive part. A hardcoded 0 here is what made the cheap and expensive failure
+    # classes indistinguishable to consumers (BUG-33a).
+    start_time = time.time()
     try:
         client = await graphiti_service.get_client()
         driver = client.driver
 
         # Read-only execution is a flavour concern: FalkorDB uses DB-enforced ro_query;
         # AGE/base rely on the pipeline whitelist + execute_query. Returns (records, header).
-        start_time = time.time()
         records, header = await flavour.execute_graph_query(driver, sanitized.query)
         execution_ms = round((time.time() - start_time) * 1000, 1)
 
@@ -2354,9 +2358,10 @@ async def run_cypher(query: str) -> CypherResultResponse:
         return format_result(records, header, sanitized.query, sanitized.auto_fixes, execution_ms, limit, schema=schema)
 
     except Exception as e:
+        execution_ms = round((time.time() - start_time) * 1000, 1)
         logger.error(f'Cypher execution error: {e}')
         error = flavour.classify_execution_error(str(e), query=sanitized.query)
-        result = format_error(sanitized.query, error)
+        result = format_error(sanitized.query, error, execution_ms)
         result['auto_fixes'] = sanitized.auto_fixes
         return result
 
