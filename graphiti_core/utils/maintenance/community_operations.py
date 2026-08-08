@@ -267,12 +267,33 @@ async def build_communities(
     return community_nodes, community_edges
 
 
-async def remove_communities(driver: GraphDriver):
+async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = None):
+    """Delete community nodes, scoped to `group_ids` when they are given.
+
+    An unscoped call is still the right thing for a whole-graph rebuild, so a missing
+    or empty `group_ids` keeps the original semantics. What it must NOT do is happen by
+    accident: `Graphiti.build_communities(group_ids=['a'])` used to clear with no filter
+    at all, so rebuilding one partition destroyed every other partition's community
+    layer and never restored it (BUG-57). Passing `[]` is read as "no scope" rather than
+    "match nothing" — `IN []` would delete zero rows and turn a full rebuild into a
+    silent no-op.
+    """
     if driver.graph_operations_interface:
         try:
-            return await driver.graph_operations_interface.remove_communities(driver)
+            return await driver.graph_operations_interface.remove_communities(driver, group_ids)
         except NotImplementedError:
             pass
+
+    if group_ids:
+        await driver.execute_query(
+            """
+            MATCH (c:Community)
+            WHERE c.group_id IN $group_ids
+            DETACH DELETE c
+            """,
+            group_ids=group_ids,
+        )
+        return
 
     await driver.execute_query(
         """

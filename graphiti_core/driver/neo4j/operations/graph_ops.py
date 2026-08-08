@@ -148,7 +148,22 @@ class Neo4jGraphMaintenanceOperations(GraphMaintenanceOperations):
     async def remove_communities(
         self,
         executor: QueryExecutor,
+        group_ids: list[str] | None = None,
     ) -> None:
+        # Scoped when a partition list is given, whole-graph otherwise. Unscoped inside
+        # a per-group rebuild this destroyed every other partition's communities
+        # (BUG-57). An empty list is read as "no scope", not "match nothing".
+        if group_ids:
+            await executor.execute_query(
+                """
+                MATCH (c:Community)
+                WHERE c.group_id IN $group_ids
+                DETACH DELETE c
+                """,
+                group_ids=group_ids,
+            )
+            return
+
         await executor.execute_query(
             """
             MATCH (c:Community)

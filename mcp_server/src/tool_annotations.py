@@ -84,20 +84,21 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     'add_memory': _additive_write('Ingest an episode'),
     # --- destructive (4) --------------------------------------------------
     # `build_communities` reads as additive and is not. graphiti_core's
-    # `Graphiti.build_communities` calls `remove_communities(driver)` with NO
-    # group filter, and both implementations run an unscoped
-    # `MATCH (c:Community) DETACH DELETE c`. It therefore deletes every Community
-    # node and HAS_MEMBER edge in the WHOLE graph before rebuilding only the
-    # requested partition — communities in every other group_id are destroyed and
-    # never restored. Annotating it additive would let a HITL client auto-approve
-    # exactly that.
+    # `Graphiti.build_communities` clears before it rebuilds: every existing
+    # Community node in the requested partitions, and every HAS_MEMBER edge hanging
+    # off one, is DETACH DELETEd first. Annotating it additive would let a HITL
+    # client auto-approve that.
+    # The blast radius used to be worse still: the clear ran unscoped
+    # (`MATCH (c:Community) DETACH DELETE c`, no group filter) and took every OTHER
+    # group_id's community layer with it, never restoring it. Fixed in BUG-57 — the
+    # wipe now carries the caller's group_ids — but destructive it remains.
     # NOT idempotent, despite landing on an equivalent clustering: each run mints
     # fresh uuid4 Community nodes with freshly generated LLM summaries, so every
     # uuid a caller holds is invalidated and every repeat costs another full
     # summarization pass. A client auto-retrying on `idempotentHint` would re-wipe
     # and re-pay.
     'build_communities': _destructive(
-        'Rebuild communities (wipes ALL communities first)', idempotent=False
+        'Rebuild communities (wipes the requested partitions first)', idempotent=False
     ),
     'delete_entity_edge': _destructive('Delete a relationship'),
     'delete_episode': _destructive('Delete an episode and its extracted data'),
