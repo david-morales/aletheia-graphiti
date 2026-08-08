@@ -114,19 +114,25 @@ class TestRunner:
             pytest_args.extend(['-m', 'unit', 'test_*.py'])
         elif suite == 'integration':
             pytest_args.extend(['-m', 'integration or not unit', 'test_*.py'])
-        elif suite == 'comprehensive':
-            pytest_args.append('test_comprehensive_integration.py')
+        elif suite == 'live':
+            # The end-to-end gate: a real server over a real transport against a real
+            # FalkorDB. Self-skips without a key or a database (replaces the former
+            # 'comprehensive' and 'smoke' suites, whose module was deleted in wave 7 —
+            # it drove the SDK-1 layered client against a tool surface three renames
+            # out of date and had been red at every commit).
+            pytest_args.extend(['-m', 'integration', 'test_live_falkordb_int.py'])
+        elif suite == 'contract':
+            # No database, no key: the ADR-015/019 surface guards CI runs on every change.
+            pytest_args.extend(['-m', 'contract'])
         elif suite == 'async':
             pytest_args.append('test_async_operations.py')
         elif suite == 'stress':
             pytest_args.extend(['-m', 'slow', 'test_stress_load.py'])
         elif suite == 'smoke':
-            # Quick smoke test - just basic operations
-            pytest_args.extend(
-                [
-                    'test_comprehensive_integration.py::TestCoreOperations::test_server_initialization',
-                    'test_comprehensive_integration.py::TestCoreOperations::test_add_text_memory',
-                ]
+            # Quick smoke: does the server come up and announce its catalogue?
+            pytest_args.append(
+                'test_live_falkordb_int.py::'
+                'test_the_server_announces_the_canonical_catalog_in_its_canonical_order'
             )
         elif suite == 'all':
             pytest_args.append('.')
@@ -184,7 +190,6 @@ class TestRunner:
         result = pytest.main(
             [
                 '-v',
-                'test_comprehensive_integration.py::TestPerformance',
                 'test_async_operations.py::TestAsyncPerformance',
                 '--benchmark-only' if self.args.benchmark_only else '',
             ]
@@ -233,10 +238,11 @@ def main():
 Test Suites:
   unit          - Run unit tests only
   integration   - Run integration tests
-  comprehensive - Run comprehensive integration test suite
+  contract      - Run the ADR-015/019 surface guards (no database, no API key)
+  live          - Run the end-to-end gate against a live FalkorDB + a real model
   async         - Run async operation tests
   stress        - Run stress and load tests
-  smoke         - Run quick smoke tests
+  smoke         - Run a quick smoke test (server comes up, announces its catalogue)
   all           - Run all tests
 
 Examples:
@@ -249,7 +255,7 @@ Examples:
 
     parser.add_argument(
         'suite',
-        choices=['unit', 'integration', 'comprehensive', 'async', 'stress', 'smoke', 'all'],
+        choices=['unit', 'integration', 'contract', 'live', 'async', 'stress', 'smoke', 'all'],
         help='Test suite to run',
     )
 

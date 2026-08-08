@@ -10,18 +10,37 @@ The test suite is designed to thoroughly test all aspects of the Graphiti MCP se
 
 ### Core Test Modules
 
-- **`test_comprehensive_integration.py`** - Main integration test suite covering all MCP tools
-- **`test_async_operations.py`** - Tests for concurrent operations and async patterns
-- **`test_stress_load.py`** - Stress testing and load testing scenarios
-- **`test_fixtures.py`** - Shared fixtures and test utilities
-- **`test_mcp_integration.py`** - Original MCP integration tests
-- **`test_configuration.py`** - Configuration loading and validation tests
+- **`test_live_falkordb_int.py`** - THE end-to-end gate: a real server over stdio AND
+  streamable HTTP, against a real FalkorDB and a real model. Wired to CI's
+  `live-mcp-tests` job. Self-skips without a key or a database.
+- **`tests/live/`** - over-the-wire suites pointed at ALREADY-RUNNING connectors
+  (`test_tool_coverage_matrix_live.py`, `test_two_flavour_parity_live.py`), gated on
+  their own env vars.
+- **`test_cypher*.py`** - the Cypher validation pipeline and result/error envelopes.
+- **`test_tool_*.py` / `test_typed_output_schemas.py` / `test_response_types.py` /
+  `test_instructions_catalog.py`** - the ADR-015/019 surface guards (`contract` marker).
+- **`test_async_operations.py`** - concurrent operations and async patterns.
+- **`test_stress_load.py`** - stress and load scenarios.
+- **`test_fixtures.py`** - shared fixtures and test utilities.
+- **`test_configuration.py`** - configuration loading and validation.
+
+Seven modules were DELETED in wave 7 (`test_comprehensive_integration.py`,
+`test_mcp_integration.py`, `test_integration.py`, `test_falkordb_integration.py`,
+`test_mcp_transports.py`, `test_stdio_simple.py`, `test_http_integration.py`). All seven
+built the SDK-1 layered `ClientSession`, which raises `send_raw_request called before
+run()` under SDK 2.x, and all seven targeted a tool surface that no longer exists
+(`search_nodes`, `add_triplet`, `summarize_saga`, `get_episode_entities`). Six of them
+collected zero tests or swallowed every failure in a bare `except`, so they looked green
+while covering nothing; the seventh was red at every commit. Their intent — an
+end-to-end run over a real transport — now lives in `test_live_falkordb_int.py`, in a
+form that actually fails when the server is wrong.
 
 ### Test Categories
 
 Tests are organized with pytest markers:
 
 - `unit` - Fast unit tests without external dependencies
+- `contract` - ADR-015/019 surface guards; no database, no API key, run by CI on every change
 - `integration` - Tests requiring database and services
 - `slow` - Long-running tests (stress/load tests)
 - `requires_neo4j` - Tests requiring Neo4j
@@ -61,10 +80,11 @@ python tests/run_tests.py [suite] [options]
 Suites:
   unit          - Unit tests only
   integration   - Integration tests
-  comprehensive - Comprehensive integration suite
+  contract      - ADR-015/019 surface guards (no database, no API key)
+  live          - The end-to-end gate against a live FalkorDB + a real model
   async         - Async operation tests
   stress        - Stress and load tests
-  smoke         - Quick smoke tests
+  smoke         - Quick smoke test (server comes up, announces its catalogue)
   all           - All tests
 
 Options:
@@ -228,11 +248,11 @@ jobs:
           pip install uv
           uv sync --extra dev
 
-      - name: Run smoke tests
-        run: python tests/run_tests.py smoke --mock-llm
+      - name: Run the contract guards
+        run: python tests/run_tests.py contract
 
-      - name: Run integration tests
-        run: python tests/run_tests.py integration --database neo4j
+      - name: Run the live end-to-end gate
+        run: python tests/run_tests.py live --database falkordb
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
