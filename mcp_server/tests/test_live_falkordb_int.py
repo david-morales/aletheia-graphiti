@@ -37,6 +37,7 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import time
 from contextlib import AsyncExitStack, closing, suppress
 from pathlib import Path
@@ -210,6 +211,7 @@ class LiveMCPClient:
         self.transport = transport
         self._stack = AsyncExitStack()
         self._process: asyncio.subprocess.Process | None = None
+        self._log: Any | None = None
         self.session: Client | None = None
 
     async def __aenter__(self) -> 'LiveMCPClient':
@@ -232,6 +234,14 @@ class LiveMCPClient:
             'SERVER__HOST': '127.0.0.1',
             'SERVER__PORT': str(port),
         }
+        # The server's output goes to a temp file, not DEVNULL. Everything the server
+        # has to say about a failure — the LLM 401 that stops ingestion, a driver
+        # error, a bind failure — arrives on stderr, and discarding it left a failed
+        # e2e run reporting only "episode was not processed within the timeout" with
+        # the cause thrown away. The tail is attached to the assertion instead.
+        self._log = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed in __aexit__
+            mode='w+', suffix='.mcp-server.log', delete=False
+        )
         self._process = await asyncio.create_subprocess_exec(
             SERVER_PYTHON,
             str(MCP_SERVER_DIR / 'main.py'),
@@ -239,8 +249,8 @@ class LiveMCPClient:
             'http',
             env=env,
             cwd=str(MCP_SERVER_DIR),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=self._log,
+            stderr=asyncio.subprocess.STDOUT,
         )
         url = f'http://127.0.0.1:{port}/mcp/'
         await self._await_http(url, port)
@@ -258,7 +268,8 @@ class LiveMCPClient:
         while time.monotonic() < deadline:
             if self._process is not None and self._process.returncode is not None:
                 raise AssertionError(
-                    f'server exited with {self._process.returncode} before binding {port}'
+                    f'server exited with {self._process.returncode} before binding '
+                    f'{port}\n--- server log (tail) ---\n{self.server_log_tail()}'
                 )
             try:
                 async with httpx.AsyncClient(timeout=2.0) as http:
@@ -266,7 +277,19 @@ class LiveMCPClient:
                 return
             except httpx.HTTPError:
                 await asyncio.sleep(1.0)
-        raise AssertionError(f'server did not answer on {url} within {timeout}s')
+        raise AssertionError(
+            f'server did not answer on {url} within {timeout}s\n'
+            f'--- server log (tail) ---\n{self.server_log_tail()}'
+        )
+
+    def server_log_tail(self, lines: int = 30) -> str:
+        """The end of the server's own output, for attaching to a failure."""
+        if self._log is None:
+            return '(stdio transport: the server shares this process\'s streams)'
+        with suppress(OSError):
+            captured = Path(self._log.name).read_text(errors='replace')
+            return ''.join(captured.splitlines(True)[-lines:])
+        return '(server log unavailable)'
 
     async def __aexit__(self, *exc: Any) -> None:
         await self._stack.aclose()
@@ -277,6 +300,10 @@ class LiveMCPClient:
             if self._process.returncode is None:
                 self._process.kill()
                 await self._process.wait()
+        if self._log is not None:
+            self._log.close()
+            with suppress(OSError):
+                os.unlink(self._log.name)
 
     async def call(self, tool: str, arguments: dict[str, Any]) -> Any:
         assert self.session is not None
@@ -466,7 +493,10 @@ async def test_end_to_end_add_search_context_delete_clear():
             assert isinstance(add, dict) and 'message' in add, f'add_memory: {add}'
 
             episodes = await client.wait_for_episodes(expected=1)
-            assert episodes, 'episode was not processed within the timeout'
+            assert episodes, (
+                'episode was not processed within the timeout\n'
+                '--- server log (tail) ---\n' + client.server_log_tail()
+            )
             assert any(e.get('group_id') == group for e in episodes)
             episode_uuid = episodes[0]['uuid']
 
