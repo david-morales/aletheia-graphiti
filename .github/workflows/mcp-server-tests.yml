@@ -131,6 +131,11 @@ jobs:
         working-directory: mcp_server
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # REQUIRED, not an override: the suite has no default endpoint and skips
+          # itself without this. Deleting the line does not fall back to localhost —
+          # it silently turns the whole live job into a no-op. The default was removed
+          # because the suite ingests episodes and calls clear_graph, and on a
+          # developer machine 6379 is a real, populated store.
           FALKORDB_URI: redis://localhost:6379
           # gpt-5.5 is the server's runtime default, but it requires a key/account
           # with fast gpt-5.5 access; CI pins a lighter, broadly-available model so

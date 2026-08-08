@@ -16,7 +16,9 @@ from. Under CI that is the `uv sync` venv, so the CI path is unchanged; locally 
 a change to `mcp_server/src` is exercised without an install step. Override with
 `MCP_SERVER_PYTHON` if the server must run somewhere else.
 
-Skipped automatically unless an OpenAI key is available AND FalkorDB is reachable:
+Skipped unless an OpenAI key is available AND `FALKORDB_URI` is set AND that endpoint
+answers. `FALKORDB_URI` has NO default: this suite ingests episodes and calls
+clear_graph, so it must never discover a store nobody pointed it at.
 
     # local, against a THROWAWAY FalkorDB — never the reserved 6379
     docker run -d --name ax_falkor -p 127.0.0.1:16379:6379 \
@@ -24,7 +26,8 @@ Skipped automatically unless an OpenAI key is available AND FalkorDB is reachabl
     FALKORDB_URI=redis://localhost:16379 \
         python -m pytest tests/test_live_falkordb_int.py -m integration
 
-    # CI: OPENAI_API_KEY from the GitHub environment, FalkorDB as a container.
+    # CI: OPENAI_API_KEY from the GitHub environment, FALKORDB_URI from the workflow,
+    # FalkorDB as a container.
 
 `MODEL_NAME` picks the model (CI pins a light, broadly-available one).
 """
@@ -55,7 +58,12 @@ sys.path.insert(0, str(MCP_SERVER_DIR / 'src'))
 from tool_annotations import TOOL_ORDER  # noqa: E402
 from version import CONNECTOR_VERSION  # noqa: E402
 
-FALKORDB_URI = os.environ.get('FALKORDB_URI', 'redis://localhost:6379')
+# NO DEFAULT, deliberately. `redis://localhost:6379` used to be the fallback, from an
+# era when this module was red at every commit and could not reach a server anyway.
+# Now that it works, that default is a loaded gun: on a developer machine 6379 is a
+# real, populated FalkorDB, and this suite INGESTS episodes and calls clear_graph. A
+# forgotten env var must produce a skip, never a write to somebody's graph store.
+FALKORDB_URI = os.environ.get('FALKORDB_URI', '')
 SERVER_PYTHON = os.environ.get('MCP_SERVER_PYTHON', sys.executable)
 
 pytestmark = [
@@ -89,6 +97,13 @@ def _falkordb_reachable(uri: str) -> bool:
 # locally without setup and on fork PRs (which have no secrets).
 if not os.environ.get('OPENAI_API_KEY'):
     pytest.skip('OPENAI_API_KEY not set; skipping live MCP tests', allow_module_level=True)
+if not FALKORDB_URI:
+    pytest.skip(
+        'FALKORDB_URI is not set; skipping live MCP tests. Point it at a THROWAWAY '
+        'FalkorDB (this suite ingests episodes and calls clear_graph) — there is no '
+        'default, so it can never find a real store by accident.',
+        allow_module_level=True,
+    )
 if not _falkordb_reachable(FALKORDB_URI):
     pytest.skip(
         f'FalkorDB not reachable at {FALKORDB_URI}; skipping live MCP tests',
