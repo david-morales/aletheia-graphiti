@@ -36,7 +36,7 @@ self = <tests.driver.test_falkordb_driver.TestFalkorDriverSession object at 0x11
 
 tests/driver/test_falkordb_driver.py:335: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:951: in assert_called_once_with
+<python-prefix>/lib/python3.11/unittest/mock.py:951: in assert_called_once_with
     return self.assert_called_with(*args, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
@@ -73,7 +73,7 @@ E           AssertionError: expected call not found.
 E           Expected: query('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x', 'y')})
 E             Actual: query('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x\x00', 'y')})
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:939: AssertionError
+<python-prefix>/lib/python3.11/unittest/mock.py:939: AssertionError
 ____________ TestBuildFulltextQuery.test_basic_query_with_group_ids ____________
 
 self = <tests.driver.test_falkordb_driver.TestBuildFulltextQuery object at 0x1171a5b90>
@@ -128,7 +128,7 @@ effect = <list_iterator object at 0x1173d9660>
                              ^^^^^^^^^^^^
 E                   StopIteration
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:2243: StopIteration
+<python-prefix>/lib/python3.11/unittest/mock.py:2243: StopIteration
 
 During handling of the above exception, another exception occurred:
 
@@ -188,7 +188,7 @@ effect = <list_iterator object at 0x1173d9660>
 >                   raise StopAsyncIteration
 E                   StopAsyncIteration
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
+<python-prefix>/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
 ------------------------------ Captured log call -------------------------------
 WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 1.5s (attempt 1/5)
 WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 1/2): not enough values to unpack (expected 3, got 1)
@@ -221,7 +221,7 @@ effect = <list_iterator object at 0x117ccf940>
                              ^^^^^^^^^^^^
 E                   StopIteration
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:2243: StopIteration
+<python-prefix>/lib/python3.11/unittest/mock.py:2243: StopIteration
 
 During handling of the above exception, another exception occurred:
 
@@ -280,7 +280,7 @@ effect = <list_iterator object at 0x117ccf940>
 >                   raise StopAsyncIteration
 E                   StopAsyncIteration
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
+<python-prefix>/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
 ------------------------------ Captured log call -------------------------------
 WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 1.5s (attempt 1/5)
 WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 2.5s (attempt 2/5)
@@ -315,7 +315,7 @@ effect = <list_iterator object at 0x1171dc7c0>
                              ^^^^^^^^^^^^
 E                   StopIteration
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:2243: StopIteration
+<python-prefix>/lib/python3.11/unittest/mock.py:2243: StopIteration
 
 During handling of the above exception, another exception occurred:
 
@@ -380,7 +380,7 @@ effect = <list_iterator object at 0x1171dc7c0>
 >                   raise StopAsyncIteration
 E                   StopAsyncIteration
 
-/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
+<python-prefix>/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
 ------------------------------ Captured log call -------------------------------
 WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 1/2): parse error
 WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 1.5s (attempt 1/5)
@@ -388,7 +388,7 @@ WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 R
 ERROR    graphiti_core.llm_client.openai_base_client:openai_base_client.py:337 Max retries (2) exceeded. Last error:
 =============================== warnings summary ===============================
 graphiti_core/driver/search_interface/search_interface.py:22
-  /Users/dmorales/git/graphiti/.worktrees/wave7-mcp-hardening/graphiti_core/driver/search_interface/search_interface.py:22: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+  <worktree>/graphiti_core/driver/search_interface/search_interface.py:22: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
     class SearchInterface(BaseModel):
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

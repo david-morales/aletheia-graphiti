@@ -22,5 +22,21 @@ export FALKORDB_URI="redis://127.0.0.1:9"
 # instead of writing to the operator's graph store.
 export DISABLE_NEO4J=1
 export DISABLE_FALKORDB=1
-export WT=/Users/dmorales/git/graphiti/.worktrees/wave7-mcp-hardening
+# Self-resolving: the worktree root is this file's parent's parent, whatever anyone
+# cloned it as. A hardcoded absolute path made every command in README.md a
+# copy-paste failure for anyone but its author — and a baseline nobody else can
+# reproduce is not a baseline.
+#
+# Works under bash and zsh both: BASH_SOURCE when sourced from bash, ${(%):-%N} from
+# zsh, $0 as the last resort.
+if [ -n "${BASH_SOURCE:-}" ]; then
+  _env_sh="${BASH_SOURCE[0]}"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  _env_sh="${(%):-%N}"
+else
+  _env_sh="$0"
+fi
+WT="$(cd "$(dirname "$_env_sh")/.." && pwd)"
+unset _env_sh
+export WT
 export PYTHONPATH="$WT"

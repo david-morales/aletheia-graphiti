@@ -1,5 +1,10 @@
 # Wave-7 Lane A — named baseline (branch point `0527cb66`, mcp-v1.6.0)
 
+Everything here is portable on purpose: `env.sh` resolves `$WT` from its own location
+rather than hardcoding a path, and the captured runs carry no ANSI escapes and no
+absolute user paths (`<worktree>`, `<home>`, `<python-prefix>`, `<site-packages>`).
+A baseline only the author can reproduce is not one.
+
 Every gate in this branch is a **by-NAME** diff against the two files here. Counts are
 recorded for orientation only; a pass/fail verdict is only ever "no NEW name failed".
 
@@ -9,7 +14,7 @@ kill-switches exist (they keep any suite run off the reserved `aletheia-falkordb
 ## mcp_server suite
 
 ```
-source .baseline/env.sh
+source .baseline/env.sh          # sets $WT to THIS worktree, wherever it lives
 cd "$WT/mcp_server"
 python3.11 -m pytest tests/ -p no:cacheprovider -q -rf \
   --ignore=tests/test_async_operations.py \
@@ -53,8 +58,11 @@ Branch point: **6 failed, 769 passed, 53 skipped**. Names in `core_failing_names
 
 ## Live gates (run deliberately, never part of the by-name diff)
 
-- `mcp_server/tests/test_live_falkordb_int.py` and `mcp_server/tests/live/*` — need a
-  real FalkorDB and a real key. They run against a throwaway `ax_wave7_falkor`
-  container on port **16379** (never 6379).
+- `mcp_server/tests/test_live_falkordb_int.py` — needs a real key AND an explicit
+  `FALKORDB_URI` (no default: it ingests and calls clear_graph, so it must never find
+  a store nobody pointed it at). `mcp_server/tests/live/*` need running connectors.
+  Both run against a throwaway `ax_wave7_falkor` on port **16379**, never 6379.
+- `tests/driver/test_falkordb_community_group_scope.py` — same throwaway, gated on
+  `FALKORDB_TEST_URI`, also with no default.
 - `tests/driver/test_age_*` — run against the `graphiti-age-spike` bed on :5433 and
   create/drop their own uniquely-named graphs (the `age_driver` fixture).
