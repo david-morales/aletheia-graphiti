@@ -178,3 +178,56 @@ async def test_a_failure_before_the_query_runs_is_still_measured_not_asserted():
 
     assert result['type'] == 'error'
     assert result['execution_ms'] >= _SLOW_FAILURE_MS * 0.8, result['execution_ms']
+
+
+# ---------------------------------------------------------------------------
+# the asymmetry between the two envelopes
+# ---------------------------------------------------------------------------
+
+
+def _mock_service_with_slow_acquisition(flavour, *, rows):
+    """A service whose get_client() is slow but whose query is instant."""
+
+    async def _slow_get_client():
+        await asyncio.sleep(_SLOW_FAILURE_SECONDS)
+        result = MagicMock()
+        result.header = [('string', 'cnt')]
+        result.result_set = rows
+        graph = AsyncMock()
+        graph.ro_query = AsyncMock(return_value=result)
+        driver = MagicMock()
+        driver._get_graph = MagicMock(return_value=graph)
+        driver._database = 'test_db'
+        client = MagicMock()
+        client.driver = driver
+        return client
+
+    svc = AsyncMock()
+    svc.flavour = flavour
+    svc.get_client = AsyncMock(side_effect=_slow_get_client)
+    svc.config = MagicMock()
+    svc.config.graphiti.group_id = 'test_graph'
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_a_successful_call_measures_the_query_not_the_connection_setup():
+    """The success envelope's `execution_ms` means "how long the query took", and the
+    BUG-33a fix must not have redefined it.
+
+    Moving one clock above the `try` would have folded `get_client()` into every
+    successful reading too — so the first call after a restart would look like a slow
+    query rather than a cold pool, silently changing a field consumers already read
+    (it feeds `cypher_quality` and any latency view built on it). Acquisition is noise
+    on this path and signal on the failure path, so the two paths use two clocks.
+    """
+    from graphiti_mcp_server import run_cypher
+
+    svc = _mock_service_with_slow_acquisition(_FLAVOUR, rows=[[47]])
+    with patch('graphiti_mcp_server.graphiti_service', svc):
+        result = await run_cypher(query='MATCH (n) RETURN count(n) AS cnt')
+
+    assert result['type'] == 'scalar', result
+    assert result['result'] == 47
+    # 50ms of connection setup happened; none of it belongs in this number.
+    assert result['execution_ms'] < _SLOW_FAILURE_MS * 0.5, result['execution_ms']
