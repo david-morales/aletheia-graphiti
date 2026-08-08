@@ -1,11 +1,23 @@
-"""BUG-57 — the community wipe must carry a group filter on every code path.
+"""BUG-57 — the community wipe must carry a group filter, and only where it runs.
 
-Offline companion to `tests/driver/test_age_community_group_scope.py`, which proves the
-behaviour against a live store. These assert the two things a live test on ONE backend
-cannot: that the generated Cypher of every per-driver override carries the filter, and
-that `Graphiti.build_communities` actually forwards the group_ids it was called with
-instead of dropping them (the original defect — the scope existed at the call site and
-was simply not passed down).
+The behaviour is proved against live stores by
+`tests/driver/test_age_community_group_scope.py` and
+`tests/driver/test_falkordb_community_group_scope.py` — one per flavour, because the
+two reach the delete by different routes. This module asserts what a live test cannot:
+that `Graphiti.build_communities` forwards the group_ids it was called with instead of
+dropping them (the original defect — the scope existed at the call site and was simply
+not passed down), and that `[]` and `None` stay different arguments.
+
+WHICH PATH ACTUALLY RUNS. `remove_communities` consults exactly one thing:
+`driver.graph_operations_interface`. Only `AGEDriver` sets it (`age_driver.py`), and
+`AGEGraphOperations` does not override `remove_communities`, so the base raises
+NotImplementedError and AGE falls through too. **Every flavour therefore reaches the
+generic query in `community_operations`** — the per-driver
+`*GraphMaintenanceOperations.remove_communities` methods are a DIFFERENT abstraction
+(`driver.graph_ops`, `driver/operations/graph_ops.py`) that nothing calls for this
+operation. Their tests live below under a heading that says so, because a green
+parametrised suite over four dead implementations is exactly the shape of coverage
+that is not coverage.
 """
 
 from __future__ import annotations
@@ -58,12 +70,24 @@ def _normalised(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# the per-driver overrides
+# the per-driver overrides — a DORMANT surface
+#
+# These four implement `GraphMaintenanceOperations` (driver.graph_ops), which nothing
+# calls for remove_communities; the live path is the generic query below. They are kept
+# rather than deleted because the method is an @abstractmethod on an upstream ABC, so
+# removing it from the concrete classes would mean diverging the ABC too — merge cost
+# for a maintained fork, in exchange for deleting code that is already correct.
+#
+# Kept, therefore tested for CONSISTENCY, not for protection: four dormant
+# implementations that disagree with the live one are a trap for whoever wires them.
+# The test names say `the_dormant_override`, and `test_the_live_path_does_not_go
+# _through_the_dormant_overrides` pins the dormancy itself, so wiring them turns this
+# module red and forces the claims here to be re-read.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize('ops_cls', ALL_OVERRIDES)
-async def test_override_scopes_the_delete_when_group_ids_are_given(ops_cls):
+async def test_the_dormant_override_scopes_the_delete_when_group_ids_are_given(ops_cls):
     executor = RecordingExecutor()
     ops = ops_cls() if ops_cls is not NeptuneGraphMaintenanceOperations else ops_cls(driver=None)
 
@@ -74,7 +98,7 @@ async def test_override_scopes_the_delete_when_group_ids_are_given(ops_cls):
 
 
 @pytest.mark.parametrize('ops_cls', ALL_OVERRIDES)
-async def test_override_deletes_everything_when_no_group_ids_are_given(ops_cls):
+async def test_the_dormant_override_deletes_everything_when_no_group_ids_are_given(ops_cls):
     executor = RecordingExecutor()
     ops = ops_cls() if ops_cls is not NeptuneGraphMaintenanceOperations else ops_cls(driver=None)
 
@@ -85,7 +109,7 @@ async def test_override_deletes_everything_when_no_group_ids_are_given(ops_cls):
 
 
 @pytest.mark.parametrize('ops_cls', ALL_OVERRIDES)
-async def test_override_deletes_nothing_for_an_empty_group_list(ops_cls):
+async def test_the_dormant_override_deletes_nothing_for_an_empty_group_list(ops_cls):
     """`[]` is an empty list of partitions, and deletes none of them.
 
     It was briefly read as "no scope given" — i.e. as `None` — on the theory that
@@ -101,6 +125,49 @@ async def test_override_deletes_nothing_for_an_empty_group_list(ops_cls):
 
     assert 'c.group_id IN $group_ids' in _normalised(executor.only_query)
     assert executor.only_params == {'group_ids': []}
+
+
+async def test_the_live_path_does_not_go_through_the_dormant_overrides():
+    """Pin the dormancy itself, so the three tests above cannot be mistaken for proof.
+
+    `remove_communities` consults `graph_operations_interface` and nothing else. A
+    driver that exposes a perfectly correct `graph_ops.remove_communities` still has it
+    ignored — which is why the FalkorDB protection had to be proved against a real
+    driver (`tests/driver/test_falkordb_community_group_scope.py`) and not against
+    `FalkorGraphMaintenanceOperations`.
+
+    If someone later wires `graph_ops` into this call, this test goes red. That is the
+    intent: the wiring may well be right, but the coverage claims in this module would
+    then be wrong and need rewriting.
+    """
+    driver = RecordingExecutor()
+    driver.graph_ops = MagicMock()
+    driver.graph_ops.remove_communities = AsyncMock(return_value=None)
+
+    await remove_communities(driver, group_ids=['alpha'])
+
+    driver.graph_ops.remove_communities.assert_not_awaited()
+    assert 'c.group_id IN $group_ids' in _normalised(driver.only_query)
+
+
+def test_the_age_operations_class_does_not_override_remove_communities():
+    """The other half of the reachability premise, asserted on the class.
+
+    AGE is the ONLY driver that sets `graph_operations_interface`, so if
+    `AGEGraphOperations` ever defines `remove_communities` the AGE flavour stops using
+    the generic query and the live AGE test starts covering a different path than the
+    one this module describes.
+    """
+    from graphiti_core.driver.graph_operations.age_graph_operations import AGEGraphOperations
+    from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+
+    assert 'remove_communities' not in vars(AGEGraphOperations), (
+        'AGEGraphOperations now implements remove_communities: the AGE flavour no '
+        'longer falls through to the generic query, so re-read this module and '
+        'tests/driver/test_age_community_group_scope.py before trusting either.'
+    )
+    # ...and the base it inherits still refuses, which is what makes the fall-through happen.
+    assert 'remove_communities' in vars(GraphOperationsInterface)
 
 
 # ---------------------------------------------------------------------------
