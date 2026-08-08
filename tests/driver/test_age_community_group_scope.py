@@ -83,3 +83,20 @@ async def test_remove_communities_with_an_unknown_group_id_deletes_nothing(age_d
 
     assert await _community_group_ids(age_driver) == {GROUP_A, GROUP_B}
     assert await _has_member_count(age_driver) == 2
+
+
+@pytest.mark.asyncio
+async def test_remove_communities_with_an_empty_group_list_deletes_nothing(age_driver):
+    """`[]` is an empty list of partitions, on the store rather than in a mock.
+
+    Reading it as "no scope" made `build_communities(group_ids=[])` delete every
+    community and rebuild none — `get_community_clusters` iterates the list, so an
+    empty one produces no clusters. That is BUG-57's own failure mode arriving through
+    the argument added to prevent it.
+    """
+    await _seed_two_groups(age_driver)
+
+    await remove_communities(age_driver, group_ids=[])
+
+    assert await _community_group_ids(age_driver) == {GROUP_A, GROUP_B}
+    assert await _has_member_count(age_driver) == 2

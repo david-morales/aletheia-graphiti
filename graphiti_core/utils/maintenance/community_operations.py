@@ -268,15 +268,28 @@ async def build_communities(
 
 
 async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = None):
-    """Delete community nodes, scoped to `group_ids` when they are given.
+    """Delete community nodes, scoped to `group_ids`.
 
-    An unscoped call is still the right thing for a whole-graph rebuild, so a missing
-    or empty `group_ids` keeps the original semantics. What it must NOT do is happen by
-    accident: `Graphiti.build_communities(group_ids=['a'])` used to clear with no filter
-    at all, so rebuilding one partition destroyed every other partition's community
-    layer and never restored it (BUG-57). Passing `[]` is read as "no scope" rather than
-    "match nothing" — `IN []` would delete zero rows and turn a full rebuild into a
-    silent no-op.
+    Three cases, and the distinction between the last two is load-bearing:
+
+    * `group_ids=['a']` — delete the communities of partition 'a'. Unscoped, this took
+      every OTHER partition's community layer with it and never rebuilt it (BUG-57).
+    * `group_ids=None` — no scope was given, so the whole graph is cleared. This is
+      what a full rebuild needs and what the `build_communities` docstring promises.
+    * `group_ids=[]` — an EMPTY list of partitions. Delete nothing.
+
+    `[]` was briefly treated as "no scope" (i.e. as `None`), justified as protecting a
+    full rebuild from becoming a silent no-op. That justification was false, and in the
+    dangerous direction: `get_community_clusters` iterates `for group_id in group_ids`,
+    so it builds nothing from an empty list. `build_communities(group_ids=[])` therefore
+    deleted every community in the graph and rebuilt none of them — the exact
+    destroy-and-do-not-restore failure BUG-57 was raised about, reintroduced through the
+    argument meant to fix it.
+
+    An empty collection means "no elements" everywhere else in this module, and it means
+    that here: `[] ` deletes nothing, which is also the only reading under which the
+    caller's intent ("these partitions") is impossible to misread as its opposite
+    ("all partitions").
     """
     if driver.graph_operations_interface:
         try:
@@ -284,7 +297,9 @@ async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = 
         except NotImplementedError:
             pass
 
-    if group_ids:
+    if group_ids is not None:
+        # `IN []` matches nothing, which is precisely the semantics an empty partition
+        # list should have. No special case, and no way for it to widen.
         await driver.execute_query(
             """
             MATCH (c:Community)

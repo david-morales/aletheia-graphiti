@@ -85,15 +85,22 @@ async def test_override_deletes_everything_when_no_group_ids_are_given(ops_cls):
 
 
 @pytest.mark.parametrize('ops_cls', ALL_OVERRIDES)
-async def test_override_treats_an_empty_group_list_as_whole_graph(ops_cls):
-    """`[]` means "no scope given", not "match nothing" — `IN []` would delete zero
-    rows and silently turn a full rebuild into a no-op."""
+async def test_override_deletes_nothing_for_an_empty_group_list(ops_cls):
+    """`[]` is an empty list of partitions, and deletes none of them.
+
+    It was briefly read as "no scope given" — i.e. as `None` — on the theory that
+    `IN []` would turn a full rebuild into a silent no-op. That theory was false in the
+    dangerous direction: `get_community_clusters` iterates `for group_id in group_ids`
+    and so builds nothing from an empty list, meaning the "protected" full rebuild
+    deleted every community and restored none. The delete must stay filtered.
+    """
     executor = RecordingExecutor()
     ops = ops_cls() if ops_cls is not NeptuneGraphMaintenanceOperations else ops_cls(driver=None)
 
     await ops.remove_communities(executor, group_ids=[])
 
-    assert _normalised(executor.only_query) == 'MATCH (c:Community) DETACH DELETE c'
+    assert 'c.group_id IN $group_ids' in _normalised(executor.only_query)
+    assert executor.only_params == {'group_ids': []}
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +123,16 @@ async def test_generic_fallback_without_group_ids_is_unscoped():
     await remove_communities(driver)
 
     assert _normalised(driver.only_query) == 'MATCH (c:Community) DETACH DELETE c'
+
+
+async def test_generic_fallback_deletes_nothing_for_an_empty_group_list():
+    """`None` and `[]` are different arguments and must stay different deletes."""
+    driver = RecordingExecutor()
+
+    await remove_communities(driver, group_ids=[])
+
+    assert 'c.group_id IN $group_ids' in _normalised(driver.only_query)
+    assert driver.only_params == {'group_ids': []}
 
 
 async def test_generic_fallback_forwards_group_ids_to_the_driver_interface():
@@ -174,3 +191,38 @@ async def test_build_communities_forwards_its_group_ids_to_the_wipe(monkeypatch)
     )
 
     assert seen['group_ids'] == ['alpha']
+
+
+async def test_build_communities_with_an_empty_group_list_touches_nothing():
+    """The pair that makes the `[]` ruling checkable end to end, on a REAL driver
+    double rather than a monkeypatched `remove_communities`.
+
+    `build_communities([])` clusters nothing — `get_community_clusters` iterates the
+    list — so the only thing it can do is delete. Reading `[]` as "no scope" therefore
+    produced the purest form of the BUG-57 failure: wipe everything, restore nothing.
+    Deleting nothing is the only outcome consistent with what the caller asked for.
+    """
+    import graphiti_core.graphiti as graphiti_module
+
+    driver = RecordingExecutor()
+    # `handle_multiple_group_ids` reads the provider off the driver to decide whether to
+    # fan out per group_id (FalkorDB maps group_id -> database). Anything else takes the
+    # single-call path, which is the one under test here.
+    driver.provider = 'notfalkordb'
+
+    graphiti = MagicMock()
+    graphiti.clients.driver = driver
+    graphiti.llm_client = MagicMock()
+    graphiti.max_coroutines = 1
+
+    nodes, edges = await graphiti_module.Graphiti.build_communities(
+        graphiti, group_ids=[], driver=driver
+    )
+
+    assert nodes == []
+    assert edges == []
+    # One query, and it deletes nothing: the filter is present and matches no partition.
+    destructive = [q for q, _ in driver.calls if 'DETACH DELETE' in q]
+    assert len(destructive) == 1, driver.calls
+    assert 'c.group_id IN $group_ids' in _normalised(destructive[0]), destructive[0]
+    assert driver.calls[0][1] == {'group_ids': []}

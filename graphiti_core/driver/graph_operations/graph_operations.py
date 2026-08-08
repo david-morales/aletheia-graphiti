@@ -773,14 +773,14 @@ class GraphOperationsInterface(BaseModel):
         """
         Delete community nodes from the graph.
 
-        This removes Community-labeled nodes and their relationships. When `group_ids`
-        is given the delete is scoped to those partitions; when it is None or empty the
-        whole graph is cleared (BUG-57 — an unscoped clear inside a per-group rebuild
-        destroys every other partition's community layer).
+        This removes Community-labeled nodes and their relationships, scoped to
+        `group_ids`. Only `None` means the entire graph (BUG-57 — an unscoped clear
+        inside a per-group rebuild destroys every other partition's community layer).
 
         Args:
             driver: GraphDriver instance
-            group_ids: Partitions to clear. None/empty means the entire graph.
+            group_ids: Partitions to clear. `None` means the entire graph; `[]` means
+                no partitions and deletes nothing.
         """
         raise NotImplementedError
 

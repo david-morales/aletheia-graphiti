@@ -155,10 +155,12 @@ class KuzuGraphMaintenanceOperations(GraphMaintenanceOperations):
         executor: QueryExecutor,
         group_ids: list[str] | None = None,
     ) -> None:
-        # Scoped when a partition list is given, whole-graph otherwise. Unscoped inside
-        # a per-group rebuild this destroyed every other partition's communities
-        # (BUG-57). An empty list is read as "no scope", not "match nothing".
-        if group_ids:
+        # Scoped when a partition list is given, whole-graph only when it is None.
+        # Unscoped inside a per-group rebuild this destroyed every other partition's
+        # communities (BUG-57). `[]` means "no partitions" and deletes nothing — see
+        # `utils/maintenance/community_operations.remove_communities` for why that is
+        # the safe reading and "no scope" is not.
+        if group_ids is not None:
             await executor.execute_query(
                 """
                 MATCH (c:Community)
