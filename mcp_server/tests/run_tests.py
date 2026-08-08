@@ -318,7 +318,19 @@ Examples:
         if not args.mock_llm and not checks.get('openai_api_key'):
             print('\n💡 Tip: Use --mock-llm to run tests without OpenAI API key')
 
-        response = input('\nContinue anyway? (y/N): ')
+        # Non-interactive callers (CI, a pipe, `< /dev/null`) get the safe default
+        # rather than an EOFError traceback. `input()` on a closed stdin raises, so
+        # this prompt turned "one prerequisite is missing" — the case it exists to
+        # report — into a crash with a stack trace, in exactly the environments least
+        # able to answer it.
+        if not sys.stdin.isatty():
+            print('\nstdin is not a terminal; not continuing with missing prerequisites.')
+            print('Re-run interactively to override, or fix the checks above.')
+            sys.exit(1)
+        try:
+            response = input('\nContinue anyway? (y/N): ')
+        except EOFError:
+            response = ''
         if response.lower() != 'y':
             sys.exit(1)
 

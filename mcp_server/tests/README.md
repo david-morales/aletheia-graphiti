@@ -74,6 +74,11 @@ python tests/run_tests.py all
 
 ### Test Runner Options
 
+`run_tests.py` is an INTERACTIVE convenience wrapper: it checks prerequisites and
+prompts before proceeding if any are missing. In CI or any non-tty context call pytest
+directly (see the workflow example below) — the wrapper cannot be answered there and
+declines by design.
+
 ```bash
 python tests/run_tests.py [suite] [options]
 
@@ -248,13 +253,20 @@ jobs:
           pip install uv
           uv sync --extra dev
 
+      # Call pytest directly in CI. `run_tests.py` is an interactive convenience
+      # wrapper: when a prerequisite check fails it prompts before continuing, and a
+      # non-tty run can only decline. The real workflow this repo ships
+      # (.github/workflows/mcp-server-tests.yml) invokes pytest, and these are the
+      # commands it uses.
       - name: Run the contract guards
-        run: python tests/run_tests.py contract
+        run: uv run pytest tests/ -m contract -p no:cacheprovider
 
       - name: Run the live end-to-end gate
-        run: python tests/run_tests.py live --database falkordb
+        run: uv run pytest tests/test_live_falkordb_int.py -m integration -p no:cacheprovider
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # No default — the suite skips itself without this.
+          FALKORDB_URI: redis://localhost:6379
 ```
 
 ## Troubleshooting
