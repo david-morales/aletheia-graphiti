@@ -111,6 +111,47 @@ if not _falkordb_reachable(FALKORDB_URI):
     )
 
 
+# --- the e2e budget, and why it needs its own marker -------------------------------
+#
+# `pytest.ini` sets `timeout = 300` and pytest-timeout is a dev dependency, so under
+# CI's `uv sync` that ceiling is LIVE. It is not live in a bare local interpreter
+# without the plugin — which is the classic shape of a test that passes on a laptop
+# and flakes in CI, so the arithmetic is written down here rather than discovered.
+#
+# Worst case for test_end_to_end_add_search_context_delete_clear, from the constants
+# below rather than from a guess:
+#
+#   server boot (full Graphiti init: indices + domain profile) before the first call   60
+#   add_memory                                                                          5
+#   wait_for_episodes                                    _EPISODE_WAIT_SECONDS   ->    180
+#   2x search_until  2 * _SEARCH_ATTEMPTS * (_SEARCH_POLL + _ASSUMED_CALL_SECONDS)     96
+#   get_episode_context, explore_node, delete_episode, clear_graph, get_episodes       25
+#   teardown clear_graph                                                                5
+#                                                                                   -----
+#                                                                                     371
+#
+# 371 > 300: the ini ceiling can fire BEFORE the test's own waits are exhausted, and
+# when it does the failure reads as "timeout" rather than "the episode never
+# processed" — a CI red pointing at the wrong thing. The marker below is computed from
+# the same constants, so changing a poll or an attempt count moves the budget with it
+# and this comment cannot go stale silently.
+_EPISODE_WAIT_SECONDS = 180.0
+_SEARCH_ATTEMPTS = 6
+_SEARCH_POLL = 3.0
+_ASSUMED_CALL_SECONDS = 5.0
+_SERVER_BOOT_SECONDS = 60.0
+_TAIL_CALLS = 6  # 5 tool calls after the searches, plus the teardown clear_graph
+
+_E2E_TIMEOUT_SECONDS = int(
+    _SERVER_BOOT_SECONDS
+    + _ASSUMED_CALL_SECONDS  # add_memory
+    + _EPISODE_WAIT_SECONDS
+    + 2 * _SEARCH_ATTEMPTS * (_SEARCH_POLL + _ASSUMED_CALL_SECONDS)
+    + _TAIL_CALLS * _ASSUMED_CALL_SECONDS
+    + 60  # slack for a cold CI runner pulling model weights / first-call latency
+)
+
+
 def _unique_group_id() -> str:
     # Alphanumeric only (no '_'/'-'): keeps the RediSearch fulltext group filter
     # valid without relying on group_id escaping, so the suite is backend-portable.
@@ -246,7 +287,10 @@ class LiveMCPClient:
         return [tool.name for tool in (await self.session.list_tools()).tools]
 
     async def wait_for_episodes(
-        self, expected: int = 1, timeout: float = 180.0, poll: float = 3.0
+        self,
+        expected: int = 1,
+        timeout: float = _EPISODE_WAIT_SECONDS,
+        poll: float = _SEARCH_POLL,
     ) -> list[dict[str, Any]]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -267,8 +311,8 @@ class LiveMCPClient:
         tool: str,
         arguments: dict[str, Any],
         key: str,
-        attempts: int = 6,
-        poll: float = 3.0,
+        attempts: int = _SEARCH_ATTEMPTS,
+        poll: float = _SEARCH_POLL,
     ) -> list[Any]:
         """Call a search tool, retrying until ``resp[key]`` is non-empty (index lag)."""
         results: list[Any] = []
@@ -398,6 +442,7 @@ async def test_get_schema_answers_the_canonical_shape():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(_E2E_TIMEOUT_SECONDS)
 async def test_end_to_end_add_search_context_delete_clear():
     group = _unique_group_id()
     async with LiveMCPClient(group) as client:
