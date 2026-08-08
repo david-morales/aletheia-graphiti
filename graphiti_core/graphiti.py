@@ -1577,8 +1577,11 @@ class Graphiti:
         if driver is None:
             driver = self.clients.driver
 
-        # Clear existing communities
-        await remove_communities(driver)
+        # Clear the existing communities of the partitions being rebuilt — and only
+        # those. Unscoped, this wiped every other group_id's community layer and never
+        # rebuilt it (BUG-57). `group_ids=None` still means "the entire graph", which is
+        # what the docstring above promises and what a full rebuild needs.
+        await remove_communities(driver, group_ids)
 
         community_nodes, community_edges = await build_communities(
             driver, self.llm_client, group_ids

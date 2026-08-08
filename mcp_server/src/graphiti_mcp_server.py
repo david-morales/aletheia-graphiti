@@ -2339,24 +2339,41 @@ async def run_cypher(query: str) -> CypherResultResponse:
     sanitized = result
     limit = sanitized.effective_limit
 
+    # TWO clocks, because the two envelopes answer different questions.
+    #
+    # `call_start` runs from before the try, so a failure has a reading no matter where
+    # it broke — including inside get_client(), which does connection setup and on a
+    # cold service IS the expensive part. That is the whole point of BUG-33a: a
+    # consumer's breaker needs to tell a cheap pre-flight rejection from a call that
+    # cost real time before failing, and connection setup is real time.
+    #
+    # `query_start` runs from just before execution, and only the SUCCESS envelope uses
+    # it. `execution_ms` on a successful result has always meant "how long the query
+    # took"; folding acquisition into it would silently redefine a field consumers
+    # already read (it feeds cypher_quality and any latency view built on it), and
+    # would do so invisibly — the first cold call after a restart would just look like
+    # a slow query. On the success path acquisition is noise; on the failure path it is
+    # the signal. Pinned by test_error_envelope_timing.py.
+    call_start = time.time()
     try:
         client = await graphiti_service.get_client()
         driver = client.driver
 
         # Read-only execution is a flavour concern: FalkorDB uses DB-enforced ro_query;
         # AGE/base rely on the pipeline whitelist + execute_query. Returns (records, header).
-        start_time = time.time()
+        query_start = time.time()
         records, header = await flavour.execute_graph_query(driver, sanitized.query)
-        execution_ms = round((time.time() - start_time) * 1000, 1)
+        execution_ms = round((time.time() - query_start) * 1000, 1)
 
         _cache = getattr(graphiti_service, '_schema_cache', None) if graphiti_service else None
         schema = _cache if isinstance(_cache, dict) else None
         return format_result(records, header, sanitized.query, sanitized.auto_fixes, execution_ms, limit, schema=schema)
 
     except Exception as e:
+        elapsed_ms = round((time.time() - call_start) * 1000, 1)
         logger.error(f'Cypher execution error: {e}')
         error = flavour.classify_execution_error(str(e), query=sanitized.query)
-        result = format_error(sanitized.query, error)
+        result = format_error(sanitized.query, error, elapsed_ms)
         result['auto_fixes'] = sanitized.auto_fixes
         return result
 

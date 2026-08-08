@@ -153,12 +153,64 @@ async def inband_error_return() -> _ErrorCapable:
 # exactly what the docstring above says they are not. Observables were compared
 # across both modes and are identical, so this costs nothing and keeps the claim
 # true.
+#
+# It is also GUARDED, one class below — wave 6 set the constant and left the claim
+# resting on a comment (F7, accepted LOW). A constant nobody checks is a comment: the
+# next person to write `mode='auto'` here, or an SDK release that changes what the
+# modes mean, would silently move every assertion in this module one layer off the
+# framing it exists to measure, and nothing would go red.
 _WIRE_MODE = 'legacy'
+
+
+def _dispatcher_name(client: Client) -> str:
+    """The dispatcher class actually driving a connected client.
+
+    Reaches through two private attributes on purpose. It is the only place the mode
+    becomes OBSERVABLE rather than declared — asserting `_WIRE_MODE == 'legacy'` would
+    just read the constant back to itself. If the SDK renames or restructures these,
+    this raises AttributeError and the guard fails loudly, which is the correct
+    outcome: the premise would need rechecking against the new internals.
+    """
+    return type(client._session._dispatcher).__name__
 
 
 async def _call(name: str):
     async with Client(_probe, mode=_WIRE_MODE) as client:
         return await client.call_tool(name, {})
+
+
+class TestTheProbesReallyRunOverJsonRpcFraming:
+    """F7 (wave-6 review, accepted LOW): guard the wire mode instead of asserting it.
+
+    This module's whole claim is that it measures wire shapes rather than an
+    idealisation of them. That claim rests on `_WIRE_MODE`, and until now on nothing
+    else. These two tests make the difference between the modes observable, so the
+    claim fails when it stops being true rather than when someone rereads a comment.
+    """
+
+    async def test_the_probe_client_is_driven_by_the_jsonrpc_dispatcher(self):
+        async with Client(_probe, mode=_WIRE_MODE) as client:
+            name = _dispatcher_name(client)
+        assert 'JSONRPC' in name, (
+            f'the probe client is driven by {name}, not a JSON-RPC dispatcher — every '
+            'assertion in this module is being made one layer above the framing it '
+            'claims to measure. Check _WIRE_MODE and the SDK connector docstring.'
+        )
+
+    async def test_the_other_mode_still_bypasses_that_framing(self):
+        """The other side of the guard, and the reason the first one is not circular.
+
+        If a future SDK collapsed both modes onto the same dispatcher, the test above
+        would keep passing while `_WIRE_MODE` stopped meaning anything. This one goes
+        red instead, which is the signal to reread the premise — not to delete it.
+        """
+        async with Client(_probe, mode='auto') as client:
+            name = _dispatcher_name(client)
+        assert 'JSONRPC' not in name, (
+            f"mode='auto' now also uses {name}: the two modes no longer differ, so the "
+            'reason this module pins legacy has changed. Recheck the SDK connector '
+            'docstring before relaxing anything here.'
+        )
 
 
 class TestTheSdkStillWrapsWhatWeThinkItWraps:

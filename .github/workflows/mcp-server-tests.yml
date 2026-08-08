@@ -82,6 +82,19 @@ jobs:
             --ignore=tests/test_fixtures.py \
             --ignore=tests/test_stress_load.py
 
+  # The end-to-end gate: a real server over stdio AND streamable HTTP, against a real
+  # FalkorDB and a real model, asserting the CURRENT 18-tool catalog.
+  #
+  # It only became a gate in wave 7. Before that it asserted `search_nodes`,
+  # `summarize_saga`, `add_triplet` and `get_episode_entities` — four tools the
+  # connector had stopped serving several releases earlier — so it was red at every
+  # commit, and a job that is always red catches nothing. The rewrite was proved to
+  # gate by mutation: renaming ONE tool function turns 4 of its 10 tests red across
+  # both transports.
+  #
+  # The suite launches the server with `sys.executable`, which under `uv run pytest` is
+  # this job's `uv sync` venv — so the subprocess and the tests share one dependency
+  # set by construction.
   live-mcp-tests:
     runs-on: depot-ubuntu-22.04
     environment: development
@@ -118,6 +131,11 @@ jobs:
         working-directory: mcp_server
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # REQUIRED, not an override: the suite has no default endpoint and skips
+          # itself without this. Deleting the line does not fall back to localhost —
+          # it silently turns the whole live job into a no-op. The default was removed
+          # because the suite ingests episodes and calls clear_graph, and on a
+          # developer machine 6379 is a real, populated store.
           FALKORDB_URI: redis://localhost:6379
           # gpt-5.5 is the server's runtime default, but it requires a key/account
           # with fast gpt-5.5 access; CI pins a lighter, broadly-available model so

@@ -117,13 +117,19 @@ def test_build_communities_is_destructive_because_it_wipes_every_community(serve
     """Pinned with its justification so nobody "corrects" it back by its name.
 
     `build_communities(group_ids=["a"])` reads as additive and is not.
-    `graphiti_core.Graphiti.build_communities` calls `remove_communities(driver)`
-    with NO group filter, and both implementations —
-    `utils/maintenance/community_operations.remove_communities` and the FalkorDB
-    override in `driver/falkordb/operations/graph_ops.py` — run an unscoped
-    `MATCH (c:Community) DETACH DELETE c`. So it deletes every Community node and
-    every HAS_MEMBER edge in the WHOLE graph, then rebuilds only the requested
-    partition: communities in every other group_id are destroyed and not restored.
+    `graphiti_core.Graphiti.build_communities` clears before it rebuilds: every
+    existing Community node in the requested partitions, and every HAS_MEMBER edge
+    hanging off one, is DETACH DELETEd first.
+
+    The blast radius used to be wider still. The clear ran unscoped —
+    `MATCH (c:Community) DETACH DELETE c`, no group filter, in both
+    `utils/maintenance/community_operations.remove_communities` and the per-driver
+    overrides — so rebuilding one partition destroyed every OTHER group_id's
+    community layer and never restored it. BUG-57 scoped the wipe to the caller's
+    group_ids; the tests that pin that live in the graphiti_core suite
+    (`tests/test_remove_communities_group_scope.py`,
+    `tests/driver/test_age_community_group_scope.py`). The annotation does not move
+    with the fix: the tool still destroys data in the partitions it was handed.
 
     A false `readOnlyHint`/`destructiveHint` is worse than none — a HITL client
     auto-approves on it, and with no annotation at all the client would have

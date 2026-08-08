@@ -89,11 +89,29 @@ def test_clear_graph_says_it_is_irreversible(instructions):
     assert 'cannot be undone' in entry.lower() or 'irreversible' in entry.lower()
 
 
-def test_build_communities_announces_the_global_wipe(instructions):
-    """Its name says "build"; it deletes every Community in the graph first."""
+def test_build_communities_announces_the_delete_inside_the_requested_groups(instructions):
+    """Its name says "build"; it DELETES the requested partitions' communities first.
+
+    This assertion is deliberately two-sided, because the served text has been wrong
+    in both directions. It first announced an additive-sounding rebuild; wave 1 made it
+    announce a whole-graph wipe (true then); BUG-57 scoped the delete, which made the
+    whole-graph wording false. A wire description that overstates the blast radius is
+    not the safe error — an agent that believes `build_communities` nukes the store
+    will refuse a call it should make, and an operator who later discovers the claim is
+    false stops trusting the destructive announcements that ARE true.
+    """
     entry = _catalog_entry(instructions, 'build_communities').lower()
     assert 'destructive' in entry
-    assert 'every' in entry or 'all' in entry, entry
+    # The delete must still be announced — this is not a downgrade to "additive".
+    assert 'delet' in entry, entry
+    # ...and it must be announced as SCOPED to what the caller asked for.
+    assert 'group_ids' in entry, entry
+    # The pre-BUG-57 wording is now a factual error on the wire. Reject it by name.
+    for stale in ('every community', 'all communities', 'did not ask'):
+        assert stale not in entry, (
+            f'the catalog still announces the pre-BUG-57 blast radius ({stale!r}): the '
+            f'wipe is scoped to the requested group_ids now. Entry: {entry!r}'
+        )
 
 
 def test_the_catalog_does_not_announce_a_tool_that_is_not_served(instructions):

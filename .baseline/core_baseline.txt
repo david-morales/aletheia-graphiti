@@ -1,0 +1,403 @@
+........................................................................ [  8%]
+............s........................................................... [ 17%]
+................................F....FF................................. [ 26%]
+.......ss............................................................... [ 34%]
+..............................sssssssssss............................... [ 43%]
+.........................................................sss............ [ 52%]
+.........................ssss..s............ss.sssssssssssssssssssssssss [ 60%]
+s........sss.......................F.FF................................. [ 69%]
+........................................................................ [ 78%]
+........................................................................ [ 86%]
+........................................................................ [ 95%]
+....................................                                     [100%]
+=================================== FAILURES ===================================
+_ TestFalkorDriverSession.test_run_strips_nul_bytes_from_list_query_parameters _
+
+self = <tests.driver.test_falkordb_driver.TestFalkorDriverSession object at 0x1171a7610>
+
+    @pytest.mark.asyncio
+    @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
+    async def test_run_strips_nul_bytes_from_list_query_parameters(self):
+        self.mock_graph.query = AsyncMock()
+    
+        queries = [
+            (
+                'CREATE (n:Node) SET n.content = $content',
+                {'content': 'a\x00b', 'items': ('x\x00', 'y')},
+            )
+        ]
+    
+        await self.session.run(queries)
+    
+>       self.mock_graph.query.assert_called_once_with(
+            'CREATE (n:Node) SET n.content = $content',
+            {'content': 'ab', 'items': ('x', 'y')},
+        )
+
+tests/driver/test_falkordb_driver.py:335: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+<python-prefix>/lib/python3.11/unittest/mock.py:951: in assert_called_once_with
+    return self.assert_called_with(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock name='mock.query' id='4688419280'>
+args = ('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x', 'y')})
+kwargs = {}
+expected = call('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x', 'y')})
+actual = call('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x\x00', 'y')})
+_error_message = <function NonCallableMock.assert_called_with.<locals>._error_message at 0x1176780e0>
+cause = None
+
+    def assert_called_with(self, /, *args, **kwargs):
+        """assert that the last call was made with the specified arguments.
+    
+        Raises an AssertionError if the args and keyword args passed in are
+        different to the last call to the mock."""
+        if self.call_args is None:
+            expected = self._format_mock_call_signature(args, kwargs)
+            actual = 'not called.'
+            error_message = ('expected call not found.\nExpected: %s\n  Actual: %s'
+                    % (expected, actual))
+            raise AssertionError(error_message)
+    
+        def _error_message():
+            msg = self._format_mock_failure_message(args, kwargs)
+            return msg
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        actual = self._call_matcher(self.call_args)
+        if actual != expected:
+            cause = expected if isinstance(expected, Exception) else None
+>           raise AssertionError(_error_message()) from cause
+E           AssertionError: expected call not found.
+E           Expected: query('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x', 'y')})
+E             Actual: query('CREATE (n:Node) SET n.content = $content', {'content': 'ab', 'items': ('x\x00', 'y')})
+
+<python-prefix>/lib/python3.11/unittest/mock.py:939: AssertionError
+____________ TestBuildFulltextQuery.test_basic_query_with_group_ids ____________
+
+self = <tests.driver.test_falkordb_driver.TestBuildFulltextQuery object at 0x1171a5b90>
+
+    @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
+    def test_basic_query_with_group_ids(self):
+        result = self.driver.build_fulltext_query('fuel spill airport', ['aviation_safety'])
+>       assert '(@group_id:"aviation_safety")' in result
+E       assert '(@group_id:"aviation_safety")' in '(@group_id:"aviation\\_safety") (fuel | spill | airport)'
+
+tests/driver/test_falkordb_driver.py:417: AssertionError
+_ TestBuildFulltextQuery.test_empty_query_with_group_ids_returns_group_filter_only _
+
+self = <tests.driver.test_falkordb_driver.TestBuildFulltextQuery object at 0x1171a5150>
+
+    @unittest.skipIf(not HAS_FALKORDB, 'FalkorDB is not installed')
+    def test_empty_query_with_group_ids_returns_group_filter_only(self):
+        """Regression: empty query must NOT produce invalid empty parens '()'."""
+        result = self.driver.build_fulltext_query('', ['aviation_safety_quality'])
+>       assert result == '(@group_id:"aviation_safety_quality")'
+E       assert '(@group_id:"...y\\_quality")' == '(@group_id:"...ety_quality")'
+E         
+E         - (@group_id:"aviation_safety_quality")
+E         + (@group_id:"aviation\_safety\_quality")
+E         ?                     +       +
+
+tests/driver/test_falkordb_driver.py:426: AssertionError
+__ TestRateLimitRetryBehavior.test_rate_limit_retried_not_immediately_raised ___
+
+self = <AsyncMock id='4696301456'>
+args = ([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it was ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+kwargs = {}
+_call = call([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+effect = <list_iterator object at 0x1173d9660>
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                try:
+>                   result = next(effect)
+                             ^^^^^^^^^^^^
+E                   StopIteration
+
+<python-prefix>/lib/python3.11/unittest/mock.py:2243: StopIteration
+
+During handling of the above exception, another exception occurred:
+
+self = <tests.test_rate_limiting.TestRateLimitRetryBehavior object at 0x117432b10>
+mock_uniform = <MagicMock name='uniform' id='4696260240'>
+mock_sleep = <AsyncMock name='sleep' id='4695692176'>
+
+    @pytest.mark.asyncio
+    @patch('graphiti_core.llm_client.openai_base_client.asyncio.sleep', new_callable=AsyncMock)
+    @patch('graphiti_core.llm_client.openai_base_client.random.uniform', return_value=0.5)
+    async def test_rate_limit_retried_not_immediately_raised(self, mock_uniform, mock_sleep):
+        """RateLimitError should trigger a retry, not an immediate raise."""
+        client = _make_client()
+    
+        success_response = {'result': 'ok'}
+    
+        # First call raises RateLimitError, second succeeds
+        client._generate_response = AsyncMock(
+            side_effect=[RateLimitError(), success_response]
+        )
+    
+        messages = [Message(role='system', content='test')]
+>       result = await client.generate_response(messages)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_rate_limiting.py:90: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+graphiti_core/llm_client/openai_base_client.py:292: in generate_response
+    response, input_tokens, output_tokens = await self._generate_response(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock id='4696301456'>
+args = ([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it was ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+kwargs = {}
+_call = call([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+effect = <list_iterator object at 0x1173d9660>
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                try:
+                    result = next(effect)
+                except StopIteration:
+                    # It is impossible to propagate a StopIteration
+                    # through coroutines because of PEP 479
+>                   raise StopAsyncIteration
+E                   StopAsyncIteration
+
+<python-prefix>/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
+------------------------------ Captured log call -------------------------------
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 1.5s (attempt 1/5)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 1/2): not enough values to unpack (expected 3, got 1)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 2/2): 
+ERROR    graphiti_core.llm_client.openai_base_client:openai_base_client.py:337 Max retries (2) exceeded. Last error:
+____ TestRateLimitRetryBehavior.test_backoff_delays_increase_exponentially _____
+
+self = <AsyncMock id='4695393040'>
+args = ([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it was ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+kwargs = {}
+_call = call([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+effect = <list_iterator object at 0x117ccf940>
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                try:
+>                   result = next(effect)
+                             ^^^^^^^^^^^^
+E                   StopIteration
+
+<python-prefix>/lib/python3.11/unittest/mock.py:2243: StopIteration
+
+During handling of the above exception, another exception occurred:
+
+self = <tests.test_rate_limiting.TestRateLimitRetryBehavior object at 0x117433b10>
+mock_uniform = <MagicMock name='uniform' id='4695412176'>
+mock_sleep = <AsyncMock name='sleep' id='4695406032'>
+
+    @pytest.mark.asyncio
+    @patch('graphiti_core.llm_client.openai_base_client.asyncio.sleep', new_callable=AsyncMock)
+    @patch('graphiti_core.llm_client.openai_base_client.random.uniform', return_value=0.5)
+    async def test_backoff_delays_increase_exponentially(self, mock_uniform, mock_sleep):
+        """Verify delays follow 2^n pattern across retries."""
+        client = _make_client()
+    
+        # Fail 3 times then succeed
+        success_response = {'result': 'ok'}
+        client._generate_response = AsyncMock(
+            side_effect=[RateLimitError(), RateLimitError(), RateLimitError(), success_response]
+        )
+    
+        messages = [Message(role='system', content='test')]
+>       result = await client.generate_response(messages)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_rate_limiting.py:135: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+graphiti_core/llm_client/openai_base_client.py:292: in generate_response
+    response, input_tokens, output_tokens = await self._generate_response(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock id='4695393040'>
+args = ([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it was ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+kwargs = {}
+_call = call([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+effect = <list_iterator object at 0x117ccf940>
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                try:
+                    result = next(effect)
+                except StopIteration:
+                    # It is impossible to propagate a StopIteration
+                    # through coroutines because of PEP 479
+>                   raise StopAsyncIteration
+E                   StopAsyncIteration
+
+<python-prefix>/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
+------------------------------ Captured log call -------------------------------
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 1.5s (attempt 1/5)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 2.5s (attempt 2/5)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 4.5s (attempt 3/5)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 1/2): not enough values to unpack (expected 3, got 1)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 2/2): 
+ERROR    graphiti_core.llm_client.openai_base_client:openai_base_client.py:337 Max retries (2) exceeded. Last error:
+_ TestRateLimitRetryBehavior.test_rate_limit_counter_independent_of_general_retries _
+
+self = <AsyncMock id='4684370128'>
+args = ([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it was ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+kwargs = {}
+_call = call([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+effect = <list_iterator object at 0x1171dc7c0>
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                try:
+>                   result = next(effect)
+                             ^^^^^^^^^^^^
+E                   StopIteration
+
+<python-prefix>/lib/python3.11/unittest/mock.py:2243: StopIteration
+
+During handling of the above exception, another exception occurred:
+
+self = <tests.test_rate_limiting.TestRateLimitRetryBehavior object at 0x11743c390>
+mock_uniform = <MagicMock name='uniform' id='4624568464'>
+mock_sleep = <AsyncMock name='sleep' id='4696194064'>
+
+    @pytest.mark.asyncio
+    @patch('graphiti_core.llm_client.openai_base_client.asyncio.sleep', new_callable=AsyncMock)
+    @patch('graphiti_core.llm_client.openai_base_client.random.uniform', return_value=0.5)
+    async def test_rate_limit_counter_independent_of_general_retries(
+        self, mock_uniform, mock_sleep
+    ):
+        """Rate limit retries use a separate counter from general retries."""
+        client = _make_client()
+    
+        success_response = {'result': 'ok'}
+        # Alternate between general errors and rate limit errors, then succeed
+        client._generate_response = AsyncMock(
+            side_effect=[
+                ValueError('parse error'),  # general retry 1
+                RateLimitError(),  # rate limit retry 1
+                success_response,
+            ]
+        )
+    
+        messages = [Message(role='system', content='test')]
+>       result = await client.generate_response(messages)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_rate_limiting.py:166: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+graphiti_core/llm_client/openai_base_client.py:292: in generate_response
+    response, input_tokens, output_tokens = await self._generate_response(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock id='4684370128'>
+args = ([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it was ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+kwargs = {}
+_call = call([Message(role='system', content='test\n\nAny extracted information should be returned in the same language as it ...sponse, ensuring the output matches the expected format and constraints.')], None, 16384, <ModelSize.medium: 'medium'>)
+effect = <list_iterator object at 0x1171dc7c0>
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                try:
+                    result = next(effect)
+                except StopIteration:
+                    # It is impossible to propagate a StopIteration
+                    # through coroutines because of PEP 479
+>                   raise StopAsyncIteration
+E                   StopAsyncIteration
+
+<python-prefix>/lib/python3.11/unittest/mock.py:2247: StopAsyncIteration
+------------------------------ Captured log call -------------------------------
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 1/2): parse error
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:315 Rate limited. Retrying in 1.5s (attempt 1/5)
+WARNING  graphiti_core.llm_client.openai_base_client:openai_base_client.py:355 Retrying after application error (attempt 2/2): not enough values to unpack (expected 3, got 1)
+ERROR    graphiti_core.llm_client.openai_base_client:openai_base_client.py:337 Max retries (2) exceeded. Last error:
+=============================== warnings summary ===============================
+graphiti_core/driver/search_interface/search_interface.py:22
+  <worktree>/graphiti_core/driver/search_interface/search_interface.py:22: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class SearchInterface(BaseModel):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/driver/test_falkordb_driver.py::TestFalkorDriverSession::test_run_strips_nul_bytes_from_list_query_parameters
+FAILED tests/driver/test_falkordb_driver.py::TestBuildFulltextQuery::test_basic_query_with_group_ids
+FAILED tests/driver/test_falkordb_driver.py::TestBuildFulltextQuery::test_empty_query_with_group_ids_returns_group_filter_only
+FAILED tests/test_rate_limiting.py::TestRateLimitRetryBehavior::test_rate_limit_retried_not_immediately_raised
+FAILED tests/test_rate_limiting.py::TestRateLimitRetryBehavior::test_backoff_delays_increase_exponentially
+FAILED tests/test_rate_limiting.py::TestRateLimitRetryBehavior::test_rate_limit_counter_independent_of_general_retries
+6 failed, 769 passed, 53 skipped, 1 warning in 49.27s
+EXIT=1

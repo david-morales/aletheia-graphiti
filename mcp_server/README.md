@@ -657,7 +657,7 @@ These carry `destructiveHint: true`. They remove data and cannot be undone.
 
 | Tool | Purpose |
 |---|---|
-| `build_communities` | **Destructive despite the name.** It deletes EVERY community in the graph — including those of `group_id`s you did not ask for, which are **not** rebuilt — then re-clusters the requested ones. (`graphiti_core` calls `remove_communities(driver)` with no group filter; both drivers run an unscoped `MATCH (c:Community) DETACH DELETE c`.) |
+| `build_communities` | **Destructive despite the name.** Within the `group_id`s you pass it **deletes** the existing communities before re-clustering, so any Community uuid you already hold for those partitions stops resolving. Partitions you did not name are left alone. (`graphiti_core` calls `remove_communities(driver, group_ids)`, which filters on `c.group_id IN $group_ids`. Before the BUG-57 fix the clear ran unscoped and took every other partition's community layer with it.) |
 | `delete_entity_edge` | Delete one relationship by uuid. |
 | `delete_episode` | Delete an episode and everything extracted from it. |
 | `clear_graph` | **Irreversible.** Delete ALL data in the named group(s). |

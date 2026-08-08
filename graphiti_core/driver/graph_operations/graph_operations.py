@@ -768,14 +768,19 @@ class GraphOperationsInterface(BaseModel):
     async def remove_communities(
         self,
         driver: Any,
+        group_ids: list[str] | None = None,
     ) -> None:
         """
-        Delete all community nodes from the graph.
+        Delete community nodes from the graph.
 
-        This removes all Community-labeled nodes and their relationships.
+        This removes Community-labeled nodes and their relationships, scoped to
+        `group_ids`. Only `None` means the entire graph (BUG-57 — an unscoped clear
+        inside a per-group rebuild destroys every other partition's community layer).
 
         Args:
             driver: GraphDriver instance
+            group_ids: Partitions to clear. `None` means the entire graph; `[]` means
+                no partitions and deletes nothing.
         """
         raise NotImplementedError
 
