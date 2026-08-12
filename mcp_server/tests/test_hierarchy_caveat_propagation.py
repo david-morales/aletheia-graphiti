@@ -22,8 +22,8 @@ from flavours.age import AgeFlavour
 from flavours.falkordb import FalkorDbFlavour
 from tool_descriptions import (
     _build_example_queries,
-    build_instructions,
     build_graph_query_description,
+    build_instructions,
 )
 
 HIERARCHY_LABELS = ('Actor', 'Event')

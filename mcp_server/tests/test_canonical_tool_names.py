@@ -45,6 +45,36 @@ LEGACY = frozenset(RENAMED)
 CANONICAL = frozenset(RENAMED.values())
 
 
+@pytest.fixture(autouse=True)
+def _restore_server_globals():
+    """Put the module-global server back exactly as we found it.
+
+    `register_dynamic_tools` / `register_fallback_tools` mutate `srv.mcp` in
+    place. Without this, the registrations these tests make LEAK into every
+    module that collects after them — and this file sorts alphabetically before
+    `test_degraded_fallback.py`, whose BUG-50 guard asserts
+    `served == set(TOOL_ANNOTATIONS)`. Leaked registrations satisfy that equality
+    even when the fallback registers nothing at all, so the guard passed against
+    a deliberately broken fallback: 16 failed / 1126 passed either way.
+
+    Found by adversarial review. A file whose subject is protecting the served
+    surface had switched off the test that protects the served surface, and both
+    suites stayed green — the failure mode no count-based gate can see.
+    """
+    mcp = srv.mcp
+    tools = dict(mcp._tool_manager._tools)
+    resources = dict(mcp._resource_manager._resources)
+    instructions = mcp._lowlevel_server.instructions
+    try:
+        yield
+    finally:
+        mcp._tool_manager._tools.clear()
+        mcp._tool_manager._tools.update(tools)
+        mcp._resource_manager._resources.clear()
+        mcp._resource_manager._resources.update(resources)
+        mcp._lowlevel_server.instructions = instructions
+
+
 def _profile(group_id: str = 'canonical_graph') -> DomainProfile:
     return DomainProfile(
         group_id=group_id,
