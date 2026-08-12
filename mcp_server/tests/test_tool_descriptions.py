@@ -4,7 +4,7 @@ from domain_profile import DomainProfile, EntityTypeInfo, EdgeTypeInfo
 from tool_descriptions import (
     build_instructions,
     build_search_description,
-    build_explore_node_description,
+    build_explore_entity_description,
     build_search_ontology_description,
     build_explore_ontology_description,
 )
@@ -34,7 +34,7 @@ class TestBuildInstructions:
     def test_includes_tool_guidance(self):
         instructions = build_instructions(make_test_profile())
         assert 'search' in instructions.lower()
-        assert 'explore_node' in instructions
+        assert 'explore_entity' in instructions
         assert 'Use when' in instructions or 'use when' in instructions
 
     def test_includes_entity_type_filter_hint(self):
@@ -69,12 +69,12 @@ class TestSearchDescription:
 
 class TestExploreNodeDescription:
     def test_includes_sample_entity(self):
-        desc = build_explore_node_description(make_test_profile())
+        desc = build_explore_entity_description(make_test_profile())
         # Should include at least one sample entity name
         assert 'PH-KZB' in desc or 'Runway excursion' in desc
 
     def test_redirects_to_search(self):
-        desc = build_explore_node_description(make_test_profile())
+        desc = build_explore_entity_description(make_test_profile())
         assert 'search' in desc.lower()
 
 
@@ -94,17 +94,17 @@ class TestFlavourAwareDescriptions:
     """ADR-019 R1/R6: dialect short-form comes from the flavour, not hardcoded."""
 
     def test_run_cypher_description_falkordb_dialect(self):
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
         from flavours.falkordb import FalkorDbFlavour
-        desc = build_run_cypher_description(make_test_profile(), FalkorDbFlavour())
+        desc = build_graph_query_description(make_test_profile(), FalkorDbFlavour())
         assert 'Dialect notes:' in desc
         assert 'FalkorDB openCypher' in desc
         assert 'toLower' in desc
 
     def test_run_cypher_description_age_dialect(self):
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
         from flavours.age import AgeFlavour
-        desc = build_run_cypher_description(make_test_profile(), AgeFlavour())
+        desc = build_graph_query_description(make_test_profile(), AgeFlavour())
         assert 'Apache AGE openCypher' in desc
         assert 'n.attributes' in desc
         assert 'never name a variable `id`' in desc
@@ -120,8 +120,8 @@ class TestFlavourAwareDescriptions:
         assert 'no $param bindings' in instr
 
     def test_run_cypher_description_no_flavour_has_no_dialect_block(self):
-        from tool_descriptions import build_run_cypher_description
-        desc = build_run_cypher_description(make_test_profile())
+        from tool_descriptions import build_graph_query_description
+        desc = build_graph_query_description(make_test_profile())
         assert 'Dialect notes:' not in desc
 
     def test_instructions_include_flavour_dialect(self):

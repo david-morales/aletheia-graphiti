@@ -1,6 +1,6 @@
 """Live two-flavour parity gate (GATED).
 
-Proves that FalkorDbFlavour and AgeFlavour produce the SAME rich run_cypher envelope shape when
+Proves that FalkorDbFlavour and AgeFlavour produce the SAME rich graph_query envelope shape when
 their execute_graph_query output is fed to the shared format_result — against real backends.
 
 Gated:
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
     reason="set FALKORDB_PARITY_LIVE=1 and/or AGE_PARITY_LIVE=1 to run",
 )
 
-# The rich envelope every run_cypher success must carry, on either flavour.
+# The rich envelope every graph_query success must carry, on either flavour.
 _ENVELOPE_KEYS = {
     "query", "auto_fixes", "type", "row_count", "truncated",
     "limit_applied", "execution_ms", "cypher_quality",

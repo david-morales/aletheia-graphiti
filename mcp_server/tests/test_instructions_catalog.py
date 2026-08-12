@@ -2,7 +2,7 @@
 
 The served instructions named 7 of 18 tools. `add_memory` — the connector's only
 ingestion path, and the one downstream services are told to use — appeared
-nowhere on either arm, and neither did `profile_graph`, `get_ontology_structure`
+nowhere on either arm, and neither did `profile_data`, `get_ontology_structure`
 or `get_ontology_documentation`. An agent reading the announcement had no way to
 learn that half the surface exists.
 

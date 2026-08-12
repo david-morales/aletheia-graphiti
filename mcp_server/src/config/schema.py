@@ -313,7 +313,7 @@ class SearchDefaultsConfig(BaseModel):
 
     default_reranker: str = Field(default='rrf', description='Default reranker strategy')
     default_limit: int = Field(default=10, description='Default result limit')
-    bfs_max_depth: int = Field(default=3, description='Default BFS depth for explore_node')
+    bfs_max_depth: int = Field(default=3, description='Default BFS depth for explore_entity')
 
 
 class GraphitiConfig(BaseSettings):

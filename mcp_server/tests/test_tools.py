@@ -1,6 +1,6 @@
 """Unit tests for MCP server tool functions.
 
-Tests cover: resolve_search_config, search, explore_node, get_episode_context,
+Tests cover: resolve_search_config, search, explore_entity, get_episode_context,
 build_communities, and add_memory.
 """
 
@@ -16,7 +16,7 @@ from flavours.falkordb import FalkorDbFlavour
 from graphiti_mcp_server import (
     add_memory,
     build_communities,
-    explore_node,
+    explore_entity,
     explore_ontology,
     get_episode_context,
     resolve_search_config,
@@ -356,12 +356,12 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 
 class TestExploreNode:
-    """Tests for the explore_node tool function."""
+    """Tests for the explore_entity tool function."""
 
     @pytest.mark.asyncio
     async def test_service_not_initialized(self):
         with patch('graphiti_mcp_server.graphiti_service', None):
-            result = await explore_node(node_name='Test')
+            result = await explore_entity(node_name='Test')
         assert 'error' in result
         assert 'not initialized' in result['error']
 
@@ -374,7 +374,7 @@ class TestExploreNode:
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
         ):
-            result = await explore_node()
+            result = await explore_entity()
 
         assert 'error' in result
         assert 'node_name or node_uuid' in result['error']
@@ -401,7 +401,7 @@ class TestExploreNode:
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
         ):
-            result = await explore_node(node_name='FoundEntity')
+            result = await explore_entity(node_name='FoundEntity')
 
         assert 'error' not in result
         assert result['center_node'] is not None
@@ -428,7 +428,7 @@ class TestExploreNode:
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
         ):
-            result = await explore_node(node_name='NonExistent')
+            result = await explore_entity(node_name='NonExistent')
 
         # Should return an ExploreResponse with empty results, not an error
         assert 'error' not in result
@@ -453,7 +453,7 @@ class TestExploreNode:
                 AsyncMock(return_value=target_node),
             ),
         ):
-            result = await explore_node(node_uuid='direct-uuid')
+            result = await explore_entity(node_uuid='direct-uuid')
 
         assert 'error' not in result
         # Should only call search_ once (no name resolution needed)
@@ -487,7 +487,7 @@ class TestExploreNode:
                 'graphiti_mcp_server.EntityNode.get_by_uuid', AsyncMock(return_value=centre)
             ) as get_by_uuid,
         ):
-            result = await explore_node(node_uuid='hub-uuid')
+            result = await explore_entity(node_uuid='hub-uuid')
 
         assert 'error' not in result
         assert result['center_node'] is not None
@@ -511,7 +511,7 @@ class TestExploreNode:
             patch('graphiti_mcp_server.config', cfg, create=True),
             patch('graphiti_mcp_server.EntityNode.get_by_uuid', AsyncMock(return_value=centre)),
         ):
-            result = await explore_node(node_uuid='hub-uuid')
+            result = await explore_entity(node_uuid='hub-uuid')
 
         attrs = result['center_node']['attributes']
         assert attrs == {'key': 'value'}
@@ -533,7 +533,7 @@ class TestExploreNode:
                 AsyncMock(side_effect=NodeNotFoundError('ghost-uuid')),
             ),
         ):
-            result = await explore_node(node_uuid='ghost-uuid')
+            result = await explore_entity(node_uuid='ghost-uuid')
 
         assert 'error' not in result
         assert 'No node found' in result['message']
@@ -563,7 +563,7 @@ class TestExploreNode:
                 AsyncMock(side_effect=ConnectionError('pool is closed')),
             ),
         ):
-            result = await explore_node(node_uuid='hub-uuid')
+            result = await explore_entity(node_uuid='hub-uuid')
 
         assert 'error' in result
         assert 'pool is closed' in result['error']
@@ -588,7 +588,7 @@ class TestExploreNode:
             patch('graphiti_mcp_server.config', cfg, create=True),
             patch('graphiti_mcp_server.EntityNode.get_by_uuid', AsyncMock()) as get_by_uuid,
         ):
-            result = await explore_node(node_name='FoundEntity')
+            result = await explore_entity(node_name='FoundEntity')
 
         assert result['center_node']['uuid'] == 'resolved-uuid'
         get_by_uuid.assert_not_awaited()
@@ -607,7 +607,7 @@ class TestExploreNode:
                 AsyncMock(return_value=make_mock_node(uuid='some-uuid')),
             ),
         ):
-            await explore_node(node_uuid='some-uuid', depth=10)
+            await explore_entity(node_uuid='some-uuid', depth=10)
 
         call_kwargs = client.search_.call_args.kwargs
         config = call_kwargs['config']
@@ -629,7 +629,7 @@ class TestExploreNode:
                 AsyncMock(return_value=make_mock_node(uuid='some-uuid')),
             ),
         ):
-            await explore_node(node_uuid='some-uuid', edge_types=['OWNERSHIP'])
+            await explore_entity(node_uuid='some-uuid', edge_types=['OWNERSHIP'])
 
         call_kwargs = client.search_.call_args.kwargs
         search_filter = call_kwargs['search_filter']
@@ -1187,9 +1187,9 @@ class TestSchemaConstraints:
         assert 'message' in source_annotation.__args__
 
     def test_explore_node_depth_is_literal(self):
-        from graphiti_mcp_server import explore_node
+        from graphiti_mcp_server import explore_entity
         import inspect
-        sig = inspect.signature(explore_node)
+        sig = inspect.signature(explore_entity)
         depth_annotation = sig.parameters['depth'].annotation
         assert hasattr(depth_annotation, '__args__'), 'depth should be Literal type'
         assert 1 in depth_annotation.__args__
@@ -1242,7 +1242,7 @@ class TestDynamicRegistration:
         tools = mcp._tool_manager._tools
         assert 'search' in tools
         assert 'Aircraft' in tools['search'].description
-        assert 'explore_node' in tools
+        assert 'explore_entity' in tools
         assert 'search_ontology' in tools
         assert 'explore_ontology' in tools
 

@@ -458,7 +458,7 @@ def classify_falkordb_execution_error(msg: str) -> CypherError:
 # ---------------------------------------------------------------------------
 # FalkorDB Cypher dialect reference (single source). Curated from https://github.com/FalkorDB/skills.
 # get_schema surfaces this via flavour.dialect_reference (canonical) + a cypher_reference alias;
-# the run_cypher description + server instructions surface the short form (dialect_summary).
+# the graph_query description + server instructions surface the short form (dialect_summary).
 # ---------------------------------------------------------------------------
 
 _FALKORDB_DIALECT = (

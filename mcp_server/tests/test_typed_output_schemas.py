@@ -11,7 +11,7 @@ A-D7 — the surface carried two envelope families: four tools returned a flat
 typed payload while eleven returned `X | ErrorResponse`, which makes MCPServer nest
 `structuredContent` under `result`. A consumer needed per-tool knowledge of which
 bucket a tool was in, and the ADR-015 R4 client rule `if "error" in result` held
-only for the flat four. The fork had already reasoned this out for `run_cypher`
+only for the flat four. The fork had already reasoned this out for `graph_query`
 (`response_types.py`, "a union return would nest it under `result`") and never
 applied it to the rest.
 
@@ -98,7 +98,7 @@ FLAT_SURFACE: dict[str, dict] = {
         'error': {'error': 'Failed to retrieve ontology documentation: boom'},
         'required_keys': ('ontology_graph', 'entity_classes', 'relationship_classes', 'error'),
     },
-    'profile_graph': {
+    'profile_data': {
         'success': {
             'entity_profiles': {'Widget': {'count': 3, 'properties': {}}},
             'relationship_profiles': {'USES': {'count': 2}},
@@ -233,7 +233,7 @@ def test_an_all_null_payload_survives_validation(isolated_tools, tool_name):
     [
         ('search', {'message': '2 found', 'nodes': [], 'edges': [], 'communities': []}),
         ('search', {'error': 'boom'}),
-        ('explore_node', {'message': 'no node', 'center_node': None, 'nodes': [],
+        ('explore_entity', {'message': 'no node', 'center_node': None, 'nodes': [],
                           'edges': [], 'communities': []}),
         ('clear_graph', {'message': 'cleared'}),
         ('add_memory', {'message': 'queued'}),

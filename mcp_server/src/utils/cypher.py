@@ -524,7 +524,7 @@ def _format_node(node: Any) -> dict[str, Any]:
     """Format a FalkorDB Node into a serialisable dict, filtering :Entity label.
 
     Strips ``*_embedding`` properties — they're huge vectors useless for the
-    LLM and easily blow Anthropic's 200K context limit when run_cypher
+    LLM and easily blow Anthropic's 200K context limit when graph_query
     returns multiple full nodes (e.g. ``RETURN n, m, k``).
     """
     labels = [lbl for lbl in (node.labels if hasattr(node, 'labels') else []) if lbl != 'Entity']

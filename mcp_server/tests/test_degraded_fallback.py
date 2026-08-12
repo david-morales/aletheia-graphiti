@@ -1,9 +1,9 @@
 """BUG-50 / A-D2: a domain-profile failure must not silently shrink the surface.
 
 Before this guard, `initialize_server`'s except branch re-registered only four
-tools (`search`, `explore_node`, `search_ontology`, `explore_ontology`), so
+tools (`search`, `explore_entity`, `search_ontology`, `explore_ontology`), so
 `get_schema` — the canonical ADR-019 R5 payload every consumer discovers the
-connector through — plus `run_cypher`, `profile_graph` and both ontology-bulk
+connector through — plus `graph_query`, `profile_data` and both ontology-bulk
 tools vanished from `tools/list` while `/health` and `get_status` stayed green.
 The failure was a `logger.warning`, and the hand-written seed instructions (a
 10-tool catalog naming `clear_graph`) became the served announcement.
@@ -70,7 +70,7 @@ async def test_the_degraded_surface_still_serves_all_eighteen_tools(degraded):
 
 @pytest.mark.parametrize(
     'tool_name',
-    ['get_schema', 'run_cypher', 'profile_graph', 'get_ontology_structure',
+    ['get_schema', 'graph_query', 'profile_data', 'get_ontology_structure',
      'get_ontology_documentation'],
 )
 async def test_the_tools_the_old_fallback_dropped_are_served(degraded, tool_name):

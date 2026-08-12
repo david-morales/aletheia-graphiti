@@ -126,7 +126,7 @@ if not _falkordb_reachable(FALKORDB_URI):
 #   add_memory                                                                          5
 #   wait_for_episodes                                    _EPISODE_WAIT_SECONDS   ->    180
 #   2x search_until  2 * _SEARCH_ATTEMPTS * (_SEARCH_POLL + _ASSUMED_CALL_SECONDS)     96
-#   get_episode_context, explore_node, delete_episode, clear_graph, get_episodes       25
+#   get_episode_context, explore_entity, delete_episode, clear_graph, get_episodes       25
 #   teardown clear_graph                                                                5
 #                                                                                   -----
 #                                                                                     371
@@ -393,15 +393,15 @@ async def test_every_tool_declares_annotations_and_an_output_schema_on_the_wire(
 
 
 # ---------------------------------------------------------------------------
-# run_cypher: the envelope contract, over the wire
+# graph_query: the envelope contract, over the wire
 # ---------------------------------------------------------------------------
 
 
 async def test_run_cypher_round_trips_a_scalar_envelope():
     async with LiveMCPClient(_unique_group_id()) as client:
         resp = _raise_on_error(
-            'run_cypher',
-            await client.call('run_cypher', {'query': 'MATCH (n) RETURN count(n) AS c'}),
+            'graph_query',
+            await client.call('graph_query', {'query': 'MATCH (n) RETURN count(n) AS c'}),
         )
         assert resp['type'] == 'scalar', resp
         assert isinstance(resp['result'], int), resp
@@ -410,7 +410,7 @@ async def test_run_cypher_round_trips_a_scalar_envelope():
 
 async def test_a_write_query_is_rejected_before_it_reaches_the_database():
     async with LiveMCPClient(_unique_group_id()) as client:
-        resp = await client.call('run_cypher', {'query': 'CREATE (n:ShouldNeverExist)'})
+        resp = await client.call('graph_query', {'query': 'CREATE (n:ShouldNeverExist)'})
         assert resp['type'] == 'error', resp
         assert resp['error_detail']['stage'] == 'security', resp
         assert isinstance(resp['error'], str), resp  # ADR-015 R4
@@ -429,9 +429,9 @@ async def test_an_execution_failure_reports_the_wall_clock_a_rejection_does_not(
     that happens to be coarse.
     """
     async with LiveMCPClient(_unique_group_id()) as client:
-        rejected = await client.call('run_cypher', {'query': 'CREATE (n:ShouldNeverExist)'})
+        rejected = await client.call('graph_query', {'query': 'CREATE (n:ShouldNeverExist)'})
         executed = await client.call(
-            'run_cypher', {'query': 'MATCH (n) RETURN nosuchfunction(n) AS c LIMIT 5'}
+            'graph_query', {'query': 'MATCH (n) RETURN nosuchfunction(n) AS c LIMIT 5'}
         )
 
     assert rejected['error_detail']['stage'] == 'security', rejected
@@ -526,9 +526,9 @@ async def test_end_to_end_add_search_context_delete_clear():
             # Asserting the graph pins what the episode actually produced, and stays
             # true once the search defect is fixed.
             facts = _raise_on_error(
-                'run_cypher',
+                'graph_query',
                 await client.call(
-                    'run_cypher',
+                    'graph_query',
                     {'query': 'MATCH (:Entity)-[r]->(:Entity) RETURN count(r) AS c'},
                 ),
             )
@@ -542,11 +542,11 @@ async def test_end_to_end_add_search_context_delete_clear():
             )
             assert context.get('nodes'), f'episode extracted no nodes: {context}'
 
-            # explore_node walks out from a name the search just returned.
+            # explore_entity walks out from a name the search just returned.
             explored = _raise_on_error(
-                'explore_node',
+                'explore_entity',
                 await client.call(
-                    'explore_node',
+                    'explore_entity',
                     {
                         'node_name': nodes[0]['name'],
                         'group_ids': [group],
@@ -555,7 +555,7 @@ async def test_end_to_end_add_search_context_delete_clear():
                     },
                 ),
             )
-            assert explored.get('center_node'), f'explore_node found no centre: {explored}'
+            assert explored.get('center_node'), f'explore_entity found no centre: {explored}'
 
             deleted = _raise_on_error(
                 'delete_episode', await client.call('delete_episode', {'uuid': episode_uuid})

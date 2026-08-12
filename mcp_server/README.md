@@ -617,7 +617,7 @@ The full contract is announced, not documented: every tool publishes a typed
 | Tool | Read-only | Purpose |
 |---|---|---|
 | `search` | yes | Semantic search over entities, facts and communities. Filter by `entity_types`, `edge_types`, `valid_at`; `intent` picks a strategy for you. |
-| `explore_node` | yes | One entity's neighborhood: connected nodes, facts, community memberships. |
+| `explore_entity` | yes | One entity's neighborhood: connected nodes, facts, community memberships. |
 | `search_ontology` | yes | Semantic recall over the companion ontology graph. |
 | `explore_ontology` | yes | One ontology class in full context: properties, relationships, hierarchy. |
 | `sample_subgraph` | yes | Flavour-normalized node/edge sample for graph views. `leaf` is the producer-announced most-specific label — type and colour by it. |
@@ -627,8 +627,8 @@ The full contract is announced, not documented: every tool publishes a typed
 | Tool | Read-only | Purpose |
 |---|---|---|
 | `get_schema` | yes | Canonical schema: node labels with counts and property keys, relationship types with source→target patterns, plus `dialect_reference` and `analysis_notes`. Call it before writing Cypher. |
-| `run_cypher` | yes | Read-only Cypher. Writes rejected, `LIMIT 200` auto-injected, common LLM syntax slips auto-corrected. |
-| `profile_graph` | yes | Property coverage, sample values, detected languages, relationship cardinality. |
+| `graph_query` | yes | Read-only Cypher. Writes rejected, `LIMIT 200` auto-injected, common LLM syntax slips auto-corrected. |
+| `profile_data` | yes | Property coverage, sample values, detected languages, relationship cardinality. |
 | `get_ontology_structure` | yes | Every ontology class in one compact call — the surface map. |
 | `get_ontology_documentation` | yes | The full ontology reference with prose and per-class properties. **Large**; intended for UIs, exports and batch consumers. |
 
@@ -728,7 +728,7 @@ to surface a protocol failure and discard the payload, which throws away the
 `hint` that would let the model fix its own query. Transport and protocol
 failures still surface as real MCP errors.
 
-One case is deliberately *not* an error at all: `explore_node` with a uuid that
+One case is deliberately *not* an error at all: `explore_entity` with a uuid that
 does not exist returns a normal response with `center_node: null` and a message
 saying so. A miss is an answer.
 

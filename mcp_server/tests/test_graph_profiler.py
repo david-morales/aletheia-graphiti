@@ -867,7 +867,7 @@ class TestServerWiring:
     """The seam only reaches the Overview tab if the tool passes the flavour."""
 
     @pytest.mark.asyncio
-    async def test_profile_graph_tool_passes_the_service_flavour(self, monkeypatch):
+    async def test_profile_data_tool_passes_the_service_flavour(self, monkeypatch):
         import graphiti_mcp_server as srv
 
         driver = _AgeStubDriver()
@@ -884,7 +884,7 @@ class TestServerWiring:
 
         monkeypatch.setattr(srv, 'graphiti_service', _Service())
 
-        result = await srv.profile_graph(sample_size=5)
+        result = await srv.profile_data(sample_size=5)
 
         assert 'error' not in result, result
         census = [q for q in driver.queries if 'count(n) AS cnt' in q]

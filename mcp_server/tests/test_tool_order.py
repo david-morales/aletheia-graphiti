@@ -107,7 +107,7 @@ def test_an_unknown_tool_is_appended_rather_than_dropped():
     assert _names(server) == [*TOOL_ORDER, 'bonus_tool']
 
 
-@pytest.mark.parametrize('missing', ['run_cypher', 'clear_graph'])
+@pytest.mark.parametrize('missing', ['graph_query', 'clear_graph'])
 def test_a_partial_surface_keeps_relative_order(missing):
     server = MCPServer('partial')
     for name in TOOL_ORDER:
