@@ -19,7 +19,7 @@ def _key_tools_lines() -> list[str]:
     announcements serve the same catalog and cannot drift apart.
 
     Completeness is the contract (A-D9). The catalog used to name 7 of 18, omitting
-    `add_memory` — the connector's only ingestion path — along with `profile_graph`
+    `add_memory` — the connector's only ingestion path — along with `profile_data`
     and both ontology-bulk tools, so an agent reading the announcement could not
     learn that half the surface exists. The three destructive tools are named AND
     marked: announcing one without saying what it does is worse than omitting it.
@@ -30,9 +30,9 @@ def _key_tools_lines() -> list[str]:
         '',
         '1. search -- Find entities, facts, or communities by natural language query.',
         '   Use when: the user asks a question or wants to find something.',
-        '   Use explore_node instead when: you already know which entity to examine.',
+        '   Use explore_entity instead when: you already know which entity to examine.',
         '',
-        "2. explore_node -- Expand a known entity's neighborhood.",
+        "2. explore_entity -- Expand a known entity's neighborhood.",
         '   Use when: you have a specific entity name and want its connections.',
         "   Use search instead when: you don't know which entity to start from.",
         '',
@@ -54,10 +54,10 @@ def _key_tools_lines() -> list[str]:
         '6. get_schema -- This graph\'s labels, relationship types, counts, property',
         '   keys and the backend `dialect_reference`. Call it before writing Cypher.',
         '',
-        '7. run_cypher -- Read-only Cypher for counts, aggregations and path queries.',
+        '7. graph_query -- Read-only Cypher for counts, aggregations and path queries.',
         '   Writes are rejected; 200 rows are auto-limited.',
         '',
-        '8. profile_graph -- Property coverage, sample values, detected languages and',
+        '8. profile_data -- Property coverage, sample values, detected languages and',
         '   relationship cardinality. Use when you need to judge data QUALITY before',
         '   trusting a count.',
         '',
@@ -111,13 +111,13 @@ def _analytical_queries_lines() -> list[str]:
         '## Analytical Queries',
         '',
         'Two complementary tool families for this graph:',
-        '- **Semantic discovery** (search, explore_node): find entities, explore connections, community context',
-        '- **Analytical queries** (get_schema, run_cypher): counts, aggregations, path queries, comparisons, gap detection',
+        '- **Semantic discovery** (search, explore_entity): find entities, explore connections, community context',
+        '- **Analytical queries** (get_schema, graph_query): counts, aggregations, path queries, comparisons, gap detection',
         '',
         '**When to use which:**',
-        '- Use search/explore_node when you need semantic similarity or entity discovery',
-        '- Use get_schema + run_cypher when you need counts, aggregations, comparisons, or gap detection',
-        '- Use search -> then run_cypher for chained workflows: discover entities semantically,',
+        '- Use search/explore_entity when you need semantic similarity or entity discovery',
+        '- Use get_schema + graph_query when you need counts, aggregations, comparisons, or gap detection',
+        '- Use search -> then graph_query for chained workflows: discover entities semantically,',
         '  then compute metrics with Cypher using WHERE ... IN [...] to bridge results',
     ]
 
@@ -275,7 +275,7 @@ def build_search_description(profile: DomainProfile) -> str:
         '- User wants to filter by entity type, edge type, or date',
         '',
         'Do NOT use when:',
-        '- You already know which entity to examine -- use explore_node instead',
+        '- You already know which entity to examine -- use explore_entity instead',
         '- You need schema or ontology definitions -- use search_ontology instead',
         '',
         'Returns: matching nodes (entities with name, summary, labels), '
@@ -299,8 +299,8 @@ def build_search_description(profile: DomainProfile) -> str:
     return '\n'.join(parts)
 
 
-def build_explore_node_description(profile: DomainProfile) -> str:
-    """Build the explore_node tool description from a DomainProfile."""
+def build_explore_entity_description(profile: DomainProfile) -> str:
+    """Build the explore_entity tool description from a DomainProfile."""
     parts = [
         "Deep-dive on a specific entity -- shows its connections, facts, and community memberships.",
         '',
@@ -323,7 +323,7 @@ def build_explore_node_description(profile: DomainProfile) -> str:
     if sample_name:
         parts.append(f'\nExample:')
         parts.append(f'  User: "Tell me about {sample_name}"')
-        parts.append(f'  Call: explore_node(node_name="{sample_name}", depth=2)')
+        parts.append(f'  Call: explore_entity(node_name="{sample_name}", depth=2)')
 
     return '\n'.join(parts)
 
@@ -369,7 +369,7 @@ def build_explore_ontology_description(profile: DomainProfile) -> str:
         '- You want to understand the class hierarchy',
         '',
         'Do NOT use when:',
-        '- You want actual data -- use explore_node instead',
+        '- You want actual data -- use explore_entity instead',
         '',
         'Returns: the ontology class node, connected property/relationship nodes, and parent classes.',
     ]
@@ -428,7 +428,7 @@ def _build_example_queries(profile: DomainProfile) -> list[str]:
     census (A-D4). On AGE the census counts the ontology hierarchy, so the
     unfiltered list leads with abstract supertypes: the templates used to emit
     `MATCH (s:Actor)-[:EJECUTADO_POR]->(t:Agente)` — three queries returning zero
-    rows by construction, as the FIRST thing an agent reads about run_cypher.
+    rows by construction, as the FIRST thing an agent reads about graph_query.
 
     A profile whose every label is hierarchy-only yields NO examples. That is the
     intended outcome: no example beats one that cannot match.
@@ -489,8 +489,8 @@ def _build_example_queries(profile: DomainProfile) -> list[str]:
     return examples
 
 
-def build_run_cypher_description(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
-    """Build the run_cypher tool description from a DomainProfile (and the backend flavour)."""
+def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
+    """Build the graph_query tool description from a DomainProfile (and the backend flavour)."""
     parts = [
         f'Execute a read-only Cypher query against the {profile.group_id} graph.',
         '',
@@ -525,7 +525,7 @@ def build_run_cypher_description(profile: DomainProfile, flavour: 'Flavour | Non
     # Chained workflow guidance
     parts.append('')
     parts.append('Chained workflow: use search to discover entities semantically,')
-    parts.append('then run_cypher with WHERE n.name IN [...] to compute analytical')
+    parts.append('then graph_query with WHERE n.name IN [...] to compute analytical')
     parts.append('metrics over the found entities.')
 
     return '\n'.join(parts)

@@ -16,7 +16,7 @@ output. Measured over a real client session:
 
 That is a HARD failure, not an ADR-015 R4 in-band error — the caller gets an
 exception where it expected a result. It has happened twice: `get_schema` (`error`)
-and `run_cypher` (`truncated`), both fixed by adding `| None`.
+and `graph_query` (`truncated`), both fixed by adding `| None`.
 
 `response_types.py` says "DO NOT drop the `| None` — it is load-bearing", and
 until now that was the only thing protecting the invariant: a comment. Nothing
@@ -127,7 +127,7 @@ def test_every_absentable_output_field_accepts_none(tool_name):
 def test_the_minimal_payload_survives_output_validation(isolated_tools, tool_name):
     """The same claim as behaviour rather than as types: the emptiest payload a tool
     can return must still validate. This is the exact path that broke `get_schema`
-    and `run_cypher`."""
+    and `graph_query`."""
     meta = isolated_tools[tool_name].fn_metadata
     payload = _minimal_payload(_return_type(tool_name))
     structured = meta.convert_result(payload).structured_content

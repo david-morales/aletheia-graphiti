@@ -782,37 +782,37 @@ class TestToolDescriptions:
     def test_run_cypher_description_includes_dialect_cheatsheet(self):
         # ADR-019 R6: the dialect cheatsheet is now flavour-driven (sourced from the flavour's
         # dialect_summary), not hardcoded. Passing the FalkorDB flavour surfaces its notes.
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
         from flavours.falkordb import FalkorDbFlavour
 
-        desc = build_run_cypher_description(_make_test_profile(), FalkorDbFlavour())
+        desc = build_graph_query_description(_make_test_profile(), FalkorDbFlavour())
         assert 'FalkorDB' in desc
         assert 'APOC' in desc
 
     def test_run_cypher_description_no_flavour_omits_dialect_cheatsheet(self):
         # Without a flavour there is no per-backend dialect block (it is no longer hardcoded).
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
 
-        desc = build_run_cypher_description(_make_test_profile())
+        desc = build_graph_query_description(_make_test_profile())
         assert 'Dialect notes:' not in desc
 
     def test_run_cypher_description_includes_examples(self):
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
 
-        desc = build_run_cypher_description(_make_test_profile())
+        desc = build_graph_query_description(_make_test_profile())
         assert 'Example' in desc or 'example' in desc
         assert 'MATCH' in desc
 
     def test_run_cypher_description_includes_chained_workflow(self):
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
 
-        desc = build_run_cypher_description(_make_test_profile())
+        desc = build_graph_query_description(_make_test_profile())
         assert 'search' in desc.lower()
 
     def test_run_cypher_description_includes_where_in_example(self):
-        from tool_descriptions import build_run_cypher_description
+        from tool_descriptions import build_graph_query_description
 
-        desc = build_run_cypher_description(_make_test_profile())
+        desc = build_graph_query_description(_make_test_profile())
         assert 'IN [' in desc or 'found via search' in desc.lower()
 
 
@@ -825,14 +825,14 @@ class TestServerInstructions:
     def test_instructions_mention_run_cypher(self):
         from tool_descriptions import build_instructions
 
-        assert 'run_cypher' in build_instructions(_make_test_profile())
+        assert 'graph_query' in build_instructions(_make_test_profile())
 
     def test_instructions_mention_chained_workflow(self):
         from tool_descriptions import build_instructions
 
         instructions = build_instructions(_make_test_profile())
         assert 'search' in instructions.lower()
-        assert 'cypher' in instructions.lower() or 'run_cypher' in instructions.lower()
+        assert 'cypher' in instructions.lower() or 'graph_query' in instructions.lower()
 
     def test_instructions_mention_semantic_vs_analytical(self):
         from tool_descriptions import build_instructions
@@ -842,16 +842,16 @@ class TestServerInstructions:
 
 
 # ---------------------------------------------------------------------------
-# run_cypher tool tests
+# graph_query tool tests
 # ---------------------------------------------------------------------------
 
 
 class TestRunCypher:
-    """run_cypher tool: end-to-end Cypher execution."""
+    """graph_query tool: end-to-end Cypher execution."""
 
     @pytest.mark.asyncio
     async def test_simple_count_query(self):
-        from graphiti_mcp_server import run_cypher
+        from graphiti_mcp_server import graph_query
 
         # Mock the FalkorDB graph's ro_query
         mock_graph = AsyncMock()
@@ -874,14 +874,14 @@ class TestRunCypher:
         mock_svc.config.graphiti.group_id = 'test_graph'
 
         with patch('graphiti_mcp_server.graphiti_service', mock_svc):
-            result = await run_cypher(query='MATCH (n) RETURN count(n) AS cnt')
+            result = await graph_query(query='MATCH (n) RETURN count(n) AS cnt')
 
         assert result['type'] == 'scalar'
         assert result['result'] == 47
 
     @pytest.mark.asyncio
     async def test_write_query_rejected(self):
-        from graphiti_mcp_server import run_cypher
+        from graphiti_mcp_server import graph_query
 
         mock_svc = AsyncMock()
         mock_svc.flavour = _FLAVOUR
@@ -889,14 +889,14 @@ class TestRunCypher:
         mock_svc.config.graphiti.group_id = 'test_graph'
 
         with patch('graphiti_mcp_server.graphiti_service', mock_svc):
-            result = await run_cypher(query='CREATE (n:Test {name: "test"})')
+            result = await graph_query(query='CREATE (n:Test {name: "test"})')
 
         assert result['type'] == 'error'
         assert result['error_detail']['stage'] == 'security'
 
     @pytest.mark.asyncio
     async def test_auto_fixes_in_response(self):
-        from graphiti_mcp_server import run_cypher
+        from graphiti_mcp_server import graph_query
 
         mock_graph = AsyncMock()
         mock_query_result = MagicMock()
@@ -918,7 +918,7 @@ class TestRunCypher:
         mock_svc.config.graphiti.group_id = 'test_graph'
 
         with patch('graphiti_mcp_server.graphiti_service', mock_svc):
-            result = await run_cypher(
+            result = await graph_query(
                 query="MATCH (o) WHERE o.date > date('2024-01-01') RETURN count(o) AS cnt"
             )
 
@@ -927,7 +927,7 @@ class TestRunCypher:
 
     @pytest.mark.asyncio
     async def test_execution_error_returns_error_type(self):
-        from graphiti_mcp_server import run_cypher
+        from graphiti_mcp_server import graph_query
 
         mock_graph = AsyncMock()
         mock_graph.ro_query = AsyncMock(side_effect=Exception("Unknown function 'foo'"))
@@ -946,7 +946,7 @@ class TestRunCypher:
         mock_svc.config.graphiti.group_id = 'test_graph'
 
         with patch('graphiti_mcp_server.graphiti_service', mock_svc):
-            result = await run_cypher(query='MATCH (n) RETURN foo(n)')
+            result = await graph_query(query='MATCH (n) RETURN foo(n)')
 
         assert result['type'] == 'error'
         assert result['error_detail']['stage'] == 'execution'
@@ -954,10 +954,10 @@ class TestRunCypher:
 
     @pytest.mark.asyncio
     async def test_service_not_ready_returns_error(self):
-        from graphiti_mcp_server import run_cypher
+        from graphiti_mcp_server import graph_query
 
         with patch('graphiti_mcp_server.graphiti_service', None):
-            result = await run_cypher(query='MATCH (n) RETURN n')
+            result = await graph_query(query='MATCH (n) RETURN n')
 
         assert result['type'] == 'error'
         assert result['error_detail']['stage'] == 'initialization'
@@ -1079,8 +1079,8 @@ class TestGetSchema:
         caps = result.get('tool_capabilities')
         assert caps is not None, "get_schema must include tool_capabilities"
         assert 'search' in caps
-        assert 'run_cypher' in caps
-        assert 'explore_node' in caps
+        assert 'graph_query' in caps
+        assert 'explore_entity' in caps
 
         # search: must declare what it covers and doesn't cover
         search = caps['search']
@@ -1090,12 +1090,12 @@ class TestGetSchema:
         assert 'name' in search['covers'].get('entity_fields', [])
         assert 'summary' in search['covers'].get('entity_fields', [])
 
-        # run_cypher: must declare full property access
-        cypher = caps['run_cypher']
+        # graph_query: must declare full property access
+        cypher = caps['graph_query']
         assert 'all_properties' in cypher['covers'].get('entity_fields', [])
 
-        # explore_node: must declare graph traversal
-        explore = caps['explore_node']
+        # explore_entity: must declare graph traversal
+        explore = caps['explore_entity']
         assert explore['covers'].get('neighborhood') is True
 
 
@@ -1116,7 +1116,7 @@ class TestCypherIntegration:
 
     @pytest.mark.asyncio
     async def test_run_cypher_count(self):
-        """run_cypher executes a count query and returns scalar."""
+        """graph_query executes a count query and returns scalar."""
         pytest.skip('Integration test — run manually with FalkorDB')
 
     @pytest.mark.asyncio
@@ -1499,7 +1499,7 @@ class TestNonCodeSpanPreservation:
 
 class TestRunCypherToolDescription:
     def test_docstring_is_backend_neutral_and_points_to_dialect_reference(self):
-        # ADR-019 R6: the run_cypher docstring must NOT hardcode a single backend's dialect —
+        # ADR-019 R6: the graph_query docstring must NOT hardcode a single backend's dialect —
         # per-backend dialect lives in the (flavour-driven) tool description + get_schema's
         # dialect_reference. The docstring points there instead.
         import re
@@ -1507,11 +1507,11 @@ class TestRunCypherToolDescription:
         src_path = Path(__file__).parent.parent / 'src' / 'graphiti_mcp_server.py'
         source = src_path.read_text()
         m = re.search(
-            r'async def run_cypher\([^)]*\)[^:]*:\s*"""(.*?)"""',
+            r'async def graph_query\([^)]*\)[^:]*:\s*"""(.*?)"""',
             source,
             re.DOTALL,
         )
-        assert m, 'run_cypher docstring not found'
+        assert m, 'graph_query docstring not found'
         doc = m.group(1)
         assert 'dialect' in doc.lower()
         assert 'dialect_reference' in doc            # points to the announced dialect

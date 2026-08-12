@@ -62,11 +62,11 @@ from tool_descriptions import (
     build_degraded_instructions,
     build_instructions,
     build_search_description,
-    build_explore_node_description,
+    build_explore_entity_description,
     build_search_ontology_description,
     build_explore_ontology_description,
     build_get_schema_description,
-    build_run_cypher_description,
+    build_graph_query_description,
 )
 from models.response_types import (
     AddMemoryResult,
@@ -918,7 +918,7 @@ async def search(
         return SearchResult(error=f'Search error: {e}')
 
 
-async def explore_node(
+async def explore_entity(
     node_name: str | None = None,
     node_uuid: str | None = None,
     group_ids: list[str] | None = None,
@@ -997,7 +997,7 @@ async def explore_node(
                 # resolves as a centre instead of raising, where Neo4j/FalkorDB
                 # match `(n:Entity …)` and raise. Changing that lookup has other
                 # callers and belongs to its own lane.
-                logger.info(f'explore_node: no node with uuid {node_uuid}')
+                logger.info(f'explore_entity: no node with uuid {node_uuid}')
                 return ExploreResult(
                     message=f'No node found with UUID "{node_uuid}"',
                     center_node=None,
@@ -1057,7 +1057,7 @@ async def explore_node(
         )
 
     except Exception as e:
-        logger.error(f'Error in explore_node: {e}')
+        logger.error(f'Error in explore_entity: {e}')
         return ExploreResult(error=f'Explore error: {e}')
 
 
@@ -2003,7 +2003,7 @@ async def get_schema() -> SchemaResponse:
                 'best_for': 'semantic discovery — concept searches match entity summaries '
                             'and relationship facts, not just entity names',
             },
-            'run_cypher': {
+            'graph_query': {
                 'search_methods': [{'type': 'property_match'}],
                 'covers': {
                     'entity_fields': ['all_properties'],
@@ -2013,7 +2013,7 @@ async def get_schema() -> SchemaResponse:
                 'requires': ['schema_knowledge'],
                 'best_for': 'property filtering, counts, aggregations, path queries',
             },
-            'explore_node': {
+            'explore_entity': {
                 'search_methods': [{'type': 'graph_traversal'}],
                 'covers': {
                     'neighborhood': True,
@@ -2071,7 +2071,7 @@ def _iso_or_raw(value: Any) -> Any:
     returns a neo4j.time.DateTime, which MCPServer's output validation rejects. That
     failure happens in convert_result — OUTSIDE this tool's try/except — so it escapes
     the ADR-015 error envelope as a protocol error instead of an `error` payload.
-    Every sibling tool normalizes the same way (format_node_result, explore_node,
+    Every sibling tool normalizes the same way (format_node_result, explore_entity,
     get_episode_context). None has no isoformat and passes straight through.
     """
     return value.isoformat() if hasattr(value, 'isoformat') else value
@@ -2309,7 +2309,7 @@ async def get_ontology_documentation() -> OntologyDocumentationResponse:
         return {'error': f'Failed to retrieve ontology documentation: {e}'}
 
 
-async def run_cypher(query: str) -> CypherResultResponse:
+async def graph_query(query: str) -> CypherResultResponse:
     """Execute a read-only Cypher query against the knowledge graph.
 
     The query is validated and sanitized before execution.
@@ -2378,7 +2378,7 @@ async def run_cypher(query: str) -> CypherResultResponse:
         return result
 
 
-async def profile_graph(sample_size: int = 5) -> ProfileGraphResponse:
+async def profile_data(sample_size: int = 5) -> ProfileGraphResponse:
     """Profile entity properties and relationship patterns in this knowledge graph.
 
     Returns property coverage, sample values, detected languages, relationship
@@ -2401,7 +2401,7 @@ async def profile_graph(sample_size: int = 5) -> ProfileGraphResponse:
             client.driver, sample_size=sample_size, flavour=graphiti_service.flavour
         )
     except Exception as e:
-        logger.error(f'Error in profile_graph: {e}')
+        logger.error(f'Error in profile_data: {e}')
         return {'error': f'Failed to profile graph: {e}'}
 
 
@@ -2411,14 +2411,14 @@ async def profile_graph(sample_size: int = 5) -> ProfileGraphResponse:
 # one and forgotten by the other (the bug behind A-D2).
 _DYNAMIC_TOOLS = (
     search,
-    explore_node,
+    explore_entity,
     search_ontology,
     explore_ontology,
     get_schema,
     get_ontology_structure,
     get_ontology_documentation,
-    run_cypher,
-    profile_graph,
+    graph_query,
+    profile_data,
 )
 
 
@@ -2429,7 +2429,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
         if fn.__name__ in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[fn.__name__]
 
-    # Backend flavour drives the per-backend Cypher dialect surfaced in the run_cypher
+    # Backend flavour drives the per-backend Cypher dialect surfaced in the graph_query
     # description + server instructions (ADR-019 R1/R6).
     flavour = graphiti_service.flavour if graphiti_service is not None else None
 
@@ -2441,9 +2441,9 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
         annotations=annotations_for('search'),
     )
     mcp.add_tool(
-        explore_node,
-        description=build_explore_node_description(profile),
-        annotations=annotations_for('explore_node'),
+        explore_entity,
+        description=build_explore_entity_description(profile),
+        annotations=annotations_for('explore_entity'),
     )
     mcp.add_tool(
         search_ontology,
@@ -2466,11 +2466,11 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
         annotations=annotations_for('get_ontology_documentation'),
     )
     mcp.add_tool(
-        run_cypher,
-        description=build_run_cypher_description(profile, flavour),
-        annotations=annotations_for('run_cypher'),
+        graph_query,
+        description=build_graph_query_description(profile, flavour),
+        annotations=annotations_for('graph_query'),
     )
-    mcp.add_tool(profile_graph, annotations=annotations_for('profile_graph'))
+    mcp.add_tool(profile_data, annotations=annotations_for('profile_data'))
 
     # Deterministic tools/list order (2026-07-28 spec SHOULD). The re-adds above
     # would otherwise migrate these nine to the end of the dict on every pass.
@@ -2487,7 +2487,7 @@ def register_fallback_tools(reason: str) -> None:
 
     The old fallback re-registered four tools and left the other five profile-driven
     ones unregistered, so `get_schema` (the canonical ADR-019 R5 payload consumers
-    discover this connector through), `run_cypher`, `profile_graph` and both
+    discover this connector through), `graph_query`, `profile_data` and both
     ontology-bulk tools disappeared from `tools/list` while `/health` stayed green.
     Losing the profile costs the DESCRIPTIONS, never the TOOLS: every tool still
     works, it just describes itself from its docstring instead of from live data.

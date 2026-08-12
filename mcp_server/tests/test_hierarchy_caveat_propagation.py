@@ -9,7 +9,7 @@ That caveat reached exactly one surface — `get_schema.analysis_notes`. The thr
 other surfaces built from the same `DomainProfile` advertised the hierarchy labels
 as ordinary, usable types. Worst of them: `_build_example_queries` generated
 `MATCH (s:Actor)-[:EJECUTADO_POR]->(t:Agente)` as the FIRST thing an agent reads
-about `run_cypher` — three example queries that return nothing, on the server's
+about `graph_query` — three example queries that return nothing, on the server's
 own account.
 """
 
@@ -22,8 +22,8 @@ from flavours.age import AgeFlavour
 from flavours.falkordb import FalkorDbFlavour
 from tool_descriptions import (
     _build_example_queries,
+    build_graph_query_description,
     build_instructions,
-    build_run_cypher_description,
 )
 
 HIERARCHY_LABELS = ('Actor', 'Event')
@@ -135,7 +135,7 @@ def test_generated_examples_still_exist_and_use_storage_labels():
 
 
 def test_the_run_cypher_description_carries_only_runnable_examples():
-    desc = build_run_cypher_description(_mixed_profile(), AgeFlavour())
+    desc = build_graph_query_description(_mixed_profile(), AgeFlavour())
     for label in HIERARCHY_LABELS:
         assert f'(s:{label})' not in desc
         assert f'(n:{label})' not in desc

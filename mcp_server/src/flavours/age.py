@@ -23,7 +23,7 @@ from utils.cypher import (
 
 # AGE Cypher dialect reference (single source). Every statement here was verified against a
 # live Apache AGE graph. get_schema surfaces this via flavour.dialect_reference (canonical)
-# plus a cypher_reference alias; the run_cypher description and the server instructions
+# plus a cypher_reference alias; the graph_query description and the server instructions
 # surface the short form (dialect_summary).
 _AGE_DIALECT = (
     "## Cypher Quick Reference (Apache AGE)\n\n"
@@ -126,7 +126,7 @@ def check_age_dialect(query: str) -> CypherError | None:
             "here — inline literals instead.",
         )
 
-    # (1) openCypher `$name` parameters. AGE's cypher() cannot bind them and run_cypher
+    # (1) openCypher `$name` parameters. AGE's cypher() cannot bind them and graph_query
     # supplies no parameter map, so they would reach the parser unbound.
     params = _find_parameters(query)
     if params:
@@ -266,7 +266,7 @@ def _synthesize_errctx(message: str, query: str | None, width: int = 40) -> str:
 
 
 # openCypher `$name` parameters. AGE's cypher() SQL function takes no openCypher parameters,
-# and run_cypher binds none, so every $name reaches the parser raw. Matched on code spans only
+# and graph_query binds none, so every $name reaches the parser raw. Matched on code spans only
 # so `'costs $50'` inside a string literal is not read as a parameter.
 _PARAM_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 

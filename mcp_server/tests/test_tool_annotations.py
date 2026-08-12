@@ -23,11 +23,11 @@ from tool_annotations import TOOL_ANNOTATIONS, annotations_for
 # these guards need no database and no API key, so they gate every change.
 pytestmark = pytest.mark.contract
 
-# The 13 tools that only ever read. `run_cypher` belongs here: it is read-only by
+# The 13 tools that only ever read. `graph_query` belongs here: it is read-only by
 # construction (writes are rejected by the validator and, on FalkorDB, by ro_query).
 READ_ONLY_TOOLS = frozenset(
     {
-        'explore_node',
+        'explore_entity',
         'explore_ontology',
         'get_episode_context',
         'get_episodes',
@@ -35,8 +35,8 @@ READ_ONLY_TOOLS = frozenset(
         'get_ontology_structure',
         'get_schema',
         'get_status',
-        'profile_graph',
-        'run_cypher',
+        'profile_data',
+        'graph_query',
         'sample_subgraph',
         'search',
         'search_ontology',

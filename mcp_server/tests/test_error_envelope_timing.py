@@ -103,11 +103,11 @@ def _mock_service(flavour, *, side_effect=None):
 @pytest.mark.asyncio
 async def test_a_failure_after_real_execution_reports_nonzero_execution_ms():
     """THE regression. The backend burns 50ms and then fails; the envelope must say so."""
-    from graphiti_mcp_server import run_cypher
+    from graphiti_mcp_server import graph_query
 
     svc = _mock_service(_FLAVOUR, side_effect=Exception("Unknown function 'foo'"))
     with patch('graphiti_mcp_server.graphiti_service', svc):
-        result = await run_cypher(query='MATCH (n) RETURN foo(n) LIMIT 5')
+        result = await graph_query(query='MATCH (n) RETURN foo(n) LIMIT 5')
 
     assert result['type'] == 'error'
     assert result['execution_ms'] >= _SLOW_FAILURE_MS * 0.8, result['execution_ms']
@@ -118,11 +118,11 @@ async def test_the_age_catch_all_query_failed_path_also_reports_its_wall_clock()
     """`reason='query_failed'` is the unclassified AGE fallback — the path BUG-33
     named specifically, because everything that is not a recognised pattern lands
     there and it was the one most likely to be expensive."""
-    from graphiti_mcp_server import run_cypher
+    from graphiti_mcp_server import graph_query
 
     svc = _mock_service(AgeFlavour(), side_effect=Exception('something nobody has a pattern for'))
     with patch('graphiti_mcp_server.graphiti_service', svc):
-        result = await run_cypher(query='MATCH (n) RETURN n.name LIMIT 5')
+        result = await graph_query(query='MATCH (n) RETURN n.name LIMIT 5')
 
     assert result['error_detail']['reason'] == 'query_failed'
     assert result['execution_ms'] >= _SLOW_FAILURE_MS * 0.8, result['execution_ms']
@@ -132,7 +132,7 @@ async def test_the_age_catch_all_query_failed_path_also_reports_its_wall_clock()
 async def test_a_preflight_rejection_still_reports_zero():
     """The other half of the contract: a consumer can only trust a nonzero reading if
     zero still means "nothing ran"."""
-    from graphiti_mcp_server import run_cypher
+    from graphiti_mcp_server import graph_query
 
     svc = AsyncMock()
     svc.flavour = _FLAVOUR
@@ -140,7 +140,7 @@ async def test_a_preflight_rejection_still_reports_zero():
     svc.config.graphiti.group_id = 'test_graph'
 
     with patch('graphiti_mcp_server.graphiti_service', svc):
-        result = await run_cypher(query='CREATE (n:Test {name: "test"})')
+        result = await graph_query(query='CREATE (n:Test {name: "test"})')
 
     assert result['error_detail']['stage'] == 'security'
     assert result['execution_ms'] == 0.0
@@ -148,10 +148,10 @@ async def test_a_preflight_rejection_still_reports_zero():
 
 @pytest.mark.asyncio
 async def test_an_uninitialised_service_reports_zero():
-    from graphiti_mcp_server import run_cypher
+    from graphiti_mcp_server import graph_query
 
     with patch('graphiti_mcp_server.graphiti_service', None):
-        result = await run_cypher(query='MATCH (n) RETURN n LIMIT 1')
+        result = await graph_query(query='MATCH (n) RETURN n LIMIT 1')
 
     assert result['error_detail']['reason'] == 'service_not_ready'
     assert result['execution_ms'] == 0.0
@@ -161,7 +161,7 @@ async def test_an_uninitialised_service_reports_zero():
 async def test_a_failure_before_the_query_runs_is_still_measured_not_asserted():
     """`get_client()` can itself be slow (connection setup, a retrying pool). That cost
     is real and belongs in the reading — what must never happen is a hardcoded 0."""
-    from graphiti_mcp_server import run_cypher
+    from graphiti_mcp_server import graph_query
 
     async def _slow_connect():
         await asyncio.sleep(_SLOW_FAILURE_SECONDS)
@@ -174,7 +174,7 @@ async def test_a_failure_before_the_query_runs_is_still_measured_not_asserted():
     svc.config.graphiti.group_id = 'test_graph'
 
     with patch('graphiti_mcp_server.graphiti_service', svc):
-        result = await run_cypher(query='MATCH (n) RETURN n LIMIT 1')
+        result = await graph_query(query='MATCH (n) RETURN n LIMIT 1')
 
     assert result['type'] == 'error'
     assert result['execution_ms'] >= _SLOW_FAILURE_MS * 0.8, result['execution_ms']
@@ -221,11 +221,11 @@ async def test_a_successful_call_measures_the_query_not_the_connection_setup():
     (it feeds `cypher_quality` and any latency view built on it). Acquisition is noise
     on this path and signal on the failure path, so the two paths use two clocks.
     """
-    from graphiti_mcp_server import run_cypher
+    from graphiti_mcp_server import graph_query
 
     svc = _mock_service_with_slow_acquisition(_FLAVOUR, rows=[[47]])
     with patch('graphiti_mcp_server.graphiti_service', svc):
-        result = await run_cypher(query='MATCH (n) RETURN count(n) AS cnt')
+        result = await graph_query(query='MATCH (n) RETURN count(n) AS cnt')
 
     assert result['type'] == 'scalar', result
     assert result['result'] == 47

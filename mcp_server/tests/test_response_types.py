@@ -106,7 +106,7 @@ def test_episode_added_response_empty_lists():
     assert response['edge_uuids'] == []
 
 
-# --- ADR-019 R2: run_cypher + get_schema publish a typed outputSchema ---
+# --- ADR-019 R2: graph_query + get_schema publish a typed outputSchema ---
 
 def test_query_and_schema_tools_publish_output_schema():
     import asyncio
@@ -114,17 +114,17 @@ def test_query_and_schema_tools_publish_output_schema():
     import graphiti_mcp_server as srv
 
     m = MCPServer("t")
-    m.add_tool(srv.run_cypher)
+    m.add_tool(srv.graph_query)
     m.add_tool(srv.get_schema)
     tools = {t.name: t for t in asyncio.run(m.list_tools())}
 
-    rc = tools["run_cypher"].output_schema
+    rc = tools["graph_query"].output_schema
     assert rc is not None
     rc_props = rc["properties"]
     # rich envelope + ADR-015 R4 error path both surfaced in the schema
     for key in ("query", "auto_fixes", "type", "row_count", "truncated",
                 "limit_applied", "execution_ms", "cypher_quality", "error", "hint", "error_detail"):
-        assert key in rc_props, f"run_cypher outputSchema missing {key}"
+        assert key in rc_props, f"graph_query outputSchema missing {key}"
 
     gs = tools["get_schema"].output_schema
     assert gs is not None
@@ -134,7 +134,7 @@ def test_query_and_schema_tools_publish_output_schema():
 
 
 def test_typed_tool_outputs_survive_mcpserver_output_validation():
-    """Regression: run_cypher / get_schema / sample_subgraph success AND error payloads
+    """Regression: graph_query / get_schema / sample_subgraph success AND error payloads
     must pass MCPServer's structured-output path over the wire.
 
     MCPServer builds a pydantic model from each total=False TypedDict with every
@@ -142,7 +142,7 @@ def test_typed_tool_outputs_survive_mcpserver_output_validation():
     exclude_unset (mcp <=1.28.1) — so any field absent from a real payload is
     emitted as None in structuredContent. If the outputSchema types that field
     non-nullable, the lowlevel server rejects it ("None is not of type 'string'"),
-    which broke get_schema (`error`) and run_cypher (`truncated`, ...) for every
+    which broke get_schema (`error`) and graph_query (`truncated`, ...) for every
     over-the-wire caller. The fork's capability-level tests never exercised this
     round-trip. This test reproduces it; the fix makes the TypedDict fields
     nullable so the injected None validates.
@@ -152,7 +152,7 @@ def test_typed_tool_outputs_survive_mcpserver_output_validation():
     import graphiti_mcp_server as srv
 
     m = MCPServer("t")
-    m.add_tool(srv.run_cypher)
+    m.add_tool(srv.graph_query)
     m.add_tool(srv.get_schema)
     m.add_tool(srv.sample_subgraph)
     tools = m._tool_manager._tools
@@ -220,8 +220,8 @@ def test_typed_tool_outputs_survive_mcpserver_output_validation():
         ("get_schema", get_schema_success),
         ("get_schema", get_schema_error),
         ("get_schema", get_schema_all_null),
-        ("run_cypher", run_cypher_success),
-        ("run_cypher", run_cypher_error),
+        ("graph_query", run_cypher_success),
+        ("graph_query", run_cypher_error),
         ("sample_subgraph", sample_subgraph_success),
         ("sample_subgraph", sample_subgraph_error),
         ("sample_subgraph", sample_subgraph_all_null),

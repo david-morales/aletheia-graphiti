@@ -109,14 +109,14 @@ class CommunityBuildResponse(TypedDict):
 # Typed tool-output TypedDicts (ADR-019 R2). EVERY field is `X | None`.
 #
 # WHY nullable: these are declared as tool return annotations (get_schema ->
-# SchemaResponse, run_cypher -> CypherResultResponse), so MCPServer validates the
+# SchemaResponse, graph_query -> CypherResultResponse), so MCPServer validates the
 # structuredContent against their outputSchema over the wire. MCPServer (mcp
 # <=1.28.1) builds a pydantic model from a total=False TypedDict with EVERY
 # optional field defaulted to None, then convert_result dumps it WITHOUT
 # exclude_unset — so any field ABSENT from a returned payload is emitted as None
 # in structuredContent. A non-nullable field type then makes the lowlevel server
 # reject that None ("None is not of type 'string'"), which broke EVERY
-# over-the-wire caller of get_schema (`error`) and run_cypher (`truncated`, ...).
+# over-the-wire caller of get_schema (`error`) and graph_query (`truncated`, ...).
 # Declaring the fields nullable lets the injected None validate. The fork's
 # capability-level tests call the functions directly and never hit this path;
 # test_typed_tool_outputs_survive_mcpserver_output_validation guards it.
@@ -231,7 +231,7 @@ class SubgraphResponse(TypedDict, total=False):
 # output, so it wraps it — `structuredContent` arrives as `{"result": {...}}`.
 # That split the surface into two envelope families (four flat tools, eleven
 # wrapped), and made the ADR-015 R4 client rule `if "error" in result` true for
-# only the flat four. The fork had already reasoned this out for `run_cypher`
+# only the flat four. The fork had already reasoned this out for `graph_query`
 # (see CypherResultResponse below) and never applied it to the rest.
 #
 # The RETURNED payloads are unchanged — success returns carry only success keys,
@@ -291,7 +291,7 @@ class SearchResult(TypedDict, total=False):
 
 
 class ExploreResult(TypedDict, total=False):
-    """explore_node. A miss is an answer, not an error: `center_node` is null and
+    """explore_entity. A miss is an answer, not an error: `center_node` is null and
     `message` says so, with `error` absent."""
     message: str | None
     center_node: NodeResult | None
@@ -398,7 +398,7 @@ class OntologyClassContextResponse(TypedDict, total=False):
 
 
 class ProfileGraphResponse(TypedDict, total=False):
-    """profile_graph payload — property coverage, samples, languages, cardinality.
+    """profile_data payload — property coverage, samples, languages, cardinality.
 
     The three sections stay `dict[str, Any]`-shaped inside: they are keyed by the
     graph's own labels and relationship types, which no static type can enumerate.
@@ -413,7 +413,7 @@ class ProfileGraphResponse(TypedDict, total=False):
 
 
 class CypherResultResponse(TypedDict, total=False):
-    """run_cypher envelope (ADR-019 R2) — success + error keys in one type.
+    """graph_query envelope (ADR-019 R2) — success + error keys in one type.
 
     A single flat TypedDict (not a Success|Error union) so MCPServer's structuredContent stays flat
     (a union return would nest it under `result`). total=False so nothing is required and no

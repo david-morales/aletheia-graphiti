@@ -25,7 +25,7 @@ from mcp.types import ToolAnnotations
 
 
 def _read_only(title: str) -> ToolAnnotations:
-    """Reads only. `run_cypher` qualifies by construction: writes are rejected by
+    """Reads only. `graph_query` qualifies by construction: writes are rejected by
     the Cypher validator and, on FalkorDB, again by DB-side `ro_query`."""
     return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=False)
 
@@ -68,14 +68,14 @@ def _destructive(title: str, *, idempotent: bool = True) -> ToolAnnotations:
 TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     # --- read-only (13) ---------------------------------------------------
     'search': _read_only('Search the knowledge graph'),
-    'explore_node': _read_only('Explore an entity neighborhood'),
+    'explore_entity': _read_only('Explore an entity neighborhood'),
     'search_ontology': _read_only('Search the ontology'),
     'explore_ontology': _read_only('Explore an ontology class'),
     'get_schema': _read_only('Get the graph schema'),
     'get_ontology_structure': _read_only('Get the ontology structure'),
     'get_ontology_documentation': _read_only('Get the full ontology reference'),
-    'run_cypher': _read_only('Run a read-only Cypher query'),
-    'profile_graph': _read_only('Profile graph properties'),
+    'graph_query': _read_only('Run a read-only Cypher query'),
+    'profile_data': _read_only('Profile graph properties'),
     'sample_subgraph': _read_only('Sample a renderable subgraph'),
     'get_episodes': _read_only('List recent episodes'),
     'get_episode_context': _read_only('Get what an episode extracted'),
@@ -119,14 +119,14 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
 TOOL_ORDER: tuple[str, ...] = (
     # retrieval
     'search',
-    'explore_node',
+    'explore_entity',
     'search_ontology',
     'explore_ontology',
     'sample_subgraph',
     # schema and structure
     'get_schema',
-    'run_cypher',
-    'profile_graph',
+    'graph_query',
+    'profile_data',
     'get_ontology_structure',
     'get_ontology_documentation',
     # episodes

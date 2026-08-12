@@ -76,21 +76,21 @@ def _served_descriptions() -> dict[str, str]:
     m = MCPServer('leakage-probe')
     profile = _neutral_profile()
     from tool_descriptions import (
-        build_explore_node_description,
+        build_explore_entity_description,
         build_explore_ontology_description,
         build_get_schema_description,
-        build_run_cypher_description,
+        build_graph_query_description,
         build_search_description,
         build_search_ontology_description,
     )
 
     dynamic = {
         'search': build_search_description(profile),
-        'explore_node': build_explore_node_description(profile),
+        'explore_entity': build_explore_entity_description(profile),
         'search_ontology': build_search_ontology_description(profile),
         'explore_ontology': build_explore_ontology_description(profile),
         'get_schema': build_get_schema_description(profile),
-        'run_cypher': build_run_cypher_description(profile, None),
+        'graph_query': build_graph_query_description(profile, None),
     }
     for name in sorted(TOOL_ANNOTATIONS):
         m.add_tool(

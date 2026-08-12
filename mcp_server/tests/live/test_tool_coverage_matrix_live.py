@@ -8,7 +8,7 @@ consumer integrates it. It exists because the P1–P4 parity gates ran at the
 MCPServer wire pipeline nor a live client. That blind spot let two classes of bug
 ship green:
   * the MCPServer `total=False` TypedDict output-validation bug (fixed mcp-v1.1.1),
-  * the AGE `search`(combined)/`search_ontology`/`explore_node` failures
+  * the AGE `search`(combined)/`search_ontology`/`explore_entity` failures
     (episode + community fanout raised; execute_query rejected params) —
     all of which pass every offline/structural test but fail the moment a real
     client calls the tool against a live backend.
@@ -36,19 +36,19 @@ FLAVOUR_URLS = {
     'age': os.environ.get('TOOL_COVERAGE_AGE_URL', ''),
 }
 
-# The full canonical retrieval surface. explore_node / explore_ontology take an
+# The full canonical retrieval surface. explore_entity / explore_ontology take an
 # identifier, discovered per-graph at run time (see _discover). search is checked
 # in its default (combined) mode AND explicitly, because combined is the mode that
 # fans out the episode + community sub-searches that broke on AGE.
 NOARG_TOOLS = [
     ('get_schema', {}),
-    ('run_cypher', {'query': 'MATCH (n) RETURN count(n) AS c'}),
+    ('graph_query', {'query': 'MATCH (n) RETURN count(n) AS c'}),
     ('search', {'query': 'test', 'limit': 3}),
     ('search', {'query': 'test', 'search_mode': 'combined', 'limit': 3}),
     ('search_ontology', {'query': 'test', 'limit': 3}),
     ('get_ontology_structure', {}),
     ('get_ontology_documentation', {}),
-    ('profile_graph', {'sample_size': 3}),
+    ('profile_data', {'sample_size': 3}),
 ]
 
 
@@ -75,7 +75,7 @@ async def _call(session, tool, args):
 
 async def _discover_node_name(session) -> str | None:
     result = await session.call_tool(
-        'run_cypher',
+        'graph_query',
         {'query': 'MATCH (n) WHERE n.name IS NOT NULL RETURN n.name AS name LIMIT 1'},
     )
     if _is_error(result):
@@ -123,9 +123,9 @@ async def test_all_retrieval_tools_green_over_the_wire(flavour):
     async with Client(streamable_http_client(url)) as session:
         announced = {t.name for t in (await session.list_tools()).tools}
         expected = {
-            'get_schema', 'run_cypher', 'search', 'search_ontology',
-            'explore_node', 'explore_ontology', 'get_ontology_structure',
-            'get_ontology_documentation', 'profile_graph',
+            'get_schema', 'graph_query', 'search', 'search_ontology',
+            'explore_entity', 'explore_ontology', 'get_ontology_structure',
+            'get_ontology_documentation', 'profile_data',
         }
         missing = expected - announced
         assert not missing, f'{flavour}: connector does not announce {sorted(missing)}'
@@ -133,9 +133,9 @@ async def test_all_retrieval_tools_green_over_the_wire(flavour):
         calls = list(NOARG_TOOLS)
         node_name = await _discover_node_name(session)
         if node_name:
-            calls.append(('explore_node', {'node_name': node_name, 'depth': 1, 'limit': 3}))
+            calls.append(('explore_entity', {'node_name': node_name, 'depth': 1, 'limit': 3}))
         else:
-            failures['explore_node'] = 'could not discover a named node to explore'
+            failures['explore_entity'] = 'could not discover a named node to explore'
         onto_class = await _discover_ontology_class(session)
         if onto_class:
             calls.append(('explore_ontology', {'node_name': onto_class, 'depth': 1, 'limit': 3}))
