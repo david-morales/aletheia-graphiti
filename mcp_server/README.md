@@ -279,9 +279,9 @@ descriptions, the three profile resources and the server `instructions` all
 describe the data as it was when the profile was built. Every ingest, delete and
 `clear_graph` therefore makes that description a little less true.
 
-This server re-censuses on a **coalescing window** after any such mutation
-(`GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS`, default 60s) and announces the
-result over `subscriptions/listen` (SEP-2575, protocol `2026-07-28`):
+This server re-censuses on a **coalescing window** after any such change has
+LANDED (`GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS`, default 60s) and announces
+the result over `subscriptions/listen` (SEP-2575, protocol `2026-07-28`):
 
 - `notifications/tools/list_changed` — when a re-render changed any announced
   tool name, description or ordering.
@@ -295,10 +295,21 @@ with no change to the resource *list* is not a `resources/list_changed` — that
 is `resources/updated`, which this server does not yet implement.
 
 The window is a rate limit, not a quiescence timer: it is measured from the
-first mutation and always fires, so a continuous ingest costs one census per
-window rather than postponing the refresh indefinitely. A census that fails
-leaves the surface in force — a transient graph error must not downgrade a
-correct announcement to static descriptions.
+FIRST mark and always fires, so the cost is one census per window for as long as
+ingest continues — a burst that fits inside one window costs one census, an
+ingest running for ten windows costs ten — rather than a quiescence timer
+postponing the refresh indefinitely.
+
+**The window starts when the write LANDS, not when the request returns.**
+`add_memory` without `sync=True` queues the episode and returns immediately;
+the graph only moves when the worker's LLM extraction completes, which routinely
+takes longer than the window. The mark is therefore raised from the queue's
+completion hook, so the census that follows sees the ingested data rather than
+the graph as it was before the request.
+
+A failed refresh leaves the surface in force: the tool and resource registries
+are restored, because re-registration deletes before it re-adds and a raise
+partway would otherwise serve a partial surface.
 
 ### `FASTMCP_*` variables and the MCP SDK 2.x migration
 

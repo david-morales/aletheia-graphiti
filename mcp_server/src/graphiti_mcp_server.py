@@ -2676,19 +2676,22 @@ def register_resources(profile: DomainProfile) -> None:
 # window after the graph changes, re-render the surface, and announce — but
 # announce ONLY what actually moved. `prompts.listChanged` (no prompts exist)
 # and `resources.subscribe` (content subscriptions) stay untrue and belong to
-# P2 and P4; see docs/plans/2026-08-13-mcp-p3-listchanged-design.md in aletheia.
+# P2 and P4; see the ALETHEIA repo:
+# docs/plans/2026-08-13-mcp-p3-listchanged-design.md (not in this repo).
 
 DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS = 60.0
 """Coalescing window between a graph mutation and the re-census it triggers.
 
-A COALESCING window, not a quiescence timer: it is measured from the first mark
+A COALESCING window, not a quiescence timer: it is measured from the FIRST mark
 and always fires, so staleness is bounded even under continuous ingest. A
 quiescence timer would restart on every episode and could postpone the refresh
 indefinitely — the failure this whole item is about.
 
-60s makes a bulk ingest of a thousand episodes cost ONE census, and that census
-is the same `build_domain_profile` every startup already runs. Operators who
-cannot afford it on a very large graph set the window to `0`, which disables the
+So the cost is ONE census per window for as long as ingest continues, not one
+per episode and not one per burst: a burst that fits inside a single window
+costs one census; an ingest that runs for ten windows costs ten. That census is
+the same `build_domain_profile` every startup already runs. Operators who cannot
+afford it on a very large graph set the window to `0`, which disables the
 scheduler and leaves the surface behaving exactly as it did before this wave.
 """
 
@@ -2785,11 +2788,19 @@ async def _debounced_surface_refresh(window: float) -> None:
     that land during the census itself earn one more window instead of being
     dropped. Under continuous ingest it settles at one census per window; when
     ingest stops it exits.
+
+    `seen` is sampled AFTER the sleep, not before. Sampling before counted marks
+    that landed *during* the window as unserved even though the census that
+    followed already covered them, so a two-mark burst inside one window bought
+    two full censuses instead of one (measured). The residual is deliberate and
+    in the safe direction: a mark landing between the sample and the census
+    start is covered by that census yet still earns one more window. Better a
+    spare census than a dropped change.
     """
     while True:
+        await asyncio.sleep(window)
         seen = _surface_refresh_marks
         try:
-            await asyncio.sleep(window)
             await refresh_domain_surface(reason='graph data changed')
         except asyncio.CancelledError:
             raise
@@ -2852,16 +2863,28 @@ async def refresh_domain_surface(reason: str) -> bool:
 
     Returns whether the surface was rebuilt (not whether anything changed).
 
-    A FAILED census keeps the surface in force. It deliberately does NOT fall
-    through to `register_fallback_tools`, which is the startup path's failure
-    handler and the wrong one here: downgrading a live, correct announcement to
-    static descriptions because one query timed out turns a transient graph blip
-    into a connector telling every consumer its guidance is not derived from this
-    graph.
+    A FAILED REFRESH KEEPS THE SURFACE — the whole function, not just the
+    census. `register_dynamic_tools` DELETES all nine dynamic tools before
+    re-adding them, so a raise partway through re-registration used to leave a
+    PARTIAL surface served with nothing announced: measured at 6 tools instead
+    of 18, `published=[]`. The registries are therefore snapshotted and restored
+    on any failure, and the fingerprint comparison runs in a `finally` so
+    whatever the surface ended up as, a consumer is told it moved.
+
+    It deliberately does NOT fall through to `register_fallback_tools`, which is
+    the startup path's failure handler and the wrong one here: downgrading a
+    live, correct announcement to static descriptions because one query timed
+    out turns a transient graph blip into a connector telling every consumer its
+    guidance is not derived from this graph.
     """
     if graphiti_service is None:
         return False
     async with _surface_refresh_lock:
+        tools_snapshot = dict(mcp._tool_manager._tools)
+        resources_snapshot = dict(mcp._resource_manager._resources)
+        tools_before = _tool_surface_fingerprint()
+        resources_before = _resource_surface_fingerprint()
+        rebuilt = False
         try:
             profile_client = await graphiti_service.get_client()
             domain_profile = await build_domain_profile(
@@ -2870,27 +2893,35 @@ async def refresh_domain_surface(reason: str) -> bool:
                 ontology_client=graphiti_service.ontology_client,
                 flavour=graphiti_service.flavour,
             )
+            graphiti_service.domain_profile = domain_profile
+            register_dynamic_tools(domain_profile)
+            register_resources(domain_profile)
+            rebuilt = True
         except Exception as e:
             logger.error(
-                'Domain surface refresh (%s) failed to re-census — KEEPING the '
-                'surface in force: %s',
+                'Domain surface refresh (%s) failed — RESTORING the surface in '
+                'force: %s',
                 reason, e,
             )
-            return False
-        tools_before = _tool_surface_fingerprint()
-        resources_before = _resource_surface_fingerprint()
-        graphiti_service.domain_profile = domain_profile
-        register_dynamic_tools(domain_profile)
-        register_resources(domain_profile)
-        tools_changed = _tool_surface_fingerprint() != tools_before
-        resources_changed = _resource_surface_fingerprint() != resources_before
+            mcp._tool_manager._tools.clear()
+            mcp._tool_manager._tools.update(tools_snapshot)
+            mcp._resource_manager._resources.clear()
+            mcp._resource_manager._resources.update(resources_snapshot)
+        finally:
+            # In a `finally`, not on the success path: if a restore were itself
+            # incomplete, the served surface would have moved and a consumer
+            # must still hear about it. Silence is only correct when the surface
+            # is genuinely unchanged, which is what the comparison decides.
+            tools_changed = _tool_surface_fingerprint() != tools_before
+            resources_changed = _resource_surface_fingerprint() != resources_before
 
     await _publish_surface_change(tools=tools_changed, resources=resources_changed)
     logger.info(
-        'Domain surface refreshed (%s): tools_list_changed=%s resources_list_changed=%s',
-        reason, tools_changed, resources_changed,
+        'Domain surface refresh (%s): rebuilt=%s tools_list_changed=%s '
+        'resources_list_changed=%s',
+        reason, rebuilt, tools_changed, resources_changed,
     )
-    return True
+    return rebuilt
 
 
 async def initialize_server() -> ServerConfig:

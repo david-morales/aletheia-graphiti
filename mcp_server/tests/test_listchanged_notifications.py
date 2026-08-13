@@ -1,7 +1,8 @@
 """P3 — `listChanged` push freshness: what we announce, we emit.
 
 Three measurements sit behind this module, all in
-`docs/plans/2026-08-13-mcp-p3-listchanged-design.md` (aletheia):
+the ALETHEIA repo's
+`docs/plans/2026-08-13-mcp-p3-listchanged-design.md` (not in this repo):
 
 1. At the 2026-07-28 era the SDK derives `tools.listChanged`,
    `prompts.listChanged`, `resources.listChanged` and `resources.subscribe`
@@ -26,7 +27,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from mcp.shared.subscriptions import ResourcesListChanged, ToolsListChanged
+from mcp.server.subscriptions import ResourcesListChanged, ToolsListChanged
 
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
@@ -226,6 +227,77 @@ class TestAFailedRefreshKeepsTheSurface:
         assert set(srv.mcp._resource_manager._resources) == resources_before
         assert bus.published == [], 'a failed refresh announced a change'
 
+    @pytest.mark.asyncio
+    async def test_a_raise_during_re_registration_leaves_the_full_surface(
+        self, wired, monkeypatch
+    ):
+        """M4 — the failure the census guard did not cover.
+
+        `register_dynamic_tools` deletes all nine dynamic tools before re-adding
+        them, so a raise partway left a PARTIAL surface served (measured: 6 tools
+        instead of 18) with nothing published — the worst of both, since the
+        docstring promised the surface was kept.
+        """
+        bus, _service, _profiles = wired
+        srv.register_dynamic_tools(_profile(label='Widget'))
+        srv.register_resources(_profile(label='Widget'))
+        tools_before = dict(srv.mcp._tool_manager._tools)
+        resources_before = dict(srv.mcp._resource_manager._resources)
+
+        real = srv.register_dynamic_tools
+
+        def half_registers(profile):
+            # Delete-then-raise: exactly what a mid-registration failure does.
+            for fn in srv._DYNAMIC_TOOLS:
+                srv.mcp._tool_manager._tools.pop(fn.__name__, None)
+            raise RuntimeError('re-registration blew up')
+
+        monkeypatch.setattr(srv, 'register_dynamic_tools', half_registers)
+        assert await srv.refresh_domain_surface('test') is False
+        monkeypatch.setattr(srv, 'register_dynamic_tools', real)
+
+        assert set(srv.mcp._tool_manager._tools) == set(tools_before), (
+            'a mid-registration failure left a PARTIAL tool surface served (M4)'
+        )
+        assert set(srv.mcp._resource_manager._resources) == set(resources_before)
+        assert bus.published == [], (
+            'the surface was restored, so there was nothing to announce'
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_surface_that_did_move_is_announced_even_on_failure(
+        self, wired, monkeypatch
+    ):
+        """The other half of the `finally`: silence is only correct when the
+        surface is genuinely unchanged. If a failure path ever leaves it moved,
+        a consumer must still hear about it."""
+        bus, _service, _profiles = wired
+        srv.register_dynamic_tools(_profile(label='Widget'))
+
+        class _RestoreFails(dict):
+            """A registry whose restore cannot put anything back."""
+
+            def update(self, *_a, **_k):
+                pass
+
+        def wrecks_the_surface(profile):
+            srv.mcp._tool_manager._tools.pop('search', None)
+            raise RuntimeError('boom')
+
+        monkeypatch.setattr(srv, 'register_dynamic_tools', wrecks_the_surface)
+        monkeypatch.setattr(
+            srv.mcp._tool_manager,
+            '_tools',
+            _RestoreFails(srv.mcp._tool_manager._tools),
+        )
+
+        await srv.refresh_domain_surface('test')
+
+        assert ToolsListChanged() in bus.published, (
+            'the served tool list moved on a failure path and nothing was '
+            'announced — the comparison is not in a `finally`'
+        )
+
 
 class TestTheDebounceCoalesces:
     """One census per window, and never a lost mark."""
@@ -244,11 +316,10 @@ class TestTheDebounceCoalesces:
         assert service._schema_dirty is True
 
     @pytest.mark.asyncio
-    async def test_a_mark_during_the_census_is_not_lost(self, wired, monkeypatch):
-        """The window is a COALESCING window, not a quiescence timer: it always
-        fires, so staleness is bounded. A mark landing mid-census therefore has
-        to earn its own next window rather than being folded into the one that
-        already started."""
+    async def test_a_second_mark_after_the_census_earns_a_second_window(
+        self, wired, monkeypatch
+    ):
+        """Two bursts separated by a completed census get a census each."""
         _bus, service, _profiles = wired
         monkeypatch.setenv('GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS', '0.05')
 
@@ -258,6 +329,64 @@ class TestTheDebounceCoalesces:
         srv.mark_schema_dirty()
         await asyncio.sleep(0.15)
         assert service.censuses == 2, service.censuses
+
+    @pytest.mark.asyncio
+    async def test_a_mark_landing_DURING_a_census_drives_the_loop_around(
+        self, wired, monkeypatch
+    ):
+        """L9 — the loop's SECOND iteration, which nothing exercised.
+
+        A mark that arrives while the census is running cannot have been seen by
+        it, so it must earn another window. This is the only test that reaches
+        the `if _surface_refresh_marks == seen` branch on its false arm — and it
+        is where L5 lives.
+        """
+        _bus, service, _profiles = wired
+        monkeypatch.setenv('GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS', '0.05')
+
+        real_census = srv.build_domain_profile
+        marked_during = False
+
+        async def census_then_mark(*args, **kwargs):
+            nonlocal marked_during
+            result = await real_census(*args, **kwargs)
+            if not marked_during:
+                marked_during = True
+                srv.mark_schema_dirty()  # lands DURING this census
+            return result
+
+        monkeypatch.setattr(srv, 'build_domain_profile', census_then_mark)
+
+        srv.mark_schema_dirty()
+        await asyncio.sleep(0.3)
+
+        assert service.censuses == 2, (
+            f'the loop did not go round for a mark that landed during the '
+            f'census (censuses={service.censuses})'
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_burst_spanning_the_window_costs_ONE_census(
+        self, wired, monkeypatch
+    ):
+        """L5 — `seen` is sampled AFTER the sleep.
+
+        Sampling it before counted marks that landed *during* the window as
+        unserved, even though the census that followed already covered them, so
+        a two-mark burst inside one window bought two full censuses.
+        """
+        _bus, service, _profiles = wired
+        monkeypatch.setenv('GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS', '0.15')
+
+        srv.mark_schema_dirty()          # opens the window
+        await asyncio.sleep(0.05)
+        srv.mark_schema_dirty()          # lands INSIDE it — same census covers it
+        await asyncio.sleep(0.4)
+
+        assert service.censuses == 1, (
+            f'a burst spanning one window cost {service.censuses} censuses; the '
+            f'census that ran had already seen both marks (L5)'
+        )
 
     @pytest.mark.asyncio
     async def test_zero_disables_the_scheduler(self, wired, monkeypatch):
