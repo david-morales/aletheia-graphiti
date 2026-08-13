@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -52,6 +53,7 @@ from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.resources.types import FunctionResource, TextResource
+from mcp.server.subscriptions import ResourcesListChanged, ToolsListChanged
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
@@ -707,7 +709,7 @@ async def add_memory(
             )
 
             # Invalidate schema cache after ingestion
-            graphiti_service._schema_dirty = True
+            mark_schema_dirty()
 
             return AddMemoryResult(
                 message=f"Bulk ingested {len(raw_episodes)} episodes into '{effective_group_id}': "
@@ -740,7 +742,7 @@ async def add_memory(
                 uuid=uuid or None,
             )
 
-            graphiti_service._schema_dirty = True
+            mark_schema_dirty()
 
             return AddMemoryResult(
                 message=f"Episode '{name}' processed synchronously in '{effective_group_id}': "
@@ -760,7 +762,7 @@ async def add_memory(
         )
 
         # Invalidate schema cache after ingestion
-        graphiti_service._schema_dirty = True
+        mark_schema_dirty()
 
         return AddMemoryResult(
             message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
@@ -1189,7 +1191,7 @@ async def delete_entity_edge(uuid: str) -> MutationResult:
         entity_edge = await EntityEdge.get_by_uuid(client.driver, uuid)
         # Delete the edge using its delete method
         await entity_edge.delete(client.driver)
-        graphiti_service._schema_dirty = True
+        mark_schema_dirty()
         return MutationResult(message=f'Entity edge with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
@@ -1219,7 +1221,7 @@ async def delete_episode(uuid: str) -> MutationResult:
         episodic_node = await EpisodicNode.get_by_uuid(client.driver, uuid)
         # Delete the node using its delete method
         await episodic_node.delete(client.driver)
-        graphiti_service._schema_dirty = True
+        mark_schema_dirty()
         return MutationResult(message=f'Episode with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
@@ -1331,7 +1333,7 @@ async def clear_graph(group_ids: list[str] | None = None) -> MutationResult:
         # Clear data for the specified group IDs
         await clear_data(client.driver, group_ids=effective_group_ids)
 
-        graphiti_service._schema_dirty = True
+        mark_schema_dirty()
 
         return MutationResult(
             message=f'Graph data cleared successfully for group IDs: {", ".join(effective_group_ids)}'
@@ -2642,6 +2644,236 @@ def register_resources(profile: DomainProfile) -> None:
     _register_schema_resource()
 
     logger.info(f'Registered 4 MCP resources for {profile.group_id}')
+
+
+# ---------------------------------------------------------------------------
+# Push-based freshness (P3) — `subscriptions/listen`, SEP-2575
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS SECTION IS FOR. At the 2026-07-28 era the SDK derives
+# `tools.listChanged`, `prompts.listChanged`, `resources.listChanged` and
+# `resources.subscribe` from ONE condition — whether `subscriptions/listen` is
+# served — and `MCPServer` registers that handler unconditionally
+# (`mcp/server/lowlevel/server.py:583`, `mcp/server/mcpserver/server.py:215`).
+# So this connector has announced all four as `true` since the modern-era
+# migration and published nothing: four declared-and-never-emitted capability
+# bits, which is the ADR-019 R7 defect.
+#
+# Nothing could have been published, either. `initialize_server()` finishes the
+# census before the transport binds, and after that the tool and resource lists
+# were frozen for the process lifetime — while every `_schema_dirty` mark made
+# the rendered descriptions, the rendered resources and the announcement stale
+# without ever re-rendering them. A consumer polling the connector re-read
+# byte-identical text.
+#
+# So the fix is the missing runtime event, not a flag: re-census on a coalescing
+# window after the graph changes, re-render the surface, and announce — but
+# announce ONLY what actually moved. `prompts.listChanged` (no prompts exist)
+# and `resources.subscribe` (content subscriptions) stay untrue and belong to
+# P2 and P4; see docs/plans/2026-08-13-mcp-p3-listchanged-design.md in aletheia.
+
+DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS = 60.0
+"""Coalescing window between a graph mutation and the re-census it triggers.
+
+A COALESCING window, not a quiescence timer: it is measured from the first mark
+and always fires, so staleness is bounded even under continuous ingest. A
+quiescence timer would restart on every episode and could postpone the refresh
+indefinitely — the failure this whole item is about.
+
+60s makes a bulk ingest of a thousand episodes cost ONE census, and that census
+is the same `build_domain_profile` every startup already runs. Operators who
+cannot afford it on a very large graph set the window to `0`, which disables the
+scheduler and leaves the surface behaving exactly as it did before this wave.
+"""
+
+SURFACE_REFRESH_DEBOUNCE_ENV = 'GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS'
+
+_surface_refresh_task: asyncio.Task | None = None
+"""The pending debounce task, if any. One at a time — see `mark_schema_dirty`."""
+
+_surface_refresh_marks: int = 0
+"""Monotonic count of graph mutations, so a mark landing mid-census is not lost."""
+
+_surface_refresh_lock = asyncio.Lock()
+"""Serialises re-censuses. Two concurrent censuses would race on the registries."""
+
+
+def surface_refresh_debounce_seconds() -> float:
+    """Resolve the coalescing window (env override > default).
+
+    An unusable value degrades to the default rather than to no refresh: a typo
+    in a deployment env must not silently restore the staleness this closes.
+    Finite, not merely non-negative — `inf` and `nan` both pass a bare `>= 0`
+    test and both turn `asyncio.sleep` into a refresh that never happens.
+    """
+    raw = os.environ.get(SURFACE_REFRESH_DEBOUNCE_ENV)
+    if raw is None or raw.strip() == '':
+        return DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS
+    try:
+        value = float(raw)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError('must be a finite, non-negative number of seconds')
+    except ValueError as e:
+        logger.warning(
+            'Invalid %s=%r (%s) — using default %.0fs',
+            SURFACE_REFRESH_DEBOUNCE_ENV, raw, e,
+            DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS,
+        )
+        return DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS
+    return value
+
+
+def mark_schema_dirty() -> None:
+    """The ONE spelling for "the graph changed under the served surface".
+
+    Sets the schema-cache flag `get_schema` reads AND schedules the re-census
+    that re-renders everything else. The two used to be six separate copies of
+    the first half, which is precisely how a seventh mutation site ships without
+    the second.
+    """
+    if graphiti_service is None:
+        return
+    # The one place the raw flag may be assigned. The guard in
+    # `TestEveryMutationSiteGoesThroughTheSeam` allows exactly this line.
+    graphiti_service._schema_dirty = True  # noqa: SLF001
+    _schedule_surface_refresh()
+
+
+def _schedule_surface_refresh() -> None:
+    """Start a debounce window, unless one is already open.
+
+    Returns silently when there is no running loop: `clear_graph` and friends are
+    also reachable from sync CLI and test contexts, where there is nothing to
+    schedule onto and nothing listening either.
+    """
+    global _surface_refresh_task, _surface_refresh_marks
+    _surface_refresh_marks += 1
+    window = surface_refresh_debounce_seconds()
+    if window <= 0:
+        return
+    if _surface_refresh_task is not None and not _surface_refresh_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _surface_refresh_task = loop.create_task(_debounced_surface_refresh(window))
+
+
+async def _debounced_surface_refresh(window: float) -> None:
+    """Sleep out the window, re-census, and go round again if marks arrived.
+
+    The loop is what makes the window a rate limit rather than a race: marks that
+    land during the sleep are folded into the census that follows it, and marks
+    that land during the census itself earn one more window instead of being
+    dropped. Under continuous ingest it settles at one census per window; when
+    ingest stops it exits.
+    """
+    while True:
+        seen = _surface_refresh_marks
+        try:
+            await asyncio.sleep(window)
+            await refresh_domain_surface(reason='graph data changed')
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A background task that dies takes the freshness channel with it and
+            # says nothing. `refresh_domain_surface` already swallows census
+            # failures; this is the backstop for everything else.
+            logger.exception('Debounced surface refresh failed; window closed')
+        if _surface_refresh_marks == seen:
+            return
+
+
+def _tool_surface_fingerprint() -> tuple[tuple[str, str], ...]:
+    """What `tools/list` announces, reduced to what a consumer binds to.
+
+    Name AND description: a re-rendered description is a changed list entry, and
+    it is the one that actually moves here (the nine dynamic tools are rendered
+    from the live profile). Order is included because `tools/list` order is part
+    of the announced surface (`apply_canonical_tool_order`).
+    """
+    return tuple(
+        (name, tool.description or '')
+        for name, tool in mcp._tool_manager._tools.items()
+    )
+
+
+def _resource_surface_fingerprint() -> tuple[str, ...]:
+    """What `resources/list` announces: the URI set.
+
+    Deliberately NOT the bodies. A re-census re-renders `domain_summary` & co.
+    with new text while the announced entries stay identical — telling a consumer
+    the LIST changed there would be P4's `resources/updated` wearing the wrong
+    name. The URI set genuinely moves in one case: degraded prunes three
+    resources (`register_fallback_tools`) and a successful refresh restores them.
+    """
+    return tuple(sorted(mcp._resource_manager._resources))
+
+
+async def _publish_surface_change(*, tools: bool, resources: bool) -> None:
+    """Publish list-change events to `subscriptions/listen` subscribers.
+
+    The bus carries typed events, not wire notifications: the SDK's
+    `ListenHandler` owns per-stream filtering and subscription-id stamping, so a
+    client that did not ask for a kind never receives it.
+    """
+    if not (tools or resources):
+        return
+    bus = getattr(mcp, '_subscriptions', None)
+    if bus is None:  # pragma: no cover - MCPServer always builds one
+        logger.warning('No subscription bus on the server; cannot announce a surface change')
+        return
+    if tools:
+        await bus.publish(ToolsListChanged())
+    if resources:
+        await bus.publish(ResourcesListChanged())
+
+
+async def refresh_domain_surface(reason: str) -> bool:
+    """Re-census the graph, re-render the served surface, announce what moved.
+
+    Returns whether the surface was rebuilt (not whether anything changed).
+
+    A FAILED census keeps the surface in force. It deliberately does NOT fall
+    through to `register_fallback_tools`, which is the startup path's failure
+    handler and the wrong one here: downgrading a live, correct announcement to
+    static descriptions because one query timed out turns a transient graph blip
+    into a connector telling every consumer its guidance is not derived from this
+    graph.
+    """
+    if graphiti_service is None:
+        return False
+    async with _surface_refresh_lock:
+        try:
+            profile_client = await graphiti_service.get_client()
+            domain_profile = await build_domain_profile(
+                profile_client,
+                group_id=config.graphiti.group_id,
+                ontology_client=graphiti_service.ontology_client,
+                flavour=graphiti_service.flavour,
+            )
+        except Exception as e:
+            logger.error(
+                'Domain surface refresh (%s) failed to re-census — KEEPING the '
+                'surface in force: %s',
+                reason, e,
+            )
+            return False
+        tools_before = _tool_surface_fingerprint()
+        resources_before = _resource_surface_fingerprint()
+        graphiti_service.domain_profile = domain_profile
+        register_dynamic_tools(domain_profile)
+        register_resources(domain_profile)
+        tools_changed = _tool_surface_fingerprint() != tools_before
+        resources_changed = _resource_surface_fingerprint() != resources_before
+
+    await _publish_surface_change(tools=tools_changed, resources=resources_changed)
+    logger.info(
+        'Domain surface refreshed (%s): tools_list_changed=%s resources_list_changed=%s',
+        reason, tools_changed, resources_changed,
+    )
+    return True
 
 
 async def initialize_server() -> ServerConfig:
