@@ -12,8 +12,17 @@ logger = logging.getLogger(__name__)
 class QueueService:
     """Service for managing sequential episode processing queues by group_id."""
 
-    def __init__(self):
-        """Initialize the queue service."""
+    def __init__(self, on_episode_processed: Callable[[str], None] | None = None):
+        """Initialize the queue service.
+
+        Args:
+            on_episode_processed: Called with the group_id after each queued
+                episode finishes processing, successfully or not. This is the
+                only moment the graph has actually changed — enqueueing changes
+                nothing, and LLM extraction routinely takes longer than any
+                freshness window a caller might set. A hook that raises is
+                logged and ignored: it must not stop the queue worker.
+        """
         # Dictionary to store queues for each group_id
         self._episode_queues: dict[str, asyncio.Queue] = {}
         # Dictionary to track if a worker is running for each group_id
@@ -22,6 +31,7 @@ class QueueService:
         self._worker_tasks: dict[str, asyncio.Task] = {}
         # Store the graphiti client after initialization
         self._graphiti_client: Any = None
+        self._on_episode_processed = on_episode_processed
 
     async def add_episode_task(
         self, group_id: str, process_func: Callable[[], Awaitable[None]]
@@ -75,6 +85,7 @@ class QueueService:
                 finally:
                     # Mark the task as done regardless of success/failure
                     self._episode_queues[group_id].task_done()
+                    self._notify_episode_processed(group_id)
         except asyncio.CancelledError:
             logger.info(f'Episode queue worker for group_id {group_id} was cancelled')
         except Exception as e:
@@ -82,6 +93,23 @@ class QueueService:
         finally:
             self._queue_workers[group_id] = False
             logger.info(f'Stopped episode queue worker for group_id: {group_id}')
+
+    def _notify_episode_processed(self, group_id: str) -> None:
+        """Run the completion hook, isolating the worker from it.
+
+        Called from the worker's `finally`, so an exception escaping here would
+        propagate out of the inner try, be caught by the outer handler, and stop
+        the queue worker for this group entirely — one bad hook would silently
+        end ingestion. Hence the swallow.
+        """
+        if self._on_episode_processed is None:
+            return
+        try:
+            self._on_episode_processed(group_id)
+        except Exception:
+            logger.exception(
+                'Episode-processed hook raised for group_id %s; continuing', group_id
+            )
 
     def get_queue_size(self, group_id: str) -> int:
         """Get the current queue size for a group_id."""

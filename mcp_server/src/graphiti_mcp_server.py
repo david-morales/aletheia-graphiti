@@ -761,8 +761,14 @@ async def add_memory(
             uuid=uuid or None,
         )
 
-        # Invalidate schema cache after ingestion
-        mark_schema_dirty()
+        # NOT marked here. Enqueueing changes nothing: the graph is identical
+        # until the worker's LLM extraction lands, which routinely outlives any
+        # freshness window. Marking at enqueue ran the one census against the
+        # PRE-ingest graph, found nothing changed, published nothing, and left
+        # the debounce loop with no reason to go round again — so the DEFAULT
+        # ingest path (`add_memory` without `sync`) never announced at all.
+        # `QueueService`'s completion hook (wired in `initialize_server`) marks
+        # at the only moment the graph has actually moved.
 
         return AddMemoryResult(
             message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
@@ -2739,6 +2745,17 @@ def mark_schema_dirty() -> None:
     _schedule_surface_refresh()
 
 
+def _on_episode_processed(group_id: str) -> None:
+    """`QueueService`'s completion hook: the queued episode's graph write landed.
+
+    The ONLY moment the queued ingest path has changed anything. Named rather
+    than inlined as a lambda so the wiring in `initialize_server` says what it
+    is, and so a test can assert the hook the queue was actually given.
+    """
+    logger.debug('Episode processed for group_id %s; marking the surface stale', group_id)
+    mark_schema_dirty()
+
+
 def _schedule_surface_refresh() -> None:
     """Start a debounce window, unless one is already open.
 
@@ -3005,9 +3022,11 @@ async def initialize_server() -> ServerConfig:
         await clear_data(client.driver)
         logger.info('All graphs destroyed')
 
-    # Initialize services
+    # Initialize services. The queue's completion hook is what makes the
+    # DEFAULT ingest path announce: `add_memory` returns as soon as the episode
+    # is queued, and the graph only moves when the worker's extraction lands.
     graphiti_service = GraphitiService(config, SEMAPHORE_LIMIT)
-    queue_service = QueueService()
+    queue_service = QueueService(on_episode_processed=_on_episode_processed)
     await graphiti_service.initialize()
 
     # Build domain profile from graph introspection. On failure the surface stays

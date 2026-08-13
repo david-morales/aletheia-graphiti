@@ -30,6 +30,7 @@ from mcp.shared.subscriptions import ResourcesListChanged, ToolsListChanged
 
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
+from services.queue_service import QueueService
 
 
 @pytest.fixture(autouse=True)
@@ -319,6 +320,115 @@ class TestEveryMutationSiteGoesThroughTheSeam:
         monkeypatch.setattr(srv, 'graphiti_service', service)
         srv.mark_schema_dirty()
         assert service._schema_dirty is True
+
+
+class TestTheQueuedIngestPathAnnounces:
+    """H1 — the review's ship-blocker, and the case that matters most.
+
+    `add_memory` without `sync=True` RETURNS as soon as the episode is queued;
+    the graph only moves when the worker's LLM extraction lands, which routinely
+    takes longer than any freshness window. Marking at ENQUEUE therefore ran the
+    single census against the PRE-ingest graph, found nothing changed, published
+    nothing, and left the debounce loop with `marks == seen` — so it exited and
+    nothing ever marked again. The DEFAULT ingest path never announced at all,
+    while bulk/sync/delete/clear_graph did, which is exactly the subset the
+    original wire proof exercised.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_episode_landing_after_the_window_still_announces(
+        self, wired, monkeypatch
+    ):
+        """The scenario, end to end: enqueue, let the window close with nothing
+        to see, and land the episode afterwards."""
+        bus, service, profiles = wired
+        monkeypatch.setenv('GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS', '0.05')
+        srv.register_dynamic_tools(_profile(label='Widget'))
+
+        queue = QueueService(on_episode_processed=srv._on_episode_processed)
+        await queue.initialize(object())
+
+        landed = asyncio.Event()
+
+        async def slow_extraction():
+            # Outlives the debounce window, as real extraction does.
+            await asyncio.sleep(0.2)
+            profiles['next'] = _profile(label='Gadget')  # the graph moved
+            landed.set()
+
+        await queue.add_episode_task('g', slow_extraction)
+        await landed.wait()
+        await asyncio.sleep(0.25)  # one window after the episode landed
+
+        assert service.censuses >= 1, (
+            'no census ran after the episode landed — the queued ingest path '
+            'never announces (H1)'
+        )
+        assert ToolsListChanged() in bus.published, bus.published
+
+    @pytest.mark.asyncio
+    async def test_the_hook_fires_even_when_the_episode_fails(self):
+        """A failed extraction can still have written part of the graph, and the
+        worker must survive either way."""
+        seen: list[str] = []
+        queue = QueueService(on_episode_processed=seen.append)
+        await queue.initialize(object())
+
+        async def boom():
+            raise RuntimeError('extraction failed')
+
+        await queue.add_episode_task('g', boom)
+        for _ in range(100):
+            if seen:
+                break
+            await asyncio.sleep(0.01)
+        assert seen == ['g'], seen
+
+    @pytest.mark.asyncio
+    async def test_a_raising_hook_does_not_stop_the_queue_worker(self):
+        """The hook runs in the worker's `finally`; an escape would be caught by
+        the outer handler and end ingestion for that group in silence."""
+        calls = 0
+
+        def raises(_group_id):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError('hook is broken')
+
+        queue = QueueService(on_episode_processed=raises)
+        await queue.initialize(object())
+
+        done = asyncio.Event()
+
+        async def first():
+            pass
+
+        async def second():
+            done.set()
+
+        await queue.add_episode_task('g', first)
+        await queue.add_episode_task('g', second)
+        await asyncio.wait_for(done.wait(), timeout=2)
+        assert calls >= 1
+
+    def test_enqueue_no_longer_marks(self):
+        """The half of the fix that is a DELETION: marking at enqueue is a claim
+        the graph changed when it has not."""
+        import inspect
+
+        src = inspect.getsource(srv.add_memory)
+        queued = src.split('await queue_service.add_episode(')[1]
+        assert 'mark_schema_dirty()' not in queued, (
+            'the enqueue path still marks the surface stale before the episode '
+            'has landed (H1)'
+        )
+
+    def test_the_queue_is_constructed_with_the_hook(self):
+        """A hook nobody wires is the same bug one layer out."""
+        import inspect
+
+        src = inspect.getsource(srv.initialize_server)
+        assert 'QueueService(on_episode_processed=_on_episode_processed)' in src
 
 
 class TestTheStartupPathDoesNotAnnounce:
