@@ -24,6 +24,40 @@ INDEX_TO_LABEL_KUZU_MAPPING = {
     'edge_name_and_fact': 'RelatesToNode_',
 }
 
+# The relationship type entity edges are written under everywhere except the
+# FalkorDB bulk path, which MERGEs each edge under its own `name` instead.
+DEFAULT_ENTITY_EDGE_TYPE = 'RELATES_TO'
+
+
+def sanitize_edge_type(edge_type: str) -> str:
+    """Reduce a relationship type to what can be interpolated into Cypher.
+
+    Relationship types cannot be parameterised, so every path that builds a typed
+    pattern has to inline the name. Mirrors the sanitisation the FalkorDB bulk
+    writer applies when it MERGEs the edge, so a type survives the round trip
+    from write to search unchanged.
+    """
+    safe = ''.join(c for c in edge_type if c.isalnum() or c == '_')
+    return safe or DEFAULT_ENTITY_EDGE_TYPE
+
+
+def get_entity_edge_types_query() -> LiteralString:
+    """The relationship types that run between two Entity nodes.
+
+    Entity edges are identified by their ENDPOINTS, not by their names. The
+    FalkorDB bulk writer takes the relationship type straight from the extracted
+    edge's ``name``, so a perfectly ordinary fact edge can arrive called
+    ``HAS_MEMBER`` or ``MENTIONS`` — a blocklist of structural names would discard
+    it. Graphiti's own structural edges are excluded by their endpoints instead:
+    MENTIONS runs Episodic->Entity, HAS_MEMBER Community->Entity, HAS_EPISODE
+    Saga->Episodic and NEXT_EPISODE Episodic->Episodic, so none of them can match
+    an Entity->Entity pattern.
+
+    This is deliberately the same pattern ``edge_similarity_search`` matches on,
+    so the bm25 and cosine legs cannot disagree about what an entity edge is.
+    """
+    return 'MATCH (n:Entity)-[e]->(m:Entity) RETURN DISTINCT type(e) AS edge_type'
+
 
 def get_range_indices(provider: GraphProvider) -> list[LiteralString]:
     if provider == GraphProvider.FALKORDB:
