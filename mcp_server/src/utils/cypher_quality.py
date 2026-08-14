@@ -8,6 +8,7 @@ misplaced properties.
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -238,16 +239,77 @@ def _addressable_properties(info: dict[str, Any]) -> list[str]:
     nested-path query a schema mismatch on the nesting backend (BLK-1). Both
     key sets are produced by the FLAVOUR; this function only unions what the
     schema already announces, so no backend is named here.
+
+    Used for the CROSS-LABEL index only. Whether a key is reachable on the label
+    the query actually named is a finer question — see
+    :func:`_container_only_keys`: a union is container-blind, and accepting
+    ``n.edad`` where the key exists only inside the container would swap a false
+    alarm for a silently null column.
     """
     return list(info.get('properties') or []) + list(info.get('attribute_keys') or [])
+
+
+def _container_only_keys(info: dict[str, Any]) -> set[str]:
+    """Keys reachable ONLY through the container on this label.
+
+    A key that is in ``attribute_keys`` and NOT in the top-level ``properties``
+    has no top-level existence: ``n.<key>`` parses, runs, and returns null for
+    every row. The schema announces both sets, so it already carries enough to
+    say so — no backend knowledge is needed here.
+    """
+    top_level = set(info.get('properties') or [])
+    return {k for k in (info.get('attribute_keys') or []) if k not in top_level}
+
+
+def _label_was_probed(info: dict[str, Any]) -> bool:
+    """Did get_schema actually learn this label's attributes?
+
+    Two ways it did not, both reachable without the call failing: the top-level
+    probe degraded (get_schema reports the entry ``sampled: False`` rather than
+    taking the whole schema down), or the attribute probe swallowed its own
+    exception and returned nothing (``AgeFlavour.attribute_keys``). Either way
+    the connector has no evidence about this label, and no-evidence must not be
+    spent as an accusation — a `schema_mismatch` is sticky (`refine_verdict`
+    never downgrades it), so a wrong one outlives the query that caused it.
+
+    A schema entry that omits ``sampled`` entirely is treated as probed:
+    get_schema always sets it, so absence means a caller that is not modelling
+    the degraded case rather than a degraded label.
+    """
+    return bool(info.get('sampled', True)) and bool(info.get('attribute_keys'))
+
+
+def _container_prefixed_accesses(query: str, container: str) -> set[tuple[str, str]]:
+    """``(variable, key)`` pairs the query writes as ``<var>.<container>.<key>``.
+
+    The AST extractor flattens a nested path: ``n.attributes.edad`` arrives as
+    two independent accesses, ``attributes`` and ``edad``, with no record that
+    one was written through the other. That is exactly the fact needed to tell a
+    correct nested read from a bare one, so it is recovered from the query text
+    here rather than by widening ``PropertyAccess`` — whose identity
+    (``__eq__``/``__hash__`` over variable + name) other call sites depend on.
+
+    Backticks are optional around either identifier, matching how the dialects
+    quote them.
+    """
+    ident = r'`?([A-Za-z_][A-Za-z0-9_]*)`?'
+    pattern = rf'{ident}\s*\.\s*`?{re.escape(container)}`?\s*\.\s*{ident}'
+    return {(m.group(1), m.group(2)) for m in re.finditer(pattern, query)}
 
 
 def _validate_properties(
     properties: list[PropertyAccess],
     var_labels: dict[str, str],
     schema: dict[str, Any],
+    container_paths: set[tuple[str, str]] | None = None,
 ) -> PropMatch:
-    """Check property accesses against schema node properties."""
+    """Check property accesses against schema node properties.
+
+    ``container_paths`` carries which accesses were written through the
+    announced container (see :func:`_container_prefixed_accesses`); empty on a
+    flat backend, where nothing is path-restricted.
+    """
+    container_paths = container_paths or set()
     node_labels = schema.get('node_labels', {})
     known_label_set = set(node_labels.keys())
     match = PropMatch()
@@ -297,7 +359,26 @@ def _validate_properties(
                 match.found.append(pa.property_name)
             continue
 
-        label_props = _addressable_properties(node_labels[label])
+        info = node_labels[label]
+        prefixed = bool(container) and (pa.variable, pa.property_name) in container_paths
+
+        # No evidence about this label's attributes -> no field-level verdict on
+        # a nested access. The container name above is still checked, which is
+        # the part that holds without a sample.
+        if prefixed and not _label_was_probed(info):
+            continue
+
+        # A key that lives ONLY inside the container is unreachable at the top
+        # level: `n.edad` runs and returns null for every row, which is the
+        # silent wrong answer this module exists to catch. Reported as unknown
+        # because that is what it is where the query looked — at the top level.
+        if not prefixed and pa.property_name in _container_only_keys(info):
+            match.unknown.append(
+                UnknownProp(property_name=pa.property_name, on_label=label)
+            )
+            continue
+
+        label_props = _addressable_properties(info)
         if pa.property_name in label_props:
             if pa.property_name not in match.found:
                 match.found.append(pa.property_name)
@@ -398,7 +479,15 @@ def assess_quality(query: str, *, schema: dict[str, Any] | None) -> CypherQualit
         elements.var_labels,
         schema,
     )
-    properties = _validate_properties(elements.properties, elements.var_labels, schema)
+    # Which accesses were written through the announced nesting container. Read
+    # from the query text because the AST extractor flattens the path away.
+    container = schema.get('attribute_container')
+    container_paths = (
+        _container_prefixed_accesses(query, container) if container else set()
+    )
+    properties = _validate_properties(
+        elements.properties, elements.var_labels, schema, container_paths
+    )
 
     schema_match = SchemaMatch(
         labels=labels,

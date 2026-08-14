@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
@@ -278,6 +280,93 @@ class TestNestedAttributeValidation:
         assert q.schema_match.properties.unknown == []
         assert q.verdict == 'success'
 
+    @pytest.mark.parametrize(
+        'query,expected,note',
+        [
+            (
+                'MATCH (n:Persona) RETURN n.attributes.edad',
+                'success',
+                'the form the dialect teaches — clean',
+            ),
+            (
+                'MATCH (n:Persona) RETURN n.attributes.no_such_field',
+                'schema_mismatch',
+                'nested, but no such attribute',
+            ),
+            (
+                'MATCH (n:Persona) RETURN n.edad',
+                'schema_mismatch',
+                'F4: right key, WRONG PATH — addresses nothing on this backend',
+            ),
+        ],
+    )
+    def test_the_access_PATH_is_checked_not_just_the_key(self, query, expected, note):
+        """F4: unioning the two key sets made the validator container-BLIND.
+
+        `edad` lives only inside the container on this backend, so `n.edad`
+        returns null for every row — a silently empty column, which is the
+        failure mode `cypher_quality` exists to catch. Before the union it was
+        correctly flagged; the union accepted it. The schema carries enough to
+        tell the two apart: a key in `attribute_keys` but NOT in top-level
+        `properties` is reachable ONLY through the announced container.
+        """
+        q = assess_quality(query, schema=NESTED_SCHEMA)
+        assert q.verdict == expected, (note, q.to_dict())
+
+    def test_the_bare_access_is_reported_against_the_right_label(self):
+        q = assess_quality('MATCH (n:Persona) RETURN n.edad', schema=NESTED_SCHEMA)
+        assert any(
+            u.property_name == 'edad' and u.on_label == 'Persona'
+            for u in q.schema_match.properties.unknown
+        ), q.to_dict()
+
+    def test_a_top_level_key_is_reachable_without_the_container(self):
+        """The rule is about keys that ONLY exist nested. `name` is top-level on
+        every backend, so `n.name` stays clean — an over-broad path rule would
+        have flagged it."""
+        q = assess_quality('MATCH (n:Persona) RETURN n.name', schema=NESTED_SCHEMA)
+        assert q.verdict == 'success', q.to_dict()
+
+    def test_a_flat_backend_is_unaffected_by_the_path_rule(self):
+        """F4 no-change guard: with no container announced, nothing is
+        path-restricted and FalkorDB's verdicts are exactly what they were."""
+        for query in (
+            'MATCH (n:Persona) RETURN n.edad',
+            'MATCH (n:Persona) RETURN n.name, n.summary',
+        ):
+            assert assess_quality(query, schema=SCHEMA).verdict == 'success', query
+
+    def test_an_UNSAMPLED_label_does_not_accuse_a_nested_access(self):
+        """F8: a probe that could not answer must not become an accusation.
+
+        get_schema degrades ONE label rather than failing the whole call, and
+        says so with `sampled: False`; `attribute_keys` comes back empty by the
+        same route (AgeFlavour.attribute_keys swallows its exception). With no
+        evidence about this label's attributes, a container-nested access gets
+        no field-level verdict — the container name itself is still checked.
+        """
+        for entry in (
+            {'count': 5, 'properties': [], 'attribute_keys': ['edad'], 'sampled': False},
+            {'count': 5, 'properties': ['attributes'], 'attribute_keys': [], 'sampled': True},
+        ):
+            schema = {
+                'attribute_container': 'attributes',
+                'node_labels': {'Persona': entry},
+                'relationship_types': {},
+            }
+            q = assess_quality(
+                'MATCH (n:Persona) RETURN n.attributes.edad', schema=schema
+            )
+            assert q.verdict == 'success', (entry, q.to_dict())
+
+    def test_the_SAMPLED_path_is_not_weakened_by_the_unsampled_allowance(self):
+        """F8 must not become a blanket amnesty: a label that WAS sampled and
+        does have attributes still catches a hallucinated one."""
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.attributes.no_such_field', schema=NESTED_SCHEMA
+        )
+        assert q.verdict == 'schema_mismatch', q.to_dict()
+
     def test_a_flat_backend_does_not_inherit_the_nested_allowance(self):
         """No `attribute_container` announced -> the nested form is a real mismatch.
 
@@ -369,8 +458,6 @@ class TestSerialization:
 # ---------------------------------------------------------------------------
 # Result signals (post-execution)
 # ---------------------------------------------------------------------------
-
-import pytest
 
 
 class TestResultSignals:
