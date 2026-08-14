@@ -266,3 +266,61 @@ async def test_edge_similarity_search_keeps_relates_to_for_other_providers():
 
     emitted = driver.execute_query.call_args[0][0]
     assert '-[e:RELATES_TO]->' in emitted
+
+
+async def test_combined_mode_edge_leg_returns_facts():
+    """The reported symptom: default combined search gave nodes but zero facts.
+
+    COMBINED_HYBRID_SEARCH_RRF's edge_config is bm25 + cosine_similarity with
+    edge_types left at None — exactly the two legs fixed here, and exactly the
+    edge_config EDGE_HYBRID_SEARCH_RRF ('edges' mode) uses too.
+    """
+    from graphiti_core.search.search import search
+    from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
+
+    assert COMBINED_HYBRID_SEARCH_RRF.edge_config is not None
+    assert COMBINED_HYBRID_SEARCH_RRF.edge_config.edge_types is None
+
+    log = FakeFalkorQueryLog(PRESENT_RELATIONSHIP_TYPES, WRITTEN_EDGES)
+    driver = _falkor_driver(log)
+
+    clients = MagicMock()
+    clients.driver = driver
+    clients.embedder = AsyncMock()
+    clients.cross_encoder = AsyncMock()
+
+    results = await search(
+        clients,
+        'robo',
+        ['policia'],
+        COMBINED_HYBRID_SEARCH_RRF,
+        SearchFilters(),
+        query_vector=[0.1] * 8,
+    )
+
+    assert {e.uuid for e in results.edges} == {'edge-detiene-1', 'edge-interviene-1'}
+
+
+async def test_falkordb_and_default_arms_return_the_same_edges():
+    """Two-arm parity: the same written edges are found on either flavour.
+
+    The arms differ only in how the writer stored the edges — typed relationship
+    names on FalkorDB, RELATES_TO everywhere else. Search must not care.
+    """
+    falkor_log = FakeFalkorQueryLog(PRESENT_RELATIONSHIP_TYPES, WRITTEN_EDGES)
+    falkor_driver = _falkor_driver(falkor_log)
+    falkor_edges = await edge_fulltext_search(
+        falkor_driver, 'robo', SearchFilters(), ['policia']
+    )
+
+    # Default arm: one RELATES_TO index holding the same two edges.
+    default_driver = _plain_driver(GraphProvider.NEO4J)
+    all_records = [r for records in WRITTEN_EDGES.values() for r in records]
+    default_driver.execute_query = AsyncMock(return_value=(all_records, None, None))
+    default_edges = await edge_fulltext_search(
+        default_driver, 'robo', SearchFilters(), ['policia']
+    )
+
+    assert {e.uuid for e in falkor_edges} == {e.uuid for e in default_edges}
+    assert {e.fact for e in falkor_edges} == {e.fact for e in default_edges}
+    assert falkor_edges
