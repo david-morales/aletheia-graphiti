@@ -452,8 +452,27 @@ async def test_get_schema_issues_the_flavours_relationship_census(monkeypatch, f
 
     expected = flavour.census_queries()["rel_counts"]
     assert expected in driver.queries, (expected, driver.queries)
-    # ...and the raw dialect-blind text is gone for good.
-    assert "MATCH ()-[r]->() RETURN type(r) AS rel_type" not in driver.queries
+
+    # ...and the raw dialect-blind text is gone for good. Written as a SUBSTRING
+    # test over each issued query, not `needle not in driver.queries`: that form
+    # compares whole elements, so a needle that is any prefix of a real query
+    # can never match and the assertion can never fail — it would have passed
+    # against the unfixed server.
+    relationship_censuses = [q for q in driver.queries if "AS rel_type" in q]
+    assert relationship_censuses, driver.queries
+    for issued in relationship_censuses:
+        assert "MATCH ()-[r]->()" not in issued, issued
+        # BOTH endpoints constrained, checked without assuming HOW: FalkorDB
+        # scopes in the pattern (`(t:Entity)`), AGE in the WHERE (`t.labels IS
+        # NOT NULL`), and a check that knew only one style would call the other
+        # flavour unscoped. A census constraining only the source still counts
+        # every Episodic->Entity bookkeeping edge — MUTANT-3.
+        for var in ("s", "t"):
+            constrained = f"({var}:" in issued or f"{var}." in issued
+            assert constrained, (
+                f"census leaves `{var}` unconstrained, so bookkeeping edges are "
+                f"still counted: {issued}"
+            )
 
 
 @pytest.mark.asyncio

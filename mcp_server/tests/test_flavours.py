@@ -234,13 +234,27 @@ def test_the_relationship_census_scopes_endpoints_like_the_edge_profile():
     FalkorDB / openCypher, the stored `labels` list on AGE, where Episodic
     vertices carry none — so the check is that each flavour's census reuses its
     OWN profile scope rather than that the two texts match.
+
+    BOTH ENDPOINTS, checked separately. `MENTIONS` runs Episodic -> Entity, so a
+    census that scoped only the source (`(s:Entity)-[r]->(t)`) would still admit
+    every bookkeeping edge in the other direction while looking scoped — and a
+    single "is the scope mentioned" assertion passes it happily.
     """
     for flavour in _all_flavours():
         census = flavour.census_queries()["rel_counts"]
         profile = flavour.profile_queries()["edge_types"]
-        for scope in ("(s:Entity)", "s.labels IS NOT NULL"):
-            if scope in profile:
-                assert scope in census, (
-                    f"{flavour.name}: census does not carry the profile's `{scope}` "
-                    f"endpoint scope, so the two disagree about bookkeeping edges"
-                )
+        for source_scope, target_scope in (
+            ("(s:Entity)", "(t:Entity)"),
+            ("s.labels IS NOT NULL", "t.labels IS NOT NULL"),
+        ):
+            if source_scope not in profile:
+                continue
+            assert source_scope in census, (
+                f"{flavour.name}: census does not carry the profile's `{source_scope}` "
+                f"SOURCE scope, so the two disagree about bookkeeping edges"
+            )
+            assert target_scope in census, (
+                f"{flavour.name}: census scopes the source but not the TARGET "
+                f"(`{target_scope}` missing) — an Episodic->Entity edge like "
+                f"MENTIONS is still counted"
+            )
