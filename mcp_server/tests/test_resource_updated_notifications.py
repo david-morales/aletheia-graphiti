@@ -295,6 +295,68 @@ class TestAFailedRefreshAnnouncesNoUpdate:
         )
 
 
+class TestAFailedRefreshSTILLAnnouncesABodyThatMoved:
+    """The other half of the `finally`, and the reason it has to be one.
+
+    Restoring the registries restores OBJECTS, not payloads.
+    `graphiti://schema` is a lazy `FunctionResource`: the snapshot puts the same
+    function back, and that function renders live. So a refresh whose census
+    raised can still be serving a schema body different from the one it served
+    before — the graph moved, the census could not read it, and the resource
+    that reads through `get_schema` reflects the move anyway.
+
+    Deciding emission on the success path instead would lose exactly this case,
+    and lose it silently: the mutant passes every other test in this module,
+    because the other three resources are eager text that a restore really does
+    put back byte-for-byte.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_census_with_a_moved_schema_payload_announces_it(
+        self, wired, monkeypatch
+    ):
+        bus, _service, profiles = wired
+        payload = {'nodes': [{'label': 'Widget', 'count': 3}]}
+
+        async def _schema():
+            return payload
+
+        monkeypatch.setattr(srv, 'get_schema', _schema)
+        await _boot(profiles, _profile())
+
+        # The graph moved; the census that would have seen it fails.
+        payload = {'nodes': [{'label': 'Widget', 'count': 9}]}
+        profiles['next'] = RuntimeError('graph unreachable mid-refresh')
+
+        assert await srv.refresh_domain_surface('test') is False
+        assert SCHEMA in _updated(bus.published), (
+            'a failed refresh left a MOVED body served and announced nothing — '
+            'the content comparison is not in the `finally`'
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_eager_resources_are_silent_on_that_same_refresh(
+        self, wired, monkeypatch
+    ):
+        """Scoped, not blanket: the three profile-rendered bodies really were
+        restored, so announcing them too would be the no-op event the whole
+        design forbids."""
+        bus, _service, profiles = wired
+        payload = {'nodes': [{'label': 'Widget', 'count': 3}]}
+
+        async def _schema():
+            return payload
+
+        monkeypatch.setattr(srv, 'get_schema', _schema)
+        await _boot(profiles, _profile())
+
+        payload = {'nodes': [{'label': 'Widget', 'count': 9}]}
+        profiles['next'] = RuntimeError('graph unreachable mid-refresh')
+        await srv.refresh_domain_surface('test')
+
+        assert _updated(bus.published) == {SCHEMA}, bus.published
+
+
 class TestTheDegradedPathComparesAgainstWhatWasSERVED:
     """`register_fallback_tools` prunes the three profile-rendered resources —
     the one case where the URI set genuinely moves. The prune must not reset the
