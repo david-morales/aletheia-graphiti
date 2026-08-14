@@ -151,6 +151,33 @@ def _dialect_lines(flavour: Flavour | None) -> list[str]:
     ]
 
 
+def _other_primitives_lines() -> list[str]:
+    """Where else to look: the served primitives this catalog is not about (R1).
+
+    `instructions` is a TOOL catalog by construction, and it arrives with the
+    handshake — which makes it the one document many consumers read and the
+    only place they would learn that this server also serves resources, a
+    prompt and a change-notification stream. Saying nothing left those three
+    discoverable only by a client that thought to ask.
+
+    A POINTER, not a copy. Enumerating the members here would create a second
+    catalogue of `resources/list` and `prompts/list`, maintained by hand and
+    free to drift from the lists it describes — the rendered-but-not-true
+    defect class re-entering through prose. This names kinds and the call that
+    answers for each, so there is nothing in it that can go stale: it stays
+    true whether the server serves one resource or forty, which is exactly what
+    the degraded arm needs (it serves fewer, and says so where it says why).
+    """
+    return [
+        '',
+        'Beyond this catalog: the same server serves resources (`resources/list`),',
+        'prompts (`prompts/list`), and a `subscriptions/listen` stream that pushes',
+        'list changes and per-resource content updates as the graph moves. Read those',
+        'lists for what they hold -- they are deliberately not repeated here, because',
+        'a copy in prose is a copy that drifts from the list it describes.',
+    ]
+
+
 def build_degraded_instructions(
     *,
     group_id: str,
@@ -191,6 +218,7 @@ def build_degraded_instructions(
     parts += _analytical_queries_lines()
     parts += _census_caveat_lines(flavour)
     parts += _dialect_lines(flavour)
+    parts += _other_primitives_lines()
     return '\n'.join(parts)
 
 
@@ -261,6 +289,9 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
 
     # Backend Cypher dialect — short form (ADR-019 R1/R6)
     parts += _dialect_lines(flavour)
+
+    # Where else to look — the served primitives this catalog is not about (R1)
+    parts += _other_primitives_lines()
 
     return '\n'.join(parts)
 

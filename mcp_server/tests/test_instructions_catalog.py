@@ -125,3 +125,57 @@ def test_read_only_and_writing_tools_are_not_presented_as_interchangeable(instru
     """The catalog must separate reading from writing, not list all 18 flat."""
     assert 'Writing to the graph' in instructions
     assert 'Destructive' in instructions
+
+
+# ---------------------------------------------------------------------------
+# R1: the announcement is a TOOL catalog, and says so by pointing elsewhere
+# ---------------------------------------------------------------------------
+#
+# The P2 smell: `instructions` describes 18 tools and never mentions that the
+# same server also serves resources, a prompt and a change-notification stream,
+# so a consumer reading only the announcement — which is most of them, since it
+# arrives with the handshake — cannot learn those exist.
+#
+# The ruling was a POINTER, not an enumeration. Enumerating the members would
+# create a second copy of the resource and prompt catalogues, maintained by hand,
+# free to drift from `resources/list` and `prompts/list` — the rendered-but-not-
+# true defect class, re-entering through prose. A pointer names KINDS and the
+# call that answers for each, so there is nothing in it that can go stale.
+
+
+@pytest.mark.parametrize(
+    'primitive', ['resources/list', 'prompts/list', 'subscriptions/listen']
+)
+def test_the_announcement_points_at_the_other_served_primitives(instructions, primitive):
+    assert primitive in instructions, (
+        f'the announcement never tells a consumer that {primitive} is served'
+    )
+
+
+@pytest.mark.parametrize('state', ['healthy', 'healthy-empty'])
+def test_the_pointer_does_not_copy_the_catalogues_it_points_at(state):
+    """The anti-drift half, and the reason this is a pointer at all.
+
+    Healthy arms only. The DEGRADED announcement names `graphiti://schema` and
+    the three pruned resources on purpose — it is reporting a state change the
+    URI list cannot explain by itself — and that paragraph is state-specific,
+    not a catalogue.
+    """
+    profile = _profile() if state == 'healthy' else DomainProfile(group_id='empty')
+    text = build_instructions(profile, AgeFlavour())
+    copied = [
+        member
+        for member in (
+            'graphiti://domain_summary',
+            'graphiti://entity_catalog',
+            'graphiti://relationship_types',
+            'graphiti://schema',
+            'investigate',
+        )
+        if member in text
+    ]
+    assert not copied, (
+        f'the announcement enumerates members of a catalogue it does not own: '
+        f'{copied}. A second copy of `resources/list` / `prompts/list` in prose '
+        f'is a copy that drifts.'
+    )
