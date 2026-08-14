@@ -41,12 +41,22 @@ def _restore_server_globals():
     Same reasoning as `test_canonical_tool_names.py`: `register_dynamic_tools` /
     `register_fallback_tools` mutate `srv.mcp` in place, and a leaked
     registration silently satisfies another module's surface guard.
+
+    P4's last-served fingerprint map is part of that state, and it is CLEARED
+    for the duration rather than merely restored. These tests register resources
+    DIRECTLY, bypassing the two seams that record what was served, so a map
+    carrying anyone else's fingerprints for these URIs makes the hand-registered
+    bodies look like a content change — a `resources/updated` fired by test
+    order rather than by the code under test. Cleared, every test here starts
+    from "this process has served nothing", which is what they all assume.
     """
     mcp = srv.mcp
     tools = dict(mcp._tool_manager._tools)
     resources = dict(mcp._resource_manager._resources)
     instructions = mcp._lowlevel_server.instructions
     service = srv.graphiti_service
+    served = dict(srv._last_served_resource_bodies)
+    srv._last_served_resource_bodies.clear()
     try:
         yield
     finally:
@@ -56,6 +66,8 @@ def _restore_server_globals():
         mcp._resource_manager._resources.update(resources)
         mcp._lowlevel_server.instructions = instructions
         srv.graphiti_service = service
+        srv._last_served_resource_bodies.clear()
+        srv._last_served_resource_bodies.update(served)
         srv._surface_refresh_marks = 0
         task = srv._surface_refresh_task
         if task is not None and not task.done():

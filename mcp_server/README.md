@@ -309,7 +309,7 @@ list, so a client can tell "not profiled" from "profiled and empty".
 Because the list holds exactly one statically registered prompt, the announced
 `prompts.listChanged` is a capability this server never needs to exercise.
 
-### Push-based freshness (`listChanged`)
+### Push-based freshness (`listChanged`, `resources/updated`)
 
 The served surface is rendered from a census of the graph: the nine dynamic tool
 descriptions, the three profile resources and the server `instructions` all
@@ -325,11 +325,29 @@ the result over `subscriptions/listen` (SEP-2575, protocol `2026-07-28`):
 - `notifications/resources/list_changed` — when the announced resource **URI
   set** changed, which happens when a connector that started degraded recovers
   (the degraded surface serves 1 resource, the healthy one 4).
+- `notifications/resources/updated` — per URI, when the **body** served at that
+  URI changed. This is what backs the announced `resources.subscribe`: a client
+  that subscribed to `graphiti://domain_summary` through `subscriptions/listen`
+  is told when a re-census rewrote it, and is told nothing when the re-render
+  came out byte-identical.
 
-Both are emitted **only when the surface actually moved**. A re-census that
+All three are emitted **only when the surface actually moved**. A re-census that
 produces identical text announces nothing, and a change to a resource's *body*
-with no change to the resource *list* is not a `resources/list_changed` — that
-is `resources/updated`, which this server does not yet implement.
+with no change to the resource *list* is a `resources/updated`, never a
+`resources/list_changed` — the two answer different questions.
+
+The comparison is against the body this process **last served** at that URI, not
+against the previous refresh, and the fingerprint of a URI that leaves the list
+is kept rather than dropped. A URI the server has never served draws no
+`updated` — its first appearance is a list change — and neither does one absent
+from the current list, since nothing is served there to be stale.
+
+Keeping the fingerprint is **defensive**, not a live path. The only code that
+prunes resources is the degraded fallback, which runs at startup and nowhere
+else: `refresh_domain_surface` deliberately does not fall through to it, so a
+running server cannot go healthy → degraded → restored. Keying last-served state
+means a future in-process degrade path could not silently reset the content
+baseline and swallow the `updated` a client holding the old body is owed.
 
 The window is a rate limit, not a quiescence timer: it is measured from the
 FIRST mark and always fires, so the cost is one census per window for as long as

@@ -27,6 +27,23 @@ from tool_annotations import TOOL_ANNOTATIONS
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _restore_last_served_bodies():
+    """Every test in this module may drive `_build_and_register_domain_surface`,
+    whose last act records the P4 content baseline into process-global state no
+    `monkeypatch` tracks. Autouse — a per-fixture save/restore is bypassable,
+    and the healthy-arm test below takes `monkeypatch`, not `degraded`, so it
+    would leak all four fingerprints into the freshness suites, where a
+    hand-registered resource then reads as a content change.
+    """
+    served = dict(srv._last_served_resource_bodies)
+    try:
+        yield
+    finally:
+        srv._last_served_resource_bodies.clear()
+        srv._last_served_resource_bodies.update(served)
+
+
 class _StubClient:
     driver = object()
 
@@ -46,7 +63,13 @@ class _StubService:
 
 @pytest.fixture
 def degraded(monkeypatch):
-    """Run the real domain-surface build with introspection guaranteed to fail."""
+    """Run the real domain-surface build with introspection guaranteed to fail.
+
+    The P4 content-baseline leak this module used to cause is closed at source
+    by `_restore_last_served_bodies` above — autouse, so no test can bypass it
+    the way a per-fixture save/restore could be (and the healthy-arm test did).
+    The freshness suites keep their own clear-on-entry as defence in depth.
+    """
     service = _StubService()
     monkeypatch.setattr(srv, 'graphiti_service', service)
     monkeypatch.setattr(srv, 'config', service.config, raising=False)
@@ -55,7 +78,7 @@ def degraded(monkeypatch):
         raise RuntimeError('graph introspection exploded')
 
     monkeypatch.setattr(srv, 'build_domain_profile', _boom)
-    return service
+    yield service
 
 
 async def test_the_degraded_surface_still_serves_all_eighteen_tools(degraded):

@@ -5,6 +5,7 @@ Graphiti MCP Server - Exposes Graphiti functionality through the Model Context P
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -53,7 +54,7 @@ from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.resources.types import FunctionResource, TextResource
-from mcp.server.subscriptions import ResourcesListChanged, ToolsListChanged
+from mcp.server.subscriptions import ResourcesListChanged, ResourceUpdated, ToolsListChanged
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
@@ -2572,6 +2573,11 @@ async def _build_and_register_domain_surface() -> None:
         logger.error(f'Failed to build domain profile, degrading to static descriptions: {e}')
         register_fallback_tools(reason=str(e))
 
+    # Both branches land here, and both need the baseline: the degraded surface
+    # serves one resource and a later recovery has to compare that one against
+    # what was actually served, not against nothing (P4).
+    await _record_served_resource_bodies()
+
 
 def _register_schema_resource() -> None:
     """Serve the schema as a resource, not only as a tool (ADR-019 R4 / A-D8).
@@ -2678,8 +2684,11 @@ def register_resources(profile: DomainProfile) -> None:
 # fingerprint the list, compare across the re-render, and publish a
 # `PromptsListChanged` on the subscription bus only when it actually moved.
 #
-# After P2 the one remaining dishonest bit is `resources.subscribe`, which is
-# announced `true` with no content subscriptions behind it. That is P4.
+# `resources.subscribe` was the last announced bit with nothing behind it. P4
+# closed it: `resources/updated` now fires when a served body actually moves
+# (see "Content freshness" below), so of the four derived bits, three have a
+# publisher and the fourth is this one — honest, merely louder than it needs to
+# be.
 
 
 def _live_domain_profile() -> DomainProfile | None:
@@ -2738,12 +2747,20 @@ def investigate(
 # announce ONLY what actually moved. See the ALETHEIA repo:
 # docs/plans/2026-08-13-mcp-p3-listchanged-design.md (not in this repo).
 #
-# Of the four bits, two are now backed. `prompts` was declared-and-EMPTY when
-# this was written; P2 (the section above) gave it a real prompt, so
-# `prompts.listChanged` is now merely louder than needed rather than false — one
-# statically registered prompt, a list that cannot move. `resources.subscribe`
-# is still announced with no content subscriptions behind it: that is P4, and it
-# is the last dishonest bit on this surface.
+# THE LEDGER, CLOSED. All four bits are now honest, by three different routes.
+# `tools.listChanged` and `resources.listChanged` are published here, from the
+# fingerprint comparison below. `prompts` was declared-and-EMPTY when this was
+# written; P2 (the section above) gave it a real prompt, so
+# `prompts.listChanged` is merely louder than needed rather than false — one
+# statically registered prompt, a list that cannot move.
+# `resources.subscribe` was the last one announced with nothing behind it, and
+# P4 gave it its event: `resources/updated`, published from the "Content
+# freshness" section further down when a SERVED body actually moves. Design:
+# ALETHEIA repo `docs/plans/2026-08-14-mcp-p4-resource-subscribe.md`.
+#
+# The rule the three publishers share is the one to keep: announce ONLY what
+# actually moved. A channel that fires on no-ops is a channel consumers learn
+# to ignore, which costs more than never having announced at all.
 
 DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS = 60.0
 """Coalescing window between a graph mutation and the re-census it triggers.
@@ -2905,14 +2922,114 @@ def _resource_surface_fingerprint() -> tuple[str, ...]:
     return tuple(sorted(mcp._resource_manager._resources))
 
 
-async def _publish_surface_change(*, tools: bool, resources: bool) -> None:
-    """Publish list-change events to `subscriptions/listen` subscribers.
+# ---------------------------------------------------------------------------
+# Content freshness (P4) — `resources/updated`
+# ---------------------------------------------------------------------------
+
+_last_served_resource_bodies: dict[str, str] = {}
+"""URI -> fingerprint of the body this process last SERVED there.
+
+LAST-SERVED, not last-refreshed: entries are deliberately never removed, so a
+URI that leaves `resources/list` and comes back is compared against what a
+consumer could actually be holding rather than against nothing. A URI with no
+entry has never been served by this process — its first appearance is a LIST
+change, and announcing `updated` for a body nobody can be holding would be the
+same declared-and-unbacked defect in the other direction.
+
+That retention is DEFENSIVE, not a live path. The only pruner is
+`register_fallback_tools`, which runs at startup and nowhere else —
+`refresh_domain_surface` deliberately does not fall through to it — so a running
+server cannot go healthy, degraded, then restored. Keying last-served state is
+what would keep a future in-process degrade path from resetting the content
+baseline and swallowing the `updated` a client holding the old body is owed. The
+guards for it stand for the same reason: the semantics are cheaper to hold now
+than to rediscover when that path arrives.
+
+Process-global, like the registries it mirrors. It is a cache-coherence hint,
+not state worth persisting: a restart re-reads everything anyway.
+"""
+
+
+def _body_fingerprint(body: str | bytes) -> str:
+    """SHA-256 of a rendered resource body. `Resource.read()` returns either."""
+    return hashlib.sha256(body.encode('utf-8') if isinstance(body, str) else body).hexdigest()
+
+
+async def _rendered_resource_fingerprints() -> dict[str, str]:
+    """Fingerprint what `resources/read` would return RIGHT NOW, per URI.
+
+    Goes through each `Resource.read()` rather than reaching for `.text`,
+    because the four are not the same kind: three are eager `TextResource`s
+    rendered from the profile, while `graphiti://schema` is a lazy
+    `FunctionResource` whose body only exists once rendered. Reading it here
+    costs one `get_schema` per refresh — the same payload the census just
+    produced, and the cost the design accepted for fingerprinting the one
+    resource that has no stored text.
+
+    A body that cannot be rendered is OMITTED rather than recorded, which leaves
+    its last-served entry standing and draws no event: a resource that raises on
+    read was not served either, and telling a subscriber to refetch it would
+    only fail for the same reason.
+    """
+    fingerprints: dict[str, str] = {}
+    for uri, resource in list(mcp._resource_manager._resources.items()):
+        try:
+            fingerprints[uri] = _body_fingerprint(await resource.read())
+        except Exception as e:  # noqa: BLE001 — one unreadable body must not stop the rest
+            logger.warning('Resource %s could not be rendered for fingerprinting: %s', uri, e)
+    return fingerprints
+
+
+async def _moved_resource_uris() -> tuple[str, ...]:
+    """The URIs whose served body moved since it was last served, and record it.
+
+    Both halves in one call on purpose: a comparison that read the map without
+    updating it would re-announce the same move on every later refresh, an event
+    storm proportional to the ingest rate rather than to change.
+
+    Returns them sorted, so the published order is deterministic.
+    """
+    current = await _rendered_resource_fingerprints()
+    moved = tuple(
+        sorted(
+            uri
+            for uri, fingerprint in current.items()
+            if uri in _last_served_resource_bodies
+            and _last_served_resource_bodies[uri] != fingerprint
+        )
+    )
+    _last_served_resource_bodies.update(current)
+    return moved
+
+
+async def _record_served_resource_bodies() -> None:
+    """Take the startup baseline: what this process serves, announcing nothing.
+
+    Called once the startup surface is up — healthy or degraded. The movement it
+    computes is DISCARDED, and that is the point: no client can be listening
+    before the transport binds, so a `resources/updated` here could only be a
+    notification nobody receives — the dishonesty this wave removes, not another
+    instance of it. What matters is the side effect, the baseline every later
+    refresh compares against.
+    """
+    await _moved_resource_uris()
+
+
+async def _publish_surface_change(
+    *, tools: bool, resources: bool, updated: tuple[str, ...] = ()
+) -> None:
+    """Publish surface events to `subscriptions/listen` subscribers.
 
     The bus carries typed events, not wire notifications: the SDK's
     `ListenHandler` owns per-stream filtering and subscription-id stamping, so a
-    client that did not ask for a kind never receives it.
+    client that did not ask for a kind — or for a particular resource URI —
+    never receives it.
+
+    List events first, then the per-URI content events: a consumer that holds
+    both subscriptions learns the shape of the surface before it is told which
+    of its bodies to refetch.
     """
-    if not (tools or resources):
+    if not (tools or resources or updated):
         return
     bus = getattr(mcp, '_subscriptions', None)
     if bus is None:  # pragma: no cover - MCPServer always builds one
@@ -2922,6 +3039,8 @@ async def _publish_surface_change(*, tools: bool, resources: bool) -> None:
         await bus.publish(ToolsListChanged())
     if resources:
         await bus.publish(ResourcesListChanged())
+    for uri in updated:
+        await bus.publish(ResourceUpdated(uri=uri))
 
 
 async def refresh_domain_surface(reason: str) -> bool:
@@ -2980,12 +3099,19 @@ async def refresh_domain_surface(reason: str) -> bool:
             # is genuinely unchanged, which is what the comparison decides.
             tools_changed = _tool_surface_fingerprint() != tools_before
             resources_changed = _resource_surface_fingerprint() != resources_before
+            # The content channel joins the same discipline, decided per URI on
+            # the SERVED body (P4). A restored surface serves what it served, so
+            # the fingerprints match and nothing is announced; a surface that
+            # moved is announced whichever branch left it that way.
+            updated_uris = await _moved_resource_uris()
 
-    await _publish_surface_change(tools=tools_changed, resources=resources_changed)
+    await _publish_surface_change(
+        tools=tools_changed, resources=resources_changed, updated=updated_uris
+    )
     logger.info(
         'Domain surface refresh (%s): rebuilt=%s tools_list_changed=%s '
-        'resources_list_changed=%s',
-        reason, rebuilt, tools_changed, resources_changed,
+        'resources_list_changed=%s resources_updated=%s',
+        reason, rebuilt, tools_changed, resources_changed, list(updated_uris),
     )
     return rebuilt
 
