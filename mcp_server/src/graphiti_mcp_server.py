@@ -13,7 +13,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from dotenv import load_dotenv
 from graphiti_core import Graphiti
@@ -55,7 +55,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.resources.types import FunctionResource, TextResource
 from mcp.server.subscriptions import ResourcesListChanged, ToolsListChanged
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
 from config.schema import GraphitiConfig, ServerConfig
@@ -69,6 +69,13 @@ from tool_descriptions import (
     build_explore_ontology_description,
     build_get_schema_description,
     build_graph_query_description,
+)
+from prompt_surface import (
+    INVESTIGATE_PROMPT_DESCRIPTION,
+    INVESTIGATE_PROMPT_NAME,
+    INVESTIGATE_PROMPT_TITLE,
+    TOPIC_ARGUMENT_DESCRIPTION,
+    build_investigate_prompt,
 )
 from models.response_types import (
     AddMemoryResult,
@@ -2653,6 +2660,60 @@ def register_resources(profile: DomainProfile) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The prompt surface (P2) — backing the announced `prompts` capability
+# ---------------------------------------------------------------------------
+#
+# Registered at IMPORT time, not from `initialize_server`, and deliberately so:
+# the announced list is then the same on every startup path, including the ones
+# that never reach a census. Only the MESSAGES depend on the graph.
+#
+# HONESTY. The section below records how the SDK derives the capability bits at
+# the 2026-07-28 era: `prompts.listChanged` comes from the unconditionally-served
+# `subscriptions/listen`, not from anything this server chose, so it is announced
+# `true` whether or not the prompt list can move. With ONE statically registered
+# prompt it cannot move, which makes `prompts/listChanged` a MAY-emit this server
+# never needs to exercise — the list is honest, the flag is simply louder than it
+# needs to be. Should the prompt list ever become dynamic (per-profile prompts,
+# say), that stops being harmless: wire it through the P3 pattern below —
+# fingerprint the list, compare across the re-render, and publish a
+# `PromptsListChanged` on the subscription bus only when it actually moved.
+#
+# After P2 the one remaining dishonest bit is `resources.subscribe`, which is
+# announced `true` with no content subscriptions behind it. That is P4.
+
+
+def _live_domain_profile() -> DomainProfile | None:
+    """The profile the connector holds RIGHT NOW, or None if it holds none.
+
+    None on three real paths, all of which must render rather than raise: before
+    startup finishes the census, on a deployment that only ever ingests, and
+    after introspection fails and the surface degrades (`register_fallback_tools`
+    leaves `domain_profile` unset for exactly that reason).
+    """
+    if graphiti_service is None:
+        return None
+    return graphiti_service.domain_profile
+
+
+@mcp.prompt(
+    name=INVESTIGATE_PROMPT_NAME,
+    title=INVESTIGATE_PROMPT_TITLE,
+    description=INVESTIGATE_PROMPT_DESCRIPTION,
+)
+def investigate(
+    topic: Annotated[str, Field(description=TOPIC_ARGUMENT_DESCRIPTION)],
+) -> str:
+    """Render the investigation workflow against the CURRENT graph census.
+
+    The render is LAZY — it happens here, per `prompts/get`, reading the live
+    profile — which is what keeps the prompt fresh without any of the
+    invalidation machinery the tool descriptions need (P3): there is no cached
+    text to go stale.
+    """
+    return build_investigate_prompt(topic, _live_domain_profile())
+
+
+# ---------------------------------------------------------------------------
 # Push-based freshness (P3) — `subscriptions/listen`, SEP-2575
 # ---------------------------------------------------------------------------
 #
@@ -2674,10 +2735,15 @@ def register_resources(profile: DomainProfile) -> None:
 #
 # So the fix is the missing runtime event, not a flag: re-census on a coalescing
 # window after the graph changes, re-render the surface, and announce — but
-# announce ONLY what actually moved. `prompts.listChanged` (no prompts exist)
-# and `resources.subscribe` (content subscriptions) stay untrue and belong to
-# P2 and P4; see the ALETHEIA repo:
+# announce ONLY what actually moved. See the ALETHEIA repo:
 # docs/plans/2026-08-13-mcp-p3-listchanged-design.md (not in this repo).
+#
+# Of the four bits, two are now backed. `prompts` was declared-and-EMPTY when
+# this was written; P2 (the section above) gave it a real prompt, so
+# `prompts.listChanged` is now merely louder than needed rather than false — one
+# statically registered prompt, a list that cannot move. `resources.subscribe`
+# is still announced with no content subscriptions behind it: that is P4, and it
+# is the last dishonest bit on this surface.
 
 DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS = 60.0
 """Coalescing window between a graph mutation and the re-census it triggers.

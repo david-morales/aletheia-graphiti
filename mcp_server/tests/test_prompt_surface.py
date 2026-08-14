@@ -64,10 +64,16 @@ def live_profile(monkeypatch):
 
 
 async def _render(topic: str = 'a topic') -> str:
-    """The rendered `prompts/get` text, as a client would read it."""
+    """The rendered `prompts/get` text, as a client would read it.
+
+    Goes through `mcp.get_prompt` rather than calling the builder, so the
+    argument validation, the message conversion and the response shape are all
+    on the path under test — the builder alone would not catch a prompt that is
+    registered wrong.
+    """
     result = await srv.mcp.get_prompt(prompt_surface.INVESTIGATE_PROMPT_NAME, {'topic': topic})
     return '\n'.join(
-        m['content']['text'] for m in result.messages if m['content']['type'] == 'text'
+        m.content.text for m in result.messages if m.content.type == 'text'
     )
 
 
@@ -253,47 +259,7 @@ class TestTheWorkflowUsesTheRealSurface:
         assert 'dialect_reference' in await _render()
 
 
-class TestThePromptIsDomainAgnostic:
-    """Hard Rule 2 / ADR-003, at the one surface that renders free prose.
-
-    `test_no_domain_leakage.py` scans every file under `src/` statically, so the
-    module is already covered there. This is the WIRE scan: what a client reads
-    after the profile has been substituted in.
-    """
-
-    @pytest.mark.asyncio
-    async def test_the_rendered_prompt_names_no_foreign_domain(self, live_profile):
-        from test_no_domain_leakage import _BANNED_RE
-
-        live_profile(_profile())
-        hits = sorted({m.group(0) for m in _BANNED_RE.finditer(await _render())})
-        assert not hits, f'the investigate prompt serves a foreign-domain term: {hits}'
-
-    @pytest.mark.asyncio
-    async def test_the_no_profile_render_names_no_foreign_domain(self, live_profile):
-        """The degraded text is unmasked prose — exactly where a leak survives."""
-        from test_no_domain_leakage import _BANNED_RE
-
-        live_profile(None)
-        hits = sorted({m.group(0) for m in _BANNED_RE.finditer(await _render())})
-        assert not hits, f'the no-profile render serves a foreign-domain term: {hits}'
-
-    @pytest.mark.asyncio
-    async def test_the_rendered_prompt_cites_no_repo_relative_document(self, live_profile):
-        """A-D10: a wire consumer cannot resolve `docs/whatever.md`."""
-        from test_no_domain_leakage import _REPO_DOC_RE
-
-        live_profile(_profile())
-        hits = sorted({m.group(0) for m in _REPO_DOC_RE.finditer(await _render())})
-        assert not hits, f'the investigate prompt cites an unresolvable repo path: {hits}'
-
-    def test_the_static_template_carries_no_profile_vocabulary(self):
-        """The template is the thing that must be domain-free BEFORE substitution.
-
-        Rendered against an empty profile there is no domain data to hide behind,
-        so what remains is the template itself.
-        """
-        from test_no_domain_leakage import _BANNED_RE
-
-        template = prompt_surface.build_investigate_prompt('T', None)
-        assert not _BANNED_RE.search(template)
+# The domain-agnosticism guards for this prompt live in
+# `test_no_domain_leakage.py`, next to the banned-term list they scan with —
+# duplicating that list here is how the two copies drift and the weaker one
+# starts passing.

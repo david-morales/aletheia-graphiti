@@ -26,6 +26,7 @@ from mcp.server.mcpserver import MCPServer
 
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
+from prompt_surface import build_investigate_prompt
 from tool_annotations import TOOL_ANNOTATIONS, annotations_for
 from tool_descriptions import build_degraded_instructions, build_instructions
 
@@ -155,6 +156,34 @@ def test_the_degraded_instructions_name_no_foreign_domain():
     )
     assert not _BANNED_RE.search(text)
     assert not _REPO_DOC_RE.search(text)
+
+
+def _rendered_prompt(profile: DomainProfile | None) -> str:
+    """The `investigate` prompt as `prompts/get` would serve it (P2).
+
+    The static scan above already reads `src/prompt_surface.py` — every file
+    under `src/` is a parameter of it. This is the WIRE scan, and it is the one
+    that matters for a prompt: the served text is template PLUS substituted
+    profile, and only the rendered form shows what a client actually reads.
+    """
+    return build_investigate_prompt('a topic', profile)
+
+
+@pytest.mark.parametrize('state', ['profiled', 'no-profile'])
+def test_the_investigate_prompt_names_no_foreign_domain(state):
+    """Both states. The no-profile render is unmasked template prose — exactly
+    the shape in which A-D3's aviation examples survived on the tool docstrings."""
+    profile = _neutral_profile() if state == 'profiled' else None
+    hits = sorted({m.group(0) for m in _BANNED_RE.finditer(_rendered_prompt(profile))})
+    assert not hits, f'the investigate prompt serves a foreign-domain term: {hits}'
+
+
+@pytest.mark.parametrize('state', ['profiled', 'no-profile'])
+def test_the_investigate_prompt_cites_no_repo_relative_document(state):
+    """A-D10: a wire consumer cannot resolve `docs/whatever.md`."""
+    profile = _neutral_profile() if state == 'profiled' else None
+    hits = sorted({m.group(0) for m in _REPO_DOC_RE.finditer(_rendered_prompt(profile))})
+    assert not hits, f'the investigate prompt cites an unresolvable repo path: {hits}'
 
 
 def test_the_guard_actually_catches_the_terms_it_claims_to():
