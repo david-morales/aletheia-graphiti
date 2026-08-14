@@ -441,6 +441,21 @@ async def test_get_schema_issues_the_flavours_property_keys_probe(monkeypatch, f
     assert expected in driver.queries, (expected, driver.queries)
 
 
+@pytest.mark.parametrize("flavour_cls", [FalkorDbFlavour, AgeFlavour])
+@pytest.mark.asyncio
+async def test_get_schema_issues_the_flavours_relationship_census(monkeypatch, flavour_cls):
+    """H-F4: the relationship census was raw `MATCH ()-[r]->()` in the server."""
+    flavour = flavour_cls()
+    driver = _StubDriver() if flavour_cls is FalkorDbFlavour else _AgeStubDriver()
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(flavour, driver))
+    await srv.get_schema()
+
+    expected = flavour.census_queries()["rel_counts"]
+    assert expected in driver.queries, (expected, driver.queries)
+    # ...and the raw dialect-blind text is gone for good.
+    assert "MATCH ()-[r]->() RETURN type(r) AS rel_type" not in driver.queries
+
+
 @pytest.mark.asyncio
 async def test_get_schema_announces_the_attribute_container_on_age(monkeypatch):
     """ADR-019 R6, dialect as data: the backend names its own nesting container.

@@ -742,6 +742,21 @@ class AgeFlavour(BaseFlavour):
                 "MATCH (n) WHERE n.labels IS NOT NULL "
                 "RETURN n.labels AS lbls, count(n) AS cnt"
             ),
+            # The SAME endpoint scope as _AGE_PROFILE_QUERIES['edge_types'], and
+            # for the same reason: Episodic vertices carry no `labels` list on
+            # this backend, so `IS NOT NULL` on both ends is what excludes the
+            # Episodic->Entity `MENTIONS` bookkeeping edge. Unscoped, get_schema
+            # advertised it as a domain relationship while domain_profile — the
+            # other half of the same connector's answer — filtered it out; the
+            # live two-flavour parity suite already pins the profile side
+            # (`"MENTIONS" not in edge_types`). No `group_id` filter here: the
+            # census has never had one, and adding it would change the FalkorDB
+            # arm's counts too.
+            "rel_counts": (
+                "MATCH (s)-[r]->(t) "
+                "WHERE s.labels IS NOT NULL AND t.labels IS NOT NULL "
+                "RETURN type(r) AS rel_type, count(r) AS cnt"
+            ),
             # `source_labels`/`target_labels` are the whole HIERARCHY here, so a
             # consumer picking positionally from them lands on an abstract
             # supertype: not `(n:X)`-matchable, and it merges genuinely distinct

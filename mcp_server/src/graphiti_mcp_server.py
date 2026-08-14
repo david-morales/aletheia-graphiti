@@ -1920,10 +1920,13 @@ async def get_schema() -> SchemaResponse:
             if storage_labels is not None and label not in storage_labels:
                 node_labels[label]['hierarchy'] = True
 
-        # 3. Relationship counts (single-pass)
-        rel_records, _, _ = await driver.execute_query(
-            'MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS cnt'
-        )
+        # 3. Relationship counts (single-pass). Flavour-owned like every census
+        #    around it: the bare `()-[r]->()` literal that used to sit here was
+        #    dialect-blind AND scope-blind, so it counted the Episodic->Entity
+        #    `MENTIONS` bookkeeping edge that `domain_profile.edge_types` — the
+        #    other half of this connector's answer to the same question — filters
+        #    out. Each flavour now reuses its own profile endpoint scope (H-F4).
+        rel_records, _, _ = await driver.execute_query(census['rel_counts'])
         rel_counts: dict[str, int] = {}
         for rec in rel_records:
             rel_type = rec.get('rel_type', '')

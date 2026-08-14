@@ -143,9 +143,22 @@ class BaseFlavour:
         `storage_labels` (alias `storage_label`) is the set of labels a vertex is
         actually STORED under. get_schema diffs it against the label census to mark
         the remainder `hierarchy: True` — labels that are censusable and searchable
-        but that no `MATCH (n:Label)` can reach."""
+        but that no `MATCH (n:Label)` can reach.
+
+        `rel_counts` (aliases `rel_type`/`cnt`) is the relationship census. Its
+        ENDPOINT SCOPE mirrors this flavour's own `profile_queries()['edge_types']`,
+        and that is a correctness requirement, not tidiness: both answer "which
+        relationship types does this graph hold", and while the census matched a
+        bare `()-[r]->()` the two tools of one connector reported different sets
+        for the same graph — the profile excluded the Episodic->Entity `MENTIONS`
+        bookkeeping edge, get_schema advertised it as a domain relationship (with
+        an empty `patterns` list, since both its endpoint labels are internal)."""
         return {
             "label_counts": "MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt",
+            "rel_counts": (
+                "MATCH (s:Entity)-[r]->(t:Entity) "
+                "RETURN type(r) AS rel_type, count(r) AS cnt"
+            ),
             "rel_patterns": (
                 "MATCH (s)-[r:`{rel_type}`]->(t) "
                 "RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20"

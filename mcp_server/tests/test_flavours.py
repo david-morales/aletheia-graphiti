@@ -210,3 +210,37 @@ def test_every_flavour_announces_whether_it_nests_its_attributes():
     assert AgeFlavour().attribute_container == "attributes"
 
 
+def test_every_flavour_owns_its_relationship_census():
+    """H-F4: the relationship census was raw dialect-blind Cypher in the server."""
+    for flavour in _all_flavours():
+        census = flavour.census_queries()
+        assert "rel_counts" in census, flavour.name
+        q = census["rel_counts"]
+        # The aliases the shared get_schema loop reads by key.
+        assert "AS rel_type" in q, flavour.name
+        assert "AS cnt" in q, flavour.name
+
+
+def test_the_relationship_census_scopes_endpoints_like_the_edge_profile():
+    """The census and `domain_profile.edge_types` must agree on what an edge IS.
+
+    Both answer "which relationship types does this graph hold". The profile
+    probe has always scoped its endpoints to entity vertices, so bookkeeping
+    edges (Episodic -> Entity `MENTIONS`) are excluded there; the census matched
+    `()-[r]->()` and included them. The same graph therefore reported two
+    different relationship sets through two tools of the same connector.
+
+    The scope is expressed differently per backend — `:Entity` labels on
+    FalkorDB / openCypher, the stored `labels` list on AGE, where Episodic
+    vertices carry none — so the check is that each flavour's census reuses its
+    OWN profile scope rather than that the two texts match.
+    """
+    for flavour in _all_flavours():
+        census = flavour.census_queries()["rel_counts"]
+        profile = flavour.profile_queries()["edge_types"]
+        for scope in ("(s:Entity)", "s.labels IS NOT NULL"):
+            if scope in profile:
+                assert scope in census, (
+                    f"{flavour.name}: census does not carry the profile's `{scope}` "
+                    f"endpoint scope, so the two disagree about bookkeeping edges"
+                )
