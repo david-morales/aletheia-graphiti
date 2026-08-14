@@ -167,14 +167,23 @@ def _other_primitives_lines() -> list[str]:
     answers for each, so there is nothing in it that can go stale: it stays
     true whether the server serves one resource or forty, which is exactly what
     the degraded arm needs (it serves fewer, and says so where it says why).
+
+    KINDS, AND NOT BEHAVIOUR, for the same reason. An earlier wording promised
+    the listen stream "pushes list changes and per-resource content updates as
+    the graph moves" — false under a supported configuration, since
+    `GRAPHITI_SURFACE_REFRESH_DEBOUNCE_SECONDS=0` disables the re-census
+    scheduler outright and the stream then carries nothing. Announcing a
+    behaviour an operator can switch off is the same class of defect as
+    announcing a capability with no publisher; naming the endpoint is true in
+    every configuration.
     """
     return [
         '',
         'Beyond this catalog: the same server serves resources (`resources/list`),',
-        'prompts (`prompts/list`), and a `subscriptions/listen` stream that pushes',
-        'list changes and per-resource content updates as the graph moves. Read those',
-        'lists for what they hold -- they are deliberately not repeated here, because',
-        'a copy in prose is a copy that drifts from the list it describes.',
+        'prompts (`prompts/list`), and a `subscriptions/listen` stream carrying the',
+        'change notifications for both. Read those lists for what they hold -- they',
+        'are deliberately not repeated here, because a copy in prose is a copy that',
+        'drifts from the list it describes.',
     ]
 
 

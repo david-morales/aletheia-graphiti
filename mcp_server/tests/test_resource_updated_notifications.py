@@ -19,11 +19,14 @@ P3 established for the list events: a byte-identical re-render announces
 nothing, because a channel that fires on no-ops is a channel consumers learn to
 ignore.
 
-The map keys LAST-SERVED state, not previous-refresh state, which is what makes
-the degraded path come out right: `register_fallback_tools` prunes the three
-profile-rendered resources, and when a later refresh restores them their
-membership move rides `ResourcesListChanged` while their bodies are compared
-against what was last actually served at those URIs.
+The map keys LAST-SERVED state, not previous-refresh state, so a URI that leaves
+`resources/list` and comes back has its membership move ride
+`ResourcesListChanged` while its body is compared against what was last actually
+served there. That case is DEFENSIVE: the only pruner is
+`register_fallback_tools`, which runs at startup and nowhere else, so a running
+server cannot go healthy, degraded, then restored. The class below drives the
+sequence anyway — the semantics are cheaper to pin now than to rediscover when
+an in-process degrade path arrives.
 """
 
 from __future__ import annotations
@@ -368,7 +371,14 @@ class TestTheDegradedPathComparesAgainstWhatWasSERVED:
     """`register_fallback_tools` prunes the three profile-rendered resources —
     the one case where the URI set genuinely moves. The prune must not reset the
     content baseline: a URI that returns with the body it had before is not an
-    update, and a URI that returns with a different one is."""
+    update, and a URI that returns with a different one is.
+
+    A DEFENSIVE guard, driven deliberately: that pruner runs at startup and
+    nowhere else, so a running server cannot reach healthy → degraded →
+    restored today. The sequence is exercised so that the day an in-process
+    degrade path lands, its content semantics are already decided rather than
+    inherited by accident.
+    """
 
     @pytest.mark.asyncio
     async def test_a_restore_with_the_same_bodies_announces_only_the_list(self, wired):

@@ -2929,14 +2929,21 @@ def _resource_surface_fingerprint() -> tuple[str, ...]:
 _last_served_resource_bodies: dict[str, str] = {}
 """URI -> fingerprint of the body this process last SERVED there.
 
-LAST-SERVED, not last-refreshed, and that distinction is the whole of the
-degraded story. `register_fallback_tools` prunes the three profile-rendered
-resources; entries are deliberately never removed from this map, so when a later
-refresh restores them their bodies are compared against what a consumer could
-actually be holding rather than against nothing. A URI with no entry has never
-been served by this process — its first appearance is a LIST change, and
-announcing `updated` for a body nobody can be holding would be the same
-declared-and-unbacked defect in the other direction.
+LAST-SERVED, not last-refreshed: entries are deliberately never removed, so a
+URI that leaves `resources/list` and comes back is compared against what a
+consumer could actually be holding rather than against nothing. A URI with no
+entry has never been served by this process — its first appearance is a LIST
+change, and announcing `updated` for a body nobody can be holding would be the
+same declared-and-unbacked defect in the other direction.
+
+That retention is DEFENSIVE, not a live path. The only pruner is
+`register_fallback_tools`, which runs at startup and nowhere else —
+`refresh_domain_surface` deliberately does not fall through to it — so a running
+server cannot go healthy, degraded, then restored. Keying last-served state is
+what would keep a future in-process degrade path from resetting the content
+baseline and swallowing the `updated` a client holding the old body is owed. The
+guards for it stand for the same reason: the semantics are cheaper to hold now
+than to rediscover when that path arrives.
 
 Process-global, like the registries it mirrors. It is a cache-coherence hint,
 not state worth persisting: a restart re-reads everything anyway.

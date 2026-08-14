@@ -337,12 +337,17 @@ with no change to the resource *list* is a `resources/updated`, never a
 `resources/list_changed` — the two answer different questions.
 
 The comparison is against the body this process **last served** at that URI, not
-against the previous refresh. That is what makes the degraded path come out
-right: the fallback surface prunes the three profile-rendered resources, and
-when a later refresh restores them their bodies are compared with what a client
-could actually be holding. A URI the server has never served draws no
-`updated` — its first appearance is a list change — and neither does one that is
-absent from the current list, since nothing is served there to be stale.
+against the previous refresh, and the fingerprint of a URI that leaves the list
+is kept rather than dropped. A URI the server has never served draws no
+`updated` — its first appearance is a list change — and neither does one absent
+from the current list, since nothing is served there to be stale.
+
+Keeping the fingerprint is **defensive**, not a live path. The only code that
+prunes resources is the degraded fallback, which runs at startup and nowhere
+else: `refresh_domain_surface` deliberately does not fall through to it, so a
+running server cannot go healthy → degraded → restored. Keying last-served state
+means a future in-process degrade path could not silently reset the content
+baseline and swallow the `updated` a client holding the old body is owed.
 
 The window is a rate limit, not a quiescence timer: it is measured from the
 FIRST mark and always fires, so the cost is one census per window for as long as
