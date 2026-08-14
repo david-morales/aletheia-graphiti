@@ -74,6 +74,12 @@ def _read_only_driver(driver_cls, **kwargs):
     scheduling happens inside __init__ itself; patching the instance afterwards
     would be too late. It is restored before returning so nothing else in the
     process inherits a crippled driver.
+
+    Caveat, and why this belongs in a probe rather than in a library: it mutates
+    a class attribute for the duration of the construction window, so any driver
+    built concurrently in the same process would inherit the no-op and silently
+    skip its index build. Fine for a single-shot script that constructs exactly
+    one driver before doing anything else; not fine anywhere else.
     """
     original = driver_cls.build_indices_and_constraints
 

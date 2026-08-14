@@ -59,6 +59,11 @@ GRAPH_RELATIONSHIPS = [
 ENTITY_EDGE_TYPES = {'DETIENE', 'INTERVIENE_AGENTE', 'HAS_MEMBER', 'RELATES_TO'}
 STRUCTURAL_ONLY_TYPES = {'MENTIONS', 'HAS_EPISODE', 'NEXT_EPISODE'}
 
+# The pattern that DEFINES an entity edge. Both the bm25 leg's type enumeration
+# and the cosine leg's MATCH have to spell exactly this, or they disagree about
+# what an entity edge is — which is the shape BUG-62 took.
+ENTITY_EDGE_PATTERN = '(n:Entity)-[e]->(m:Entity)'
+
 
 def _edge_record(uuid: str, name: str, fact: str) -> dict:
     """A record shaped like ``get_entity_edge_return_query`` returns."""
@@ -153,6 +158,14 @@ class FakeFalkorQueryLog:
         return cypher[start : cypher.index("'", start)]
 
     @property
+    def enumeration_queries(self) -> list[str]:
+        return [q for q in self.queries if 'type(e)' in q]
+
+    @property
+    def cosine_queries(self) -> list[str]:
+        return [q for q in self.queries if 'cosineDistance' in q]
+
+    @property
     def fulltext_queries(self) -> list[str]:
         return [q for q in self.queries if 'queryRelationships' in q]
 
@@ -235,13 +248,28 @@ async def test_resolve_entity_edge_types_matches_what_the_cosine_leg_reaches():
 
     The enumeration and the cosine MATCH are keyed the same way on purpose; if
     they ever diverge, one leg silently returns edges the other cannot see.
+
+    This asserts on the Cypher the code actually emits, not on the fake's
+    bookkeeping. A fake that answers by its own endpoint rule no matter what
+    pattern it is handed cannot tell an Entity-scoped enumeration from an
+    unscoped `MATCH (n)-[e]->(m)` — which would sweep MENTIONS and HAS_MEMBER
+    back in and hand BUG-62 straight back.
     """
     log = FakeFalkorQueryLog()
     driver = _falkor_driver(log)
 
     resolved = set(await resolve_entity_edge_types(driver))
-
     assert resolved == log.entity_edge_types
+
+    # The enumeration must be endpoint-scoped, in the emitted text.
+    assert len(log.enumeration_queries) == 1
+    assert ENTITY_EDGE_PATTERN in log.enumeration_queries[0]
+
+    await edge_similarity_search(driver, [0.1] * 8, None, None, SearchFilters(), ['policia'])
+
+    # ...and the cosine leg must ask for the very same pattern.
+    assert log.cosine_queries
+    assert all(ENTITY_EDGE_PATTERN in q for q in log.cosine_queries)
 
 
 async def test_resolve_entity_edge_types_falls_back_when_enumeration_fails():
