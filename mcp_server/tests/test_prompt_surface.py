@@ -17,6 +17,8 @@ fingerprint-and-notify machinery.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import re
 
 import pytest
@@ -42,7 +44,93 @@ WORKFLOW_TOOLS = frozenset(
 # names. Kept explicit and tiny: every addition here is a claim that some new
 # `snake_case` term in the prompt is a field rather than a stale tool name, and
 # that claim should cost a line of review.
-NON_TOOL_IDENTIFIERS = frozenset({'dialect_reference'})
+NON_TOOL_IDENTIFIERS = frozenset({'dialect_reference', 'group_id'})
+
+# Tool names this connector once served, or that its README once invented, and
+# does not serve now. A DENYLIST rather than an allowlist subtraction, and that
+# is what lets it carry a single-word name: the identifier heuristic below has
+# to require an underscore or it matches every English word in the prose (204 of
+# them, measured), so a one-word stale name is invisible to it. No name here is
+# single-word today — every retirement this connector has had was `snake_case`
+# — but the guard must not be the reason the next one slips through.
+RETIRED_TOOL_NAMES = frozenset(
+    {
+        # P1 renamed these on the fork, with no aliases.
+        'run_cypher',
+        'explore_node',
+        'profile_graph',
+        # Replaced by the unified `search`.
+        'search_nodes',
+        'search_facts',
+        'search_memory_nodes',
+        'search_memory_facts',
+        'get_entity_edge',
+        # Upstream README inventions this fork has never served (A-D5).
+        'add_triplet',
+        'summarize_saga',
+        'get_episode_entities',
+    }
+)
+
+
+def _static_text(source: str) -> str:
+    """Every string literal `source` can put in front of a client.
+
+    THE WHOLE MODULE, not two hand-picked builders. The narrow version scanned
+    `_workflow_lines` + `_reporting_lines` only, leaving `_census_lines`, the
+    `build_investigate_prompt` intro block and every module constant — the
+    prompt's own name, title, description and argument help, all of which ride
+    `prompts/list` — unscanned. The P2 ledger measured a retired name surviving
+    141 tests through exactly those gaps.
+
+    Non-docstring literals only. A string used as a STATEMENT is documentation:
+    it never reaches the wire, and it names plenty of identifier-shaped
+    internals (`_CENSUS_TYPE_LIMIT`, `render_domain_summary`,
+    `domain_profile._query_entity_types`) that would need an allowlist growing
+    with every comment. Comments are excluded by construction — they are not in
+    the AST.
+
+    f-strings contribute their STATIC parts only, which is the split the narrow
+    version achieved by avoiding the rendering builders altogether: profile data
+    enters through the interpolations, and a `group_id` like `prompt_graph` is
+    identifier-shaped without being a tool name.
+    """
+    tree = ast.parse(source)
+    documentation = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+    return '\n'.join(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in documentation
+    )
+
+
+def _unknown_identifiers(text: str) -> set[str]:
+    """`snake_case` words in `text` that are neither served tools nor known fields.
+
+    The underscore is load-bearing here and cannot be dropped: without it the
+    pattern matches every lowercase word, and the allowlist would have to become
+    an English dictionary. Single-word stale names are the denylist's job.
+    """
+    identifiers = set(re.findall(r'\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b', text))
+    return identifiers - set(TOOL_ANNOTATIONS) - NON_TOOL_IDENTIFIERS
+
+
+def _retired_names_in(text: str, retired) -> set[str]:
+    """Which of `retired` `text` names, on word boundaries and nothing else.
+
+    No identifier shape is required — that is the whole point. A denylist has no
+    false positives to bound, so a one-word name is as visible as a `snake_case`
+    one.
+    """
+    return {name for name in retired if re.search(rf'\b{re.escape(name)}\b', text)}
 
 
 def _profile() -> DomainProfile:
@@ -322,23 +410,120 @@ class TestTheWorkflowUsesTheRealSurface:
         Both halves are needed: the set catches drift within the served surface,
         this catches text referring to a surface that no longer exists.
 
-        Scans the STATIC builders rather than the rendered document on purpose.
+        Scans the STATIC text rather than the rendered document on purpose.
         Rendered text carries profile data, and a `group_id` like
         `prompt_graph` is identifier-shaped without being a tool name — so
         scanning the whole document either drowns in false positives or needs an
         allowlist that grows with every test fixture. The static text is where a
         stale tool name actually hides, and it has no profile data in it.
         """
-        static = '\n'.join(
-            prompt_surface._workflow_lines() + prompt_surface._reporting_lines()
-        )
-        # Identifier-shaped: lowercase with an underscore. That is what every
-        # canonical tool name looks like, and what a retired one looked like.
-        identifiers = set(re.findall(r'\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b', static))
-        unknown = identifiers - set(TOOL_ANNOTATIONS) - NON_TOOL_IDENTIFIERS
+        unknown = _unknown_identifiers(_static_text(inspect.getsource(prompt_surface)))
         assert not unknown, (
             f'the prompt names identifiers this server does not serve: {sorted(unknown)}'
         )
+
+    def test_the_static_text_names_no_retired_tool(self):
+        """The denylist half, which needs no identifier shape to see a name."""
+        named = _retired_names_in(
+            _static_text(inspect.getsource(prompt_surface)), RETIRED_TOOL_NAMES
+        )
+        assert not named, f'the prompt still names retired tools: {sorted(named)}'
+
+
+class TestTheScanReachesTheWHOLEModule:
+    """N1/N3 — the two gaps the P2 ledger measured, closed and pinned.
+
+    A retired name survived 141 tests because the scan looked at two of the
+    module's five text sources and required an underscore. These are mutation
+    tests: each plants a name in a COPY of the module's source at a site the
+    narrow scan could not see, and asserts the widened one does.
+
+    Copies, not monkeypatches, because what is under test is the SCAN — feeding
+    it a mutated source is the only way to prove it would have caught the defect
+    without shipping the defect.
+    """
+
+    SOURCE = inspect.getsource(prompt_surface)
+
+    def _plant(self, old: str, new: str) -> str:
+        assert old in self.SOURCE, f'the anchor moved: {old!r}'
+        return self.SOURCE.replace(old, new, 1)
+
+    def test_a_retired_name_in_the_census_block_is_caught(self):
+        """`_census_lines` was outside the old scan entirely."""
+        mutated = self._plant(
+            'Call get_schema to census the graph before planning.',
+            'Call search_nodes to census the graph before planning.',
+        )
+        assert _retired_names_in(_static_text(mutated), RETIRED_TOOL_NAMES) == {
+            'search_nodes'
+        }
+
+    def test_a_retired_name_in_the_intro_block_is_caught(self):
+        """The paragraph above `## This graph` is assembled inline in
+        `build_investigate_prompt`, in no builder the old scan named."""
+        mutated = self._plant(
+            'through this connector. Work from what the graph actually contains',
+            'through this connector. Use run_cypher on what the graph contains',
+        )
+        assert _retired_names_in(_static_text(mutated), RETIRED_TOOL_NAMES) == {
+            'run_cypher'
+        }
+
+    def test_a_retired_name_in_a_module_constant_is_caught(self):
+        """Module constants are the highest-value gap of the three: the name,
+        title, description and argument help all ride `prompts/list`, where a
+        stale tool name reaches every client that never calls `prompts/get`."""
+        mutated = self._plant(
+            'What to investigate, in natural language.',
+            'What to investigate, in natural language, via explore_node.',
+        )
+        assert _retired_names_in(_static_text(mutated), RETIRED_TOOL_NAMES) == {
+            'explore_node'
+        }
+
+    def test_a_SINGLE_WORD_retired_name_is_caught(self):
+        """N3: no underscore required.
+
+        The retired set carries no single-word member today — every retirement
+        this connector has had was `snake_case` — so the name is supplied here.
+        What is under test is that nothing in the matcher demands an underscore,
+        which is precisely what made the identifier heuristic blind to this
+        class.
+        """
+        mutated = self._plant(
+            'What to investigate, in natural language.',
+            'What to investigate, in natural language, via saga.',
+        )
+        assert _retired_names_in(_static_text(mutated), RETIRED_TOOL_NAMES | {'saga'}) == {
+            'saga'
+        }
+
+    def test_an_unknown_snake_case_identifier_anywhere_is_caught(self):
+        """The allowlist half, over the same widened text: a name nobody has
+        retired yet, because it was never a tool at all."""
+        mutated = self._plant(
+            'What to investigate, in natural language.',
+            'What to investigate, in natural language, via fetch_everything.',
+        )
+        assert _unknown_identifiers(_static_text(mutated)) == {'fetch_everything'}
+
+    def test_documentation_is_not_scanned(self):
+        """Docstrings and comments never reach a client, and they legitimately
+        name internals. Scanning them would force an allowlist that grows with
+        every comment — the cost that kept the old scan narrow."""
+        mutated = self._plant(
+            '"""The `investigate` prompt',
+            '"""The `investigate` prompt (was run_cypher-driven)',
+        )
+        assert _retired_names_in(_static_text(mutated), RETIRED_TOOL_NAMES) == set()
+
+    def test_profile_data_never_enters_the_scan(self):
+        """The f-string split: interpolations carry the graph's own vocabulary,
+        which is not the server's to vouch for."""
+        text = _static_text(self.SOURCE)
+        assert 'Graph partition' in text, 'the static half of the f-string is missing'
+        assert '{profile.group_id}' not in text
 
     @pytest.mark.asyncio
     async def test_it_defers_the_dialect_to_get_schema(self, live_profile):
