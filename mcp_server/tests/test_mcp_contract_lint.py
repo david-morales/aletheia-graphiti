@@ -336,6 +336,11 @@ CONTRACT_GUARDS = {
     'output fields absent from a payload stay nullable': 'test_output_field_nullability.py',
     'the DNS rebinding policy follows FASTMCP_HOST': 'test_transport_security.py',
     'bulk request bodies are not capped at the SDK default': 'test_request_body_limit.py',
+    # R7: a capability announced with nothing behind it. The SDK derives
+    # `prompts` from whether a `prompts/list` handler is registered, which
+    # MCPServer does unconditionally — so the connector announced it while
+    # serving an empty list until P2 gave it the `investigate` prompt.
+    'R7 announced capabilities are backed by something': 'test_prompt_surface.py',
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'

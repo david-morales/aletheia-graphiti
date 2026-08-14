@@ -272,6 +272,43 @@ You can set these variables in a `.env` file in the project directory.
   the server re-censuses its domain profile and re-announces the surface
   (default `60`; `0` disables). See "Push-based freshness" below.
 
+### Prompts (`investigate`)
+
+The server exposes one MCP prompt, `investigate`, taking a required `topic`
+string. It returns a single user message laying out a live census of the graph
+first — partition, entity types with counts, relationship types, fact time
+range — and then a five-step investigation workflow written against it:
+
+1. `get_schema` first, for property keys, relationship patterns and the
+   backend's `dialect_reference`.
+2. `search` for the topic, to find the entry points.
+3. `explore_entity` on the promising hits, to expand their neighbourhoods.
+4. `graph_query` only when counts, aggregations, comparisons or paths need it.
+5. `profile_data` before trusting a count, to check coverage and cardinality.
+
+A closing section covers how to report: cite what was retrieved, separate what
+the graph says from what was inferred across hops, and state an uncovered topic
+as a result rather than inventing one.
+
+The two halves behave differently on purpose:
+
+- The **list entry** — name, title, description, arguments — is static and
+  domain-agnostic. `prompts/list` never moves when the graph does.
+- The **messages** are rendered at `prompts/get` time from the current domain
+  profile. Nothing is cached, so the census a client reads is the one the server
+  holds at that moment, with none of the invalidation machinery the tool
+  descriptions need (see "Push-based freshness" below).
+
+The prompt carries no Cypher dialect of its own: it points at `get_schema`'s
+`dialect_reference`, which is the backend flavour's own text. Where the server
+has not censused its graph — before startup finishes, on an ingest-only
+deployment, or after introspection failed and the surface degraded — the census
+block is replaced by an explicit "census unavailable" marker rather than an empty
+list, so a client can tell "not profiled" from "profiled and empty".
+
+Because the list holds exactly one statically registered prompt, the announced
+`prompts.listChanged` is a capability this server never needs to exercise.
+
 ### Push-based freshness (`listChanged`)
 
 The served surface is rendered from a census of the graph: the nine dynamic tool
