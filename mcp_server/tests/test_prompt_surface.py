@@ -45,10 +45,16 @@ def _profile() -> DomainProfile:
 
 
 class _Service:
-    """The one field the prompt reads off the live service."""
+    """The fields the prompt path reads off the live service.
+
+    `flavour` is not read by the prompt itself — the prompt defers every dialect
+    question to `get_schema` — but `register_dynamic_tools` reads it, and the
+    surface-refresh test below drives that.
+    """
 
     def __init__(self, profile: DomainProfile | None):
         self.domain_profile = profile
+        self.flavour = None
 
 
 @pytest.fixture
@@ -257,6 +263,79 @@ class TestTheWorkflowUsesTheRealSurface:
         no flavour test looks."""
         live_profile(_profile())
         assert 'dialect_reference' in await _render()
+
+
+class TestTheArgumentContractIsEnforced:
+    """`required: true` in the LIST entry has to mean something at GET time."""
+
+    @pytest.mark.asyncio
+    async def test_omitting_the_topic_is_an_error(self, live_profile):
+        live_profile(_profile())
+        with pytest.raises(Exception, match='topic'):
+            await srv.mcp.get_prompt(prompt_surface.INVESTIGATE_PROMPT_NAME, {})
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_prompt_name_is_an_error(self, live_profile):
+        live_profile(_profile())
+        with pytest.raises(Exception, match='nonexistent'):
+            await srv.mcp.get_prompt('nonexistent', {'topic': 't'})
+
+
+class TestTheCensusStaysReadable:
+    """A prompt is read in full, not indexed. A graph with hundreds of labels
+    must not bury the workflow under its own schema."""
+
+    @pytest.mark.asyncio
+    async def test_a_large_type_list_is_truncated_and_says_so(self, live_profile):
+        limit = prompt_surface._CENSUS_TYPE_LIMIT
+        live_profile(
+            DomainProfile(
+                group_id='wide_graph',
+                entity_types={
+                    f'Type{i:03d}': EntityTypeInfo(f'Type{i:03d}', 100 - i, '', [])
+                    for i in range(limit + 7)
+                },
+            )
+        )
+        text = await _render()
+        assert 'Type000' in text, 'the most populated type must survive truncation'
+        assert f'and {7} more' in text, 'truncation happened without saying so'
+        assert 'get_schema' in text, 'truncated census must point at the full one'
+
+    @pytest.mark.asyncio
+    async def test_the_workflow_survives_truncation(self, live_profile):
+        """Truncating the census must not cost the steps — the failure mode is a
+        prompt that is all schema and no instruction."""
+        live_profile(
+            DomainProfile(
+                group_id='wide_graph',
+                entity_types={
+                    f'Type{i:03d}': EntityTypeInfo(f'Type{i:03d}', 1, '', [])
+                    for i in range(200)
+                },
+            )
+        )
+        text = await _render()
+        for tool in ('get_schema', 'search', 'explore_entity', 'graph_query'):
+            assert tool in text
+
+
+class TestTheSurfaceRefreshDoesNotDisturbThePrompt:
+    """`refresh_domain_surface` CLEARS the tool and resource registries before
+    re-adding (P3). The prompt registry is deliberately not in that path — but
+    nothing structural stops a future refresh from clearing it too, and the
+    symptom would be `prompts/list` silently emptying mid-process, back to the
+    exact defect P2 exists to close."""
+
+    @pytest.mark.asyncio
+    async def test_re_registering_the_dynamic_tools_leaves_the_prompt_alone(
+        self, live_profile
+    ):
+        live_profile(_profile())
+        before = [p.name for p in await srv.mcp.list_prompts()]
+        srv.register_dynamic_tools(_profile())
+        assert [p.name for p in await srv.mcp.list_prompts()] == before
+        assert 'get_schema' in srv.mcp._tool_manager._tools, 'sanity: tools re-registered'
 
 
 # The domain-agnosticism guards for this prompt live in
