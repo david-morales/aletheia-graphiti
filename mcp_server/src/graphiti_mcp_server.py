@@ -2721,7 +2721,7 @@ def investigate(
 # `tools.listChanged`, `prompts.listChanged`, `resources.listChanged` and
 # `resources.subscribe` from ONE condition — whether `subscriptions/listen` is
 # served — and `MCPServer` registers that handler unconditionally
-# (`mcp/server/lowlevel/server.py:583`, `mcp/server/mcpserver/server.py:215`).
+# (`mcp/server/lowlevel/server.py:584-585`, `mcp/server/mcpserver/server.py:215`).
 # So this connector has announced all four as `true` since the modern-era
 # migration and published nothing: four declared-and-never-emitted capability
 # bits, which is the ADR-019 R7 defect.
