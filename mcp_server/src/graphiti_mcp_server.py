@@ -1887,13 +1887,16 @@ async def get_schema() -> SchemaResponse:
             # a probe that cannot answer degrades ONE entry, and says so via
             # `sampled`. The census count is independent and always survives.
             try:
-                # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
-                # (openCypher variable projections lose their name), so `r['key']`
-                # would KeyError on AGE. The explicit alias makes the column `key` on
-                # both flavours (FalkorDB already returns `key`). Regression: AGE
-                # get_schema live test.
+                # BOTH probes come from the flavour. The top-level one used to be a
+                # literal here — FalkorDB-shaped, and already carrying an AGE-driven
+                # fix (`RETURN DISTINCT key AS key`, because AGE names an unaliased
+                # projection `col0`). That asymmetry with its flavour-routed sibling
+                # is BLK-1's mechanism: on a nesting backend `properties` answers
+                # with the transport envelope, and cypher_quality — which validated
+                # against `properties` alone — called every correct nested-path query
+                # a schema mismatch.
                 prop_records, _, _ = await driver.execute_query(
-                    f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
+                    flavour.property_keys_query(label)
                 )
                 attribute_keys = await flavour.attribute_keys(driver, label)
             except Exception as probe_error:  # noqa: BLE001 — one label must not break schema
@@ -1953,6 +1956,13 @@ async def get_schema() -> SchemaResponse:
             'domain': group_id.replace('_', ' ').title(),
             'dialect': flavour.dialect_id,
             'dialect_reference': flavour.dialect_reference,
+            # The map this backend keeps its DOMAIN fields in, or None when they
+            # are top-level (ADR-019 R6 — dialect as DATA). Announced rather than
+            # left to be inferred from `dialect`: cypher_quality reads it to tell
+            # `n.<container>.<field>`'s transport half from a hallucinated
+            # property, and a consumer that had to map "age-opencypher" ->
+            # "attributes" itself would be re-deriving a producer fact.
+            'attribute_container': flavour.attribute_container,
             'node_labels': node_labels,
             'relationship_types': relationship_types,
         }

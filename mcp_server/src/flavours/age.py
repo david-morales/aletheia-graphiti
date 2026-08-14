@@ -714,6 +714,13 @@ class AgeFlavour(BaseFlavour):
         "`<>` not `!=`; alias everything in lowercase snake_case and never alias to `count`; "
         "never name a variable `id`."
     )
+    # Every DOMAIN field on this backend lives inside the queryable `attributes`
+    # agtype map, so `n.attributes.<field>` — the access form dialect_reference
+    # teaches — parses as TWO property accesses: this container plus the field.
+    # Announced (get_schema -> `attribute_container`) so cypher_quality can tell
+    # the transport half from a hallucinated property without knowing what AGE
+    # is; before it did, every correct nested query came back schema_mismatch.
+    attribute_container: str | None = "attributes"
 
     def check_dialect(self, query: str) -> CypherError | None:
         return check_age_dialect(query)

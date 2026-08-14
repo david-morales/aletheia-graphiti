@@ -162,6 +162,136 @@ class TestPropertyValidation:
 
 
 # ---------------------------------------------------------------------------
+# Nested-attribute backends (BLK-1)
+# ---------------------------------------------------------------------------
+
+# A schema as get_schema builds it on a backend that NESTS its domain fields —
+# Apache AGE. `properties` is the honest TOP-LEVEL key set (Graphiti's own
+# bookkeeping columns plus the `attributes` container itself); the domain fields
+# live one level down and are announced in `attribute_keys`. The backend names
+# the container in `attribute_container` — dialect as DATA (ADR-019 R6), so the
+# validator stays dialect-blind and no backend name is hardcoded here.
+NESTED_SCHEMA = {
+    'dialect': 'age-opencypher',
+    'attribute_container': 'attributes',
+    'node_labels': {
+        'Persona': {
+            'count': 500,
+            'properties': ['attributes', 'created_at', 'group_id', 'labels', 'name', 'uuid'],
+            'attribute_keys': ['documento', 'edad'],
+        },
+        'Ubicacion': {
+            'count': 30,
+            'properties': ['attributes', 'created_at', 'group_id', 'labels', 'name', 'uuid'],
+            'attribute_keys': ['municipio'],
+        },
+    },
+    'relationship_types': {
+        'VIVE_EN': {'count': 40, 'patterns': [['Persona', 'Ubicacion']]},
+    },
+}
+
+
+class TestNestedAttributeValidation:
+    """BLK-1: the query form the AGE dialect_reference TEACHES must assess CLEAN.
+
+    Measured before this guard: `n.attributes.edad` — the exact nested-path
+    access `dialect_reference` documents as the way to read a domain field on
+    AGE — came back `outcome: suspect / verdict: schema_mismatch` on 500
+    correct rows, because `_validate_properties` diffed against `properties`
+    only. `properties` is top-level, so both halves of the path (`attributes`
+    and `edad`) were unknown, and `refine_verdict` never downgrades
+    `schema_mismatch` — so the whole result was flagged for the life of the call.
+    """
+
+    def test_nested_path_access_is_clean(self):
+        q = assess_quality(
+            'MATCH (n:Persona) WHERE n.attributes.edad > 30 '
+            'RETURN n.name AS name, n.attributes.edad AS edad',
+            schema=NESTED_SCHEMA,
+        )
+        assert q.schema_match.properties.unknown == [], q.schema_match.properties.unknown
+        assert q.schema_match.properties.wrong_label == []
+        assert q.verdict == 'success'
+        assert q.outcome == 'ok'
+
+    def test_the_container_alone_is_clean(self):
+        """`RETURN n.attributes` returns the whole map — valid, not a domain field."""
+        q = assess_quality('MATCH (n:Persona) RETURN n.attributes', schema=NESTED_SCHEMA)
+        assert q.schema_match.properties.unknown == []
+        assert q.verdict == 'success'
+
+    def test_the_container_is_valid_even_when_the_probe_never_sampled_it(self):
+        """The container is a BACKEND fact, not a sampling outcome.
+
+        A label whose top-level probe degrades comes back `properties: []` /
+        `sampled: false` — get_schema reports one entry unsampled rather than
+        failing the whole call. If the container's validity were read off
+        `properties`, that degraded entry would flag every correct nested query
+        against it. It is read off `attribute_container` instead, which the
+        flavour announces unconditionally.
+        """
+        schema = {
+            'attribute_container': 'attributes',
+            'node_labels': {
+                'Persona': {'count': 5, 'properties': [], 'attribute_keys': ['edad'],
+                            'sampled': False},
+            },
+            'relationship_types': {},
+        }
+        q = assess_quality('MATCH (n:Persona) RETURN n.attributes.edad', schema=schema)
+        assert q.schema_match.properties.unknown == [], q.schema_match.properties.unknown
+        assert q.verdict == 'success'
+
+    def test_a_genuinely_wrong_nested_field_is_still_flagged(self):
+        """The fix must not blanket-accept everything under the container."""
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.attributes.no_such_field',
+            schema=NESTED_SCHEMA,
+        )
+        unknown = q.schema_match.properties.unknown
+        assert any(
+            u.property_name == 'no_such_field' and u.on_label == 'Persona' for u in unknown
+        ), unknown
+        assert q.verdict == 'schema_mismatch'
+
+    def test_a_nested_field_on_the_wrong_label_is_flagged(self):
+        """`municipio` is a Ubicacion attribute — naming it on Persona is a mismatch."""
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.attributes.municipio',
+            schema=NESTED_SCHEMA,
+        )
+        wrong = q.schema_match.properties.wrong_label
+        assert any(
+            w.property_name == 'municipio'
+            and w.on_label == 'Persona'
+            and 'Ubicacion' in w.exists_on
+            for w in wrong
+        ), wrong
+        assert q.verdict == 'schema_mismatch'
+
+    def test_top_level_bookkeeping_still_validates(self):
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.uuid, n.name, n.created_at',
+            schema=NESTED_SCHEMA,
+        )
+        assert q.schema_match.properties.unknown == []
+        assert q.verdict == 'success'
+
+    def test_a_flat_backend_does_not_inherit_the_nested_allowance(self):
+        """No `attribute_container` announced -> the nested form is a real mismatch.
+
+        On FalkorDB `n.attributes.edad` addresses nothing: there is no container
+        and `edad` is a top-level property. Accepting it there would trade one
+        silent wrong answer for another.
+        """
+        q = assess_quality('MATCH (n:Persona) RETURN n.attributes.edad', schema=SCHEMA)
+        unknown = {u.property_name for u in q.schema_match.properties.unknown}
+        assert 'attributes' in unknown, unknown
+        assert q.verdict == 'schema_mismatch'
+
+
+# ---------------------------------------------------------------------------
 # Verdict logic
 # ---------------------------------------------------------------------------
 

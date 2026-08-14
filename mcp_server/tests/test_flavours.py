@@ -172,3 +172,41 @@ def test_falkordb_classify_ignores_the_query_argument():
 def test_classify_execution_error_query_argument_is_optional():
     # Legacy positional-only callers must keep working (backward-compatible default).
     assert BaseFlavour().classify_execution_error("boom").reason == "execution_error"
+
+
+# --- The dialect-sensitive probes get_schema issues (BLK-1 / H-F4) ---
+#
+# Every query text get_schema sends must come from the flavour, never from a
+# literal in the server module: the one that stayed hardcoded (the top-level
+# `properties` probe) was FalkorDB-shaped and silently mis-described the AGE arm.
+
+
+def _all_flavours():
+    from flavours.age import AgeFlavour
+    from flavours.falkordb import FalkorDbFlavour
+
+    return (BaseFlavour(), FalkorDbFlavour(), AgeFlavour())
+
+
+def test_every_flavour_owns_its_property_keys_probe():
+    for flavour in _all_flavours():
+        q = flavour.property_keys_query("Persona", sample=50)
+        assert isinstance(q, str) and q, flavour.name
+        assert "Persona" in q, flavour.name
+        assert "50" in q, flavour.name
+        # The column the shared parsing reads back. AGE names an unaliased
+        # projection `col0`, so the alias is not optional on that arm.
+        assert "AS key" in q, flavour.name
+
+
+def test_every_flavour_announces_whether_it_nests_its_attributes():
+    from flavours.age import AgeFlavour
+    from flavours.falkordb import FalkorDbFlavour
+
+    # Flat backends: domain fields are top-level, so there is no container.
+    assert BaseFlavour().attribute_container is None
+    assert FalkorDbFlavour().attribute_container is None
+    # AGE keeps every domain field inside the queryable `attributes` agtype map.
+    assert AgeFlavour().attribute_container == "attributes"
+
+

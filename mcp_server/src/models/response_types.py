@@ -161,6 +161,12 @@ class SchemaResponse(TypedDict, total=False):
     domain: str | None
     dialect: str | None                 # short id, e.g. "falkordb-cypher" | "age-opencypher"
     dialect_reference: str | None       # full dialect teaching text
+    # The map this backend nests its DOMAIN fields in (AGE: "attributes"), or
+    # null when they are top-level (FalkorDB / openCypher). Read it with
+    # `node_labels[*].attribute_keys`: those keys are addressed as
+    # `n.<attribute_container>.<key>` when it is set and as `n.<key>` when it is
+    # not. Announced so no consumer has to map a dialect id to a storage shape.
+    attribute_container: str | None
     node_labels: dict[str, SchemaNodeInfo] | None
     relationship_types: dict[str, SchemaRelationshipInfo] | None
     cypher_reference: str | None        # back-compat alias of dialect_reference (one release)

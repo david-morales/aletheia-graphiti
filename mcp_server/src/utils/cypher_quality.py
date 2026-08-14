@@ -222,6 +222,26 @@ def _validate_relationships(
     return match
 
 
+def _addressable_properties(info: dict[str, Any]) -> list[str]:
+    """Every property name a query may legitimately name on one label.
+
+    The union of the two key sets get_schema announces per label:
+
+    * ``properties`` — the TOP-LEVEL keys, i.e. what ``keys(n)`` returns. On a
+      flat backend (FalkorDB / openCypher) that is already the whole domain.
+    * ``attribute_keys`` — the canonical ADR-019 R5 domain-queryable keys. On a
+      backend that NESTS its domain fields (Apache AGE) these live one level
+      down, inside the announced ``attribute_container`` map, and appear in
+      ``properties`` nowhere at all.
+
+    Validating against ``properties`` alone therefore called every correct
+    nested-path query a schema mismatch on the nesting backend (BLK-1). Both
+    key sets are produced by the FLAVOUR; this function only unions what the
+    schema already announces, so no backend is named here.
+    """
+    return list(info.get('properties') or []) + list(info.get('attribute_keys') or [])
+
+
 def _validate_properties(
     properties: list[PropertyAccess],
     var_labels: dict[str, str],
@@ -232,10 +252,17 @@ def _validate_properties(
     known_label_set = set(node_labels.keys())
     match = PropMatch()
 
+    # The map a nesting backend keeps its domain fields in, announced as DATA by
+    # the flavour (ADR-019 R6) rather than hardcoded here. `n.attributes.edad`
+    # parses to TWO property accesses — the container and the field — so without
+    # knowing the container's name the transport half reads as a hallucinated
+    # property. None on flat backends, where the nested form really is wrong.
+    container = schema.get('attribute_container')
+
     # Build a reverse index: property_name -> list of labels that have it
     prop_to_labels: dict[str, list[str]] = {}
     for label, info in node_labels.items():
-        for prop in info.get('properties', []):
+        for prop in _addressable_properties(info):
             prop_to_labels.setdefault(prop, []).append(label)
 
     seen: set[tuple[str, str]] = set()
@@ -261,7 +288,16 @@ def _validate_properties(
                 match.found.append(pa.property_name)
             continue
 
-        label_props = node_labels[label].get('properties', [])
+        # The container is transport, not a domain field: on a nesting backend
+        # EVERY entity vertex carries it by construction, so its validity is a
+        # backend fact and must not depend on whether one label's key sample
+        # happened to observe it (a degraded probe reports `properties: []`).
+        if container and pa.property_name == container:
+            if pa.property_name not in match.found:
+                match.found.append(pa.property_name)
+            continue
+
+        label_props = _addressable_properties(node_labels[label])
         if pa.property_name in label_props:
             if pa.property_name not in match.found:
                 match.found.append(pa.property_name)

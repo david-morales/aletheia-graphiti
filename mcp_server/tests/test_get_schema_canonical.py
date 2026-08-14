@@ -9,7 +9,11 @@ from flavours.falkordb import FalkorDbFlavour
 class _StubDriver:
     """Answers the get_schema probe queries with a tiny fixed graph."""
 
+    def __init__(self):
+        self.queries: list[str] = []
+
     async def execute_query(self, query: str, *a, **k):
+        self.queries.append(query)
         if "AS storage_label" in query:
             # FalkorDB stores every label it censuses — the sets are equal.
             return [{"storage_label": "Entity"}, {"storage_label": "Persona"}], None, None
@@ -411,3 +415,76 @@ async def test_an_empty_storage_census_flags_NOTHING(monkeypatch, case, rows):
     # ...and NOT ONE of them is flagged.
     flagged = sorted(k for k, v in labels.items() if v.get("hierarchy"))
     assert flagged == [], (case, flagged)
+
+
+# ---------------------------------------------------------------------------
+# The dialect-sensitive probes come from the flavour (BLK-1 / H-F4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flavour_cls", [FalkorDbFlavour, AgeFlavour])
+@pytest.mark.asyncio
+async def test_get_schema_issues_the_flavours_property_keys_probe(monkeypatch, flavour_cls):
+    """The top-level `properties` probe was the ONE census text still hardcoded.
+
+    Its literal sat in the server module carrying an AGE-driven fix (`AS key`)
+    while its sibling `attribute_keys` probe was already flavour-routed — the
+    asymmetry BLK-1 came out of. Pin that get_schema sends the flavour's text
+    verbatim, so a flavour that needs a different one can say so.
+    """
+    flavour = flavour_cls()
+    driver = _StubDriver() if flavour_cls is FalkorDbFlavour else _AgeStubDriver()
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(flavour, driver))
+    await srv.get_schema()
+
+    expected = flavour.property_keys_query("Persona")
+    assert expected in driver.queries, (expected, driver.queries)
+
+
+@pytest.mark.asyncio
+async def test_get_schema_announces_the_attribute_container_on_age(monkeypatch):
+    """ADR-019 R6, dialect as data: the backend names its own nesting container.
+
+    Consumers (cypher_quality here, agents downstream) must not have to know
+    that "AGE" implies "attributes" — the producer says so in the payload.
+    """
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(AgeFlavour(), _AgeStubDriver()))
+    schema = await srv.get_schema()
+    assert schema["attribute_container"] == "attributes"
+
+
+@pytest.mark.asyncio
+async def test_get_schema_announces_no_container_on_a_flat_backend(monkeypatch):
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(FalkorDbFlavour(), _StubDriver()))
+    schema = await srv.get_schema()
+    assert schema.get("attribute_container") is None
+
+
+@pytest.mark.asyncio
+async def test_an_age_correct_nested_query_assesses_clean(monkeypatch):
+    """BLK-1 end to end: schema OUT of get_schema, verdict INTO the caller.
+
+    The two halves are only worth anything composed. `n.attributes.<key>` is the
+    exact access form AGE's own `dialect_reference` teaches, and against a schema
+    this connector produced it used to come back `suspect / schema_mismatch` on
+    correct rows — a verdict `refine_verdict` then refuses to downgrade, so the
+    flag survived to the agent no matter how good the result was.
+    """
+    from utils.cypher_quality import assess_quality
+
+    monkeypatch.setattr(srv, "graphiti_service", _StubService(AgeFlavour(), _AgeStubDriver()))
+    schema = await srv.get_schema()
+    assert "documento" in schema["node_labels"]["Persona"]["attribute_keys"], schema
+
+    good = assess_quality(
+        "MATCH (n:Persona) RETURN n.name AS name, n.attributes.documento AS documento",
+        schema=schema,
+    )
+    assert good.verdict == "success", good.to_dict()
+    assert good.outcome == "ok", good.to_dict()
+
+    # ...and a hallucinated field on the same path is still caught.
+    bad = assess_quality(
+        "MATCH (n:Persona) RETURN n.attributes.numero_de_serie AS serie", schema=schema
+    )
+    assert bad.verdict == "schema_mismatch", bad.to_dict()
