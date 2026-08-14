@@ -6,8 +6,12 @@ flavour, `edges` mode returned 0 edges for every probe query and the default
 `combined` mode returned nodes but zero facts, while the AGE arm returned 4-10
 edges for the same queries against the same data.
 
-READ-ONLY. Every statement it issues is a CALL/MATCH read; it never writes,
-never creates an index, never drops anything.
+READ-ONLY, deliberately. Every statement this script issues is a MATCH read. It
+also has to suppress one it does not issue: `FalkorDriver.__init__` schedules
+`build_indices_and_constraints()` on the running loop, which would fire CREATE
+INDEX / CREATE FULLTEXT INDEX at whatever graph you point this at. See
+`_read_only_driver` — the probe neutralises that before constructing the driver,
+so pointing it at a graph cannot alter that graph's schema.
 
 NO API KEYS NEEDED. The cosine leg needs a query vector, so instead of embedding
 the query text the script borrows a `fact_embedding` already stored on an edge in
@@ -55,6 +59,32 @@ class _Clients:
         self.driver = driver
         self.embedder = embedder
         self.cross_encoder = cross_encoder
+
+
+def _read_only_driver(driver_cls, **kwargs):
+    """Build a FalkorDriver that cannot write DDL to the target graph.
+
+    `FalkorDriver.__init__` ends by scheduling `build_indices_and_constraints()`
+    on the running event loop (falkordb_driver.py). That call issues CREATE INDEX
+    and CREATE FULLTEXT INDEX statements against the graph named in the
+    constructor — harmless in the product, disqualifying in a probe that promises
+    to leave a live graph untouched.
+
+    The no-op is installed on the CLASS before __init__ runs, because the
+    scheduling happens inside __init__ itself; patching the instance afterwards
+    would be too late. It is restored before returning so nothing else in the
+    process inherits a crippled driver.
+    """
+    original = driver_cls.build_indices_and_constraints
+
+    async def _no_op(self, *args, **kwargs):
+        return None
+
+    driver_cls.build_indices_and_constraints = _no_op
+    try:
+        return driver_cls(**kwargs)
+    finally:
+        driver_cls.build_indices_and_constraints = original
 
 
 def _bm25_only(config):
@@ -149,7 +179,8 @@ async def main() -> int:
     from graphiti_core.search.search_filters import SearchFilters
     from graphiti_core.search.search_utils import resolve_entity_edge_types
 
-    driver = FalkorDriver(host=args.host, port=args.port, database=args.graph)
+    # Never plain FalkorDriver(...) here — see _read_only_driver.
+    driver = _read_only_driver(FalkorDriver, host=args.host, port=args.port, database=args.graph)
 
     print(f'target   : falkordb://{args.host}:{args.port} graph={args.graph}')
     print(f'group_ids: {args.group_ids or "(none — all groups)"}')
