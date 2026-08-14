@@ -5,6 +5,7 @@ Graphiti MCP Server - Exposes Graphiti functionality through the Model Context P
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -53,7 +54,7 @@ from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.resources.types import FunctionResource, TextResource
-from mcp.server.subscriptions import ResourcesListChanged, ToolsListChanged
+from mcp.server.subscriptions import ResourcesListChanged, ResourceUpdated, ToolsListChanged
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
@@ -2572,6 +2573,11 @@ async def _build_and_register_domain_surface() -> None:
         logger.error(f'Failed to build domain profile, degrading to static descriptions: {e}')
         register_fallback_tools(reason=str(e))
 
+    # Both branches land here, and both need the baseline: the degraded surface
+    # serves one resource and a later recovery has to compare that one against
+    # what was actually served, not against nothing (P4).
+    await _record_served_resource_bodies()
+
 
 def _register_schema_resource() -> None:
     """Serve the schema as a resource, not only as a tool (ADR-019 R4 / A-D8).
@@ -2905,14 +2911,106 @@ def _resource_surface_fingerprint() -> tuple[str, ...]:
     return tuple(sorted(mcp._resource_manager._resources))
 
 
-async def _publish_surface_change(*, tools: bool, resources: bool) -> None:
-    """Publish list-change events to `subscriptions/listen` subscribers.
+# ---------------------------------------------------------------------------
+# Content freshness (P4) — `resources/updated`
+# ---------------------------------------------------------------------------
+
+_last_served_resource_bodies: dict[str, str] = {}
+"""URI -> fingerprint of the body this process last SERVED there.
+
+LAST-SERVED, not last-refreshed, and that distinction is the whole of the
+degraded story. `register_fallback_tools` prunes the three profile-rendered
+resources; entries are deliberately never removed from this map, so when a later
+refresh restores them their bodies are compared against what a consumer could
+actually be holding rather than against nothing. A URI with no entry has never
+been served by this process — its first appearance is a LIST change, and
+announcing `updated` for a body nobody can be holding would be the same
+declared-and-unbacked defect in the other direction.
+
+Process-global, like the registries it mirrors. It is a cache-coherence hint,
+not state worth persisting: a restart re-reads everything anyway.
+"""
+
+
+def _body_fingerprint(body: str | bytes) -> str:
+    return hashlib.sha256(body.encode('utf-8') if isinstance(body, str) else body).hexdigest()
+
+
+async def _rendered_resource_fingerprints() -> dict[str, str]:
+    """Fingerprint what `resources/read` would return RIGHT NOW, per URI.
+
+    Goes through each `Resource.read()` rather than reaching for `.text`,
+    because the four are not the same kind: three are eager `TextResource`s
+    rendered from the profile, while `graphiti://schema` is a lazy
+    `FunctionResource` whose body only exists once rendered. Reading it here
+    costs one `get_schema` per refresh — the same payload the census just
+    produced, and the cost the design accepted for fingerprinting the one
+    resource that has no stored text.
+
+    A body that cannot be rendered is OMITTED rather than recorded, which leaves
+    its last-served entry standing and draws no event: a resource that raises on
+    read was not served either, and telling a subscriber to refetch it would
+    only fail for the same reason.
+    """
+    fingerprints: dict[str, str] = {}
+    for uri, resource in list(mcp._resource_manager._resources.items()):
+        try:
+            fingerprints[uri] = _body_fingerprint(await resource.read())
+        except Exception as e:  # noqa: BLE001 — one unreadable body must not stop the rest
+            logger.warning('Resource %s could not be rendered for fingerprinting: %s', uri, e)
+    return fingerprints
+
+
+async def _moved_resource_uris() -> tuple[str, ...]:
+    """The URIs whose served body moved since it was last served, and record it.
+
+    Both halves in one call on purpose: a comparison that read the map without
+    updating it would re-announce the same move on every later refresh, an event
+    storm proportional to the ingest rate rather than to change.
+
+    Returns them sorted, so the published order is deterministic.
+    """
+    current = await _rendered_resource_fingerprints()
+    moved = tuple(
+        sorted(
+            uri
+            for uri, fingerprint in current.items()
+            if uri in _last_served_resource_bodies
+            and _last_served_resource_bodies[uri] != fingerprint
+        )
+    )
+    _last_served_resource_bodies.update(current)
+    return moved
+
+
+async def _record_served_resource_bodies() -> None:
+    """Take the startup baseline: what this process serves, announcing nothing.
+
+    Called once the startup surface is up — healthy or degraded. No event is
+    published because none could be received: `initialize_server()` finishes
+    before the transport binds, so no client can be listening, and a
+    notification nobody can receive is the dishonesty this wave removes.
+    """
+    recorded = await _moved_resource_uris()
+    if recorded:  # pragma: no cover - the map is empty at startup, so nothing can move
+        logger.debug('Startup resource baseline reported movement: %s', recorded)
+
+
+async def _publish_surface_change(
+    *, tools: bool, resources: bool, updated: tuple[str, ...] = ()
+) -> None:
+    """Publish surface events to `subscriptions/listen` subscribers.
 
     The bus carries typed events, not wire notifications: the SDK's
     `ListenHandler` owns per-stream filtering and subscription-id stamping, so a
-    client that did not ask for a kind never receives it.
+    client that did not ask for a kind — or for a particular resource URI —
+    never receives it.
+
+    List events first, then the per-URI content events: a consumer that holds
+    both subscriptions learns the shape of the surface before it is told which
+    of its bodies to refetch.
     """
-    if not (tools or resources):
+    if not (tools or resources or updated):
         return
     bus = getattr(mcp, '_subscriptions', None)
     if bus is None:  # pragma: no cover - MCPServer always builds one
@@ -2922,6 +3020,8 @@ async def _publish_surface_change(*, tools: bool, resources: bool) -> None:
         await bus.publish(ToolsListChanged())
     if resources:
         await bus.publish(ResourcesListChanged())
+    for uri in updated:
+        await bus.publish(ResourceUpdated(uri=uri))
 
 
 async def refresh_domain_surface(reason: str) -> bool:
@@ -2980,12 +3080,19 @@ async def refresh_domain_surface(reason: str) -> bool:
             # is genuinely unchanged, which is what the comparison decides.
             tools_changed = _tool_surface_fingerprint() != tools_before
             resources_changed = _resource_surface_fingerprint() != resources_before
+            # The content channel joins the same discipline, decided per URI on
+            # the SERVED body (P4). A restored surface serves what it served, so
+            # the fingerprints match and nothing is announced; a surface that
+            # moved is announced whichever branch left it that way.
+            updated_uris = await _moved_resource_uris()
 
-    await _publish_surface_change(tools=tools_changed, resources=resources_changed)
+    await _publish_surface_change(
+        tools=tools_changed, resources=resources_changed, updated=updated_uris
+    )
     logger.info(
         'Domain surface refresh (%s): rebuilt=%s tools_list_changed=%s '
-        'resources_list_changed=%s',
-        reason, rebuilt, tools_changed, resources_changed,
+        'resources_list_changed=%s resources_updated=%s',
+        reason, rebuilt, tools_changed, resources_changed, list(updated_uris),
     )
     return rebuilt
 

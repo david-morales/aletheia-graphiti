@@ -54,7 +54,9 @@ def _restore_server_globals():
     Same reasoning as `test_listchanged_notifications.py`: `register_resources`
     and `register_fallback_tools` mutate `srv.mcp` in place, and the last-served
     fingerprint map is process-global by design — a leaked entry would make
-    another module's refresh look like a no-op (or the reverse).
+    another module's refresh look like a no-op (or the reverse). The map is
+    CLEARED for the duration, not merely restored, so each test's baseline is
+    the one its own `_boot` lays down.
     """
     mcp = srv.mcp
     tools = dict(mcp._tool_manager._tools)
@@ -62,6 +64,7 @@ def _restore_server_globals():
     instructions = mcp._lowlevel_server.instructions
     service = srv.graphiti_service
     served = dict(srv._last_served_resource_bodies)
+    srv._last_served_resource_bodies.clear()
     try:
         yield
     finally:
