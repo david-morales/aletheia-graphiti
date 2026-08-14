@@ -50,6 +50,9 @@ TOPIC_ARGUMENT_DESCRIPTION = (
 NO_CENSUS_MARKER = '!! census unavailable: this graph has not been profiled yet !!'
 """Leads the census block when no profile exists.
 
+CONSUMER-PINNED: aletheia's `tests/mcp_e2e/test_prompt_surface.py` asserts this
+literal — changing the wording breaks that suite (P2 ledger, M13).
+
 The same honesty rule `DEGRADED_INSTRUCTIONS_MARKER` follows for `instructions`
 (BUG-50 / A-D2): a consumer reading a workflow with no census must be able to
 SEE that the census is missing, not quietly infer an empty graph. The two states
@@ -78,6 +81,8 @@ def _census_lines(profile: DomainProfile | None) -> list[str]:
     if profile is None:
         return [NO_CENSUS_MARKER, '', 'Call get_schema to census the graph before planning.']
 
+    # CONSUMER-PINNED: aletheia's `tests/mcp_e2e/test_prompt_surface.py` asserts
+    # this "Graph partition (group_id):" prefix verbatim (P2 ledger, M13).
     lines = [f'Graph partition (group_id): {profile.group_id}', '']
 
     # No early return on empty entities, and no affirmative "this graph holds

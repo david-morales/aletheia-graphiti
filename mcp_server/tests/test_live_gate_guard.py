@@ -190,7 +190,7 @@ def test_the_gate_permits_the_endpoint_it_was_opened_for():
 
 
 def test_the_bootstrap_stamps_every_provider_key():
-    from tests._env_guard import DUMMY_KEY, _PROVIDER_KEY_VARS, stamp_dummy_api_keys
+    from tests._env_guard import _PROVIDER_KEY_VARS, DUMMY_KEY, stamp_dummy_api_keys
 
     env = {'OPENAI_API_KEY': 'sk-proj-a-real-looking-key', 'UNRELATED': 'kept'}
     stamp_dummy_api_keys(env)

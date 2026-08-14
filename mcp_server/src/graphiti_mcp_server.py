@@ -1773,9 +1773,54 @@ async def explore_ontology(
         return OntologyClassContextResponse(error=f'Ontology explore error: {e}')
 
 
+_degraded_reason: str | None = None
+"""Why the served surface is degraded, or None while it is whole.
+
+Written by `register_fallback_tools` (the only degrade path) and cleared by a
+successful surface build. Read by `/health`, which is the only thing outside the
+MCP session that can act on it.
+
+Process-global, like the tool and resource registries it mirrors: it describes
+what THIS process is currently serving, and a restart re-derives it.
+"""
+
+
 @mcp.custom_route('/health', methods=['GET'])
 async def health_check(request) -> JSONResponse:
-    """Health check endpoint for Docker and load balancers."""
+    """Liveness/readiness probe for Docker and load balancers.
+
+    SEMANTICS, because the choice is not obvious from the code:
+
+    A degraded connector answers 503, not 200. `docker/Dockerfile.standalone`
+    probes this with `curl -f`, which fails on any non-2xx — so 200 is the only
+    thing that reads as healthy to the infrastructure, and until now that is
+    what a connector serving static fallback descriptions returned. The real
+    probe lived in `get_status`, an MCP TOOL: reachable by an agent that has
+    already connected and by nothing in the operational layer. So a degraded
+    process was indistinguishable from a whole one, and a restart — the ONLY
+    recovery this state has, since `refresh_domain_surface` deliberately does
+    not fall through to the degrade path — was never triggered.
+
+    NO STARTUP FLAP, and that is what makes 503 safe rather than a restart loop:
+    `initialize_server()` runs to completion BEFORE any transport binds
+    (`run_mcp_server` awaits it, then calls `run_*_async`), so this route is
+    unreachable until the surface — whole or degraded — is already decided. The
+    flag cannot toggle underneath a probe either: the only writer runs during
+    that same startup, so a degraded process stays degraded for its lifetime.
+    A probe therefore reports a settled fact, never a transient.
+
+    The degraded body is machine-readable and carries the cause, so an operator
+    reading `curl` output does not have to go find the log line.
+    """
+    if _degraded_reason is not None:
+        return JSONResponse(
+            {
+                'status': 'degraded',
+                'service': 'graphiti-mcp',
+                'reason': _degraded_reason,
+            },
+            status_code=503,
+        )
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
@@ -2523,7 +2568,14 @@ def register_fallback_tools(reason: str) -> None:
 
     The announcement is rebuilt to say so, in the lead position, and keeps the
     backend dialect (the flavour is known even when the graph cannot be read).
+
+    Also raises the flag `/health` reports on (H-F1). The announcement declares
+    the degradation to an MCP client that reads `instructions`; the flag is how
+    the same fact reaches the operational layer, which never opens a session.
     """
+    global _degraded_reason
+    _degraded_reason = reason
+
     flavour = graphiti_service.flavour if graphiti_service is not None else None
     # `config` is declared but not assigned at import time — read it defensively so a
     # very early failure degrades honestly instead of raising NameError on the way out.
@@ -2568,6 +2620,7 @@ async def _build_and_register_domain_surface() -> None:
     Split out of `initialize_server` so the failure path is reachable from a test:
     it is the branch that used to collapse the served surface in silence.
     """
+    global _degraded_reason
     try:
         profile_client = await graphiti_service.get_client()
         ontology_client = graphiti_service.ontology_client
@@ -2580,6 +2633,9 @@ async def _build_and_register_domain_surface() -> None:
         graphiti_service.domain_profile = domain_profile
         register_dynamic_tools(domain_profile)
         register_resources(domain_profile)
+        # A whole surface clears the probe, so a rebuilt process never inherits a
+        # previous build's verdict — the same rule the announcement follows.
+        _degraded_reason = None
     except Exception as e:
         # ERROR, not warning: the connector is now answering with guidance it did
         # not derive from this graph, and nothing else in the stack will say so.
