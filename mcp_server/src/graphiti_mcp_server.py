@@ -2944,6 +2944,7 @@ not state worth persisting: a restart re-reads everything anyway.
 
 
 def _body_fingerprint(body: str | bytes) -> str:
+    """SHA-256 of a rendered resource body. `Resource.read()` returns either."""
     return hashlib.sha256(body.encode('utf-8') if isinstance(body, str) else body).hexdigest()
 
 
@@ -2997,14 +2998,14 @@ async def _moved_resource_uris() -> tuple[str, ...]:
 async def _record_served_resource_bodies() -> None:
     """Take the startup baseline: what this process serves, announcing nothing.
 
-    Called once the startup surface is up — healthy or degraded. No event is
-    published because none could be received: `initialize_server()` finishes
-    before the transport binds, so no client can be listening, and a
-    notification nobody can receive is the dishonesty this wave removes.
+    Called once the startup surface is up — healthy or degraded. The movement it
+    computes is DISCARDED, and that is the point: no client can be listening
+    before the transport binds, so a `resources/updated` here could only be a
+    notification nobody receives — the dishonesty this wave removes, not another
+    instance of it. What matters is the side effect, the baseline every later
+    refresh compares against.
     """
-    recorded = await _moved_resource_uris()
-    if recorded:  # pragma: no cover - the map is empty at startup, so nothing can move
-        logger.debug('Startup resource baseline reported movement: %s', recorded)
+    await _moved_resource_uris()
 
 
 async def _publish_surface_change(
