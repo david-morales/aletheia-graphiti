@@ -275,11 +275,20 @@ You can set these variables in a `.env` file in the project directory.
 ### Prompts (`investigate`)
 
 The server exposes one MCP prompt, `investigate`, taking a required `topic`
-string. It returns an investigation-starter workflow for this graph: call
-`get_schema` first, `search` for the topic, `explore_entity` on the hits, and
-escalate to `graph_query` only when counts, aggregations or paths require it —
-followed by a live census of the graph (partition, entity types with counts,
-relationship types, fact time range).
+string. It returns a single user message laying out a live census of the graph
+first — partition, entity types with counts, relationship types, fact time
+range — and then a five-step investigation workflow written against it:
+
+1. `get_schema` first, for property keys, relationship patterns and the
+   backend's `dialect_reference`.
+2. `search` for the topic, to find the entry points.
+3. `explore_entity` on the promising hits, to expand their neighbourhoods.
+4. `graph_query` only when counts, aggregations, comparisons or paths need it.
+5. `profile_data` before trusting a count, to check coverage and cardinality.
+
+A closing section covers how to report: cite what was retrieved, separate what
+the graph says from what was inferred across hops, and state an uncovered topic
+as a result rather than inventing one.
 
 The two halves behave differently on purpose:
 

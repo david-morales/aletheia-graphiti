@@ -80,23 +80,34 @@ def _census_lines(profile: DomainProfile | None) -> list[str]:
 
     lines = [f'Graph partition (group_id): {profile.group_id}', '']
 
-    if not profile.entity_types:
-        lines.append('Entity types: none — this graph holds no entities yet.')
-        return lines
-
+    # No early return on empty entities, and no affirmative "this graph holds
+    # no entities" claim. The three census probes are INDEPENDENT and each
+    # swallows its own exception (`domain_profile._query_entity_types` and
+    # friends return {} on failure), so empty-entities alongside populated
+    # edge_types is a REACHABLE state — and it means the entity probe failed,
+    # not that the graph is empty. Returning early there also dropped the edges
+    # and the time range that DID come back, which is the same not-looked /
+    # looked-and-empty conflation `NO_CENSUS_MARKER` exists to prevent, one
+    # level down. "none recorded" says what is true either way, and mirrors the
+    # edge wording below.
     entities = sorted(profile.entity_types.values(), key=lambda i: -i.count)
-    lines.append(f'Entity types ({len(entities)}), most populated first:')
-    for info in entities[:_CENSUS_TYPE_LIMIT]:
-        # `hierarchy` labels are censusable and searchable but reach no stored
-        # vertex, so `MATCH (n:Label)` returns nothing for them. An agent that
-        # escalates to graph_query against one gets an empty result and no
-        # explanation — mark them here rather than let it conclude the graph is
-        # empty.
-        note = ' [hierarchy only — not matchable as (n:Label)]' if info.hierarchy else ''
-        desc = f' — {info.description}' if info.description else ''
-        lines.append(f'- {info.label} ({info.count}){note}{desc}')
-    if len(entities) > _CENSUS_TYPE_LIMIT:
-        lines.append(f'- ... and {len(entities) - _CENSUS_TYPE_LIMIT} more (see get_schema)')
+    if entities:
+        lines.append(f'Entity types ({len(entities)}), most populated first:')
+        for info in entities[:_CENSUS_TYPE_LIMIT]:
+            # `hierarchy` labels are censusable and searchable but reach no
+            # stored vertex, so `MATCH (n:Label)` returns nothing for them. An
+            # agent that escalates to graph_query against one gets an empty
+            # result and no explanation — mark them here rather than let it
+            # conclude the graph is empty.
+            note = ' [hierarchy only — not matchable as (n:Label)]' if info.hierarchy else ''
+            desc = f' — {info.description}' if info.description else ''
+            lines.append(f'- {info.label} ({info.count}){note}{desc}')
+        if len(entities) > _CENSUS_TYPE_LIMIT:
+            lines.append(
+                f'- ... and {len(entities) - _CENSUS_TYPE_LIMIT} more (see get_schema)'
+            )
+    else:
+        lines.append('Entity types: none recorded.')
 
     lines.append('')
     edges = sorted(profile.edge_types.values(), key=lambda i: -i.count)
@@ -177,6 +188,36 @@ def _reporting_lines() -> list[str]:
     ]
 
 
+_HEADING_TOPIC_MAX_CHARS = 200
+"""How much of the topic the `# Investigate:` heading carries.
+
+The heading is a label, not the payload — the full topic reaches the agent
+through the `topic` argument the client already sent. Capping it bounds the one
+piece of caller-controlled text in the document.
+"""
+
+
+def _heading_safe(topic: str) -> str:
+    """Flatten `topic` so it cannot introduce markdown structure.
+
+    The heading interpolates caller-supplied text into a document whose sections
+    an agent navigates by `##`. A topic containing newlines and a `## How to
+    investigate` line therefore RESTRUCTURED the document — measured at two
+    headings of that name — letting the caller forge or displace instructions
+    the connector is supposed to own.
+
+    Collapsing every run of whitespace (newlines included) to a single space
+    makes structure unreachable: markdown block constructs need a line start,
+    and after this there is exactly one line. The cap then bounds it. Escaping
+    `#` was the alternative and is strictly worse — it leaves the newline, which
+    is the half that actually matters.
+    """
+    flattened = ' '.join(topic.split())
+    if len(flattened) > _HEADING_TOPIC_MAX_CHARS:
+        return flattened[:_HEADING_TOPIC_MAX_CHARS].rstrip() + '...'
+    return flattened
+
+
 def build_investigate_prompt(topic: str, profile: DomainProfile | None) -> str:
     """Render the `investigate` message body for `topic` against `profile`.
 
@@ -189,7 +230,7 @@ def build_investigate_prompt(topic: str, profile: DomainProfile | None) -> str:
     does not know.
     """
     sections = [
-        f'# Investigate: {topic}',
+        f'# Investigate: {_heading_safe(topic)}',
         '',
         'You are investigating the topic above against a knowledge graph exposed',
         'through this connector. Work from what the graph actually contains — the',
