@@ -30,9 +30,8 @@ from graphiti_core.driver.driver import (
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import (
     DEFAULT_ENTITY_EDGE_TYPE,
-    STRUCTURAL_EDGE_TYPES,
+    get_entity_edge_types_query,
     get_nodes_query,
-    get_relationship_types_query,
     get_relationships_query,
     get_vector_cosine_func_query,
     sanitize_edge_type,
@@ -196,37 +195,42 @@ async def resolve_entity_edge_types(driver: GraphDriver) -> list[str]:
     open-ended mix that no constant can describe. Reading the set back from the
     database is what makes searching for a type nothing was written under
     impossible, rather than merely unlikely.
+
+    The set is derived from ENDPOINTS rather than names — see
+    ``get_entity_edge_types_query`` — because the name a fact edge carries comes
+    from extraction and may collide with a structural one.
     """
     if driver.provider != GraphProvider.FALKORDB:
         return [DEFAULT_ENTITY_EDGE_TYPE]
 
     try:
-        records, _, _ = await driver.execute_query(get_relationship_types_query(), routing_='r')
+        records, _, _ = await driver.execute_query(get_entity_edge_types_query(), routing_='r')
     except Exception as e:
-        # An older FalkorDB without db.relationshipTypes() still searches the
-        # default type rather than failing the whole query.
-        logger.warning(f'Could not enumerate relationship types, defaulting to RELATES_TO: {e}')
+        # A driver that cannot answer still searches the default type rather than
+        # failing the whole query.
+        logger.warning(f'Could not enumerate entity edge types, defaulting to RELATES_TO: {e}')
         return [DEFAULT_ENTITY_EDGE_TYPE]
 
     edge_types: list[str] = []
     for record in records:
-        if isinstance(record, dict):
-            values = list(record.values())
-        elif isinstance(record, list | tuple):
-            values = list(record)
-        else:
-            values = [record]
-
-        if not values:
-            continue
-        edge_type = values[0]
+        # FalkorDriver.execute_query normalises every row to a dict keyed by the
+        # result header, so a single-column result is a single-entry dict.
+        edge_type = record.get('edge_type') if isinstance(record, dict) else None
         if not isinstance(edge_type, str) or not edge_type:
-            continue
-        if edge_type in STRUCTURAL_EDGE_TYPES:
             continue
         edge_types.append(sanitize_edge_type(edge_type))
 
-    return edge_types or [DEFAULT_ENTITY_EDGE_TYPE]
+    if not edge_types:
+        # Either the graph holds no entity edges yet, or the rows came back in a
+        # shape this cannot read. Both look identical to a caller getting no
+        # facts back, so say which one happened.
+        logger.warning(
+            f'No entity edge types found in {len(records)} row(s) from the graph; '
+            f'falling back to {DEFAULT_ENTITY_EDGE_TYPE}'
+        )
+        return [DEFAULT_ENTITY_EDGE_TYPE]
+
+    return edge_types
 
 
 async def edge_fulltext_search(
@@ -350,8 +354,10 @@ async def edge_fulltext_search(
                 )
                 all_records.extend(records)
             except Exception as e:
-                # Index may not exist for this edge type - skip silently
-                logger.debug(f'Fulltext search skipped for edge type {edge_type}: {e}')
+                # No fulltext index for this type: the edges exist but are
+                # unreachable by bm25, so the cosine leg carries them alone.
+                # Worth saying out loud — it is a partial BUG-62 in the making.
+                logger.info(f'Fulltext search skipped for edge type {edge_type}: {e}')
                 continue
 
         # Dedupe by uuid and sort by score
@@ -435,10 +441,16 @@ async def edge_similarity_search(
         """
     elif driver.provider == GraphProvider.FALKORDB:
         # FalkorDB stores each entity edge under its own relationship type, so an
-        # untyped match is the only pattern that reaches all of them. Nothing else
-        # can match: MENTIONS runs Episodic->Entity and HAS_MEMBER Community->Entity,
-        # which the Entity-to-Entity endpoints already exclude. The
-        # `e.fact_embedding IS NOT NULL` filter below keeps the cosine call safe.
+        # untyped match is the only pattern that reaches all of them. The
+        # endpoints are what excludes Graphiti's structural edges: it writes
+        # MENTIONS Episodic->Entity, HAS_MEMBER Community->Entity, HAS_EPISODE
+        # Saga->Episodic and NEXT_EPISODE Episodic->Episodic, none of which can
+        # match Entity->Entity. That is an invariant of the structural WRITERS,
+        # not of the names — the bulk writer names an edge from extraction, so a
+        # fact edge may well be called HAS_MEMBER and belongs here. This is the
+        # same pattern get_entity_edge_types_query() enumerates, which is what
+        # keeps this leg and the bm25 leg agreeing. The `e.fact_embedding IS NOT
+        # NULL` filter below keeps the cosine call safe.
         match_query = """
             MATCH (n:Entity)-[e]->(m:Entity)
         """
