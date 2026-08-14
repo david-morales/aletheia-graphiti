@@ -29,9 +29,13 @@ from graphiti_core.driver.driver import (
 )
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import (
+    DEFAULT_ENTITY_EDGE_TYPE,
+    STRUCTURAL_EDGE_TYPES,
     get_nodes_query,
+    get_relationship_types_query,
     get_relationships_query,
     get_vector_cosine_func_query,
+    sanitize_edge_type,
 )
 from graphiti_core.helpers import (
     lucene_sanitize,
@@ -182,6 +186,49 @@ async def get_communities_by_nodes(
     return communities
 
 
+async def resolve_entity_edge_types(driver: GraphDriver) -> list[str]:
+    """The relationship types entity edges are actually stored under, per graph.
+
+    Everywhere except FalkorDB an entity edge is a ``RELATES_TO`` relationship, so
+    the answer is a constant. FalkorDB is the exception: its bulk writer MERGEs
+    each edge under the edge's own ``name`` (``DETIENE``, ``WORKS_AT``, …) while
+    the single-edge writer still uses ``RELATES_TO``, so one graph holds an
+    open-ended mix that no constant can describe. Reading the set back from the
+    database is what makes searching for a type nothing was written under
+    impossible, rather than merely unlikely.
+    """
+    if driver.provider != GraphProvider.FALKORDB:
+        return [DEFAULT_ENTITY_EDGE_TYPE]
+
+    try:
+        records, _, _ = await driver.execute_query(get_relationship_types_query(), routing_='r')
+    except Exception as e:
+        # An older FalkorDB without db.relationshipTypes() still searches the
+        # default type rather than failing the whole query.
+        logger.warning(f'Could not enumerate relationship types, defaulting to RELATES_TO: {e}')
+        return [DEFAULT_ENTITY_EDGE_TYPE]
+
+    edge_types: list[str] = []
+    for record in records:
+        if isinstance(record, dict):
+            values = list(record.values())
+        elif isinstance(record, (list, tuple)):
+            values = list(record)
+        else:
+            values = [record]
+
+        if not values:
+            continue
+        edge_type = values[0]
+        if not isinstance(edge_type, str) or not edge_type:
+            continue
+        if edge_type in STRUCTURAL_EDGE_TYPES:
+            continue
+        edge_types.append(sanitize_edge_type(edge_type))
+
+    return edge_types or [DEFAULT_ENTITY_EDGE_TYPE]
+
+
 async def edge_fulltext_search(
     driver: GraphDriver,
     query: str,
@@ -201,9 +248,10 @@ async def edge_fulltext_search(
     if fuzzy_query == '':
         return []
 
-    # Default to RELATES_TO if no edge types specified
+    # No explicit types: ask the graph what its entity edges are stored under.
+    # Assuming RELATES_TO here is what made FalkorDB edge search return nothing.
     if edge_types is None:
-        edge_types = ['RELATES_TO']
+        edge_types = await resolve_entity_edge_types(driver)
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
@@ -266,7 +314,10 @@ async def edge_fulltext_search(
     elif driver.provider == GraphProvider.FALKORDB:
         # For FalkorDB, query each edge type's fulltext index and combine results
         all_records: list[Any] = []
-        for edge_type in edge_types:
+        for requested_type in edge_types:
+            # Relationship types cannot be parameterised, so they are inlined —
+            # including the ones a caller supplied through EdgeSearchConfig.
+            edge_type = sanitize_edge_type(requested_type)
             match_query = f"""
             YIELD relationship AS rel, score
             MATCH (n:Entity)-[e:{edge_type} {{uuid: rel.uuid}}]->(m:Entity)
@@ -381,6 +432,15 @@ async def edge_similarity_search(
     if driver.provider == GraphProvider.KUZU:
         match_query = """
             MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
+        """
+    elif driver.provider == GraphProvider.FALKORDB:
+        # FalkorDB stores each entity edge under its own relationship type, so an
+        # untyped match is the only pattern that reaches all of them. Nothing else
+        # can match: MENTIONS runs Episodic->Entity and HAS_MEMBER Community->Entity,
+        # which the Entity-to-Entity endpoints already exclude. The
+        # `e.fact_embedding IS NOT NULL` filter below keeps the cosine call safe.
+        match_query = """
+            MATCH (n:Entity)-[e]->(m:Entity)
         """
 
     filter_queries, filter_params = edge_search_filter_query_constructor(

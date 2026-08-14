@@ -24,6 +24,39 @@ INDEX_TO_LABEL_KUZU_MAPPING = {
     'edge_name_and_fact': 'RelatesToNode_',
 }
 
+# The relationship type entity edges are written under everywhere except the
+# FalkorDB bulk path, which MERGEs each edge under its own `name` instead.
+DEFAULT_ENTITY_EDGE_TYPE = 'RELATES_TO'
+
+# Relationship types that structure the graph rather than carry extracted facts.
+# Entity edges are every other type, so edge search enumerates what a graph holds
+# and subtracts these rather than trying to predict the fact-carrying names.
+STRUCTURAL_EDGE_TYPES = frozenset(
+    {
+        'MENTIONS',
+        'HAS_MEMBER',
+        'HAS_EPISODE',
+        'NEXT_EPISODE',
+    }
+)
+
+
+def sanitize_edge_type(edge_type: str) -> str:
+    """Reduce a relationship type to what can be interpolated into Cypher.
+
+    Relationship types cannot be parameterised, so every path that builds a typed
+    pattern has to inline the name. Mirrors the sanitisation the FalkorDB bulk
+    writer applies when it MERGEs the edge, so a type survives the round trip
+    from write to search unchanged.
+    """
+    safe = ''.join(c for c in edge_type if c.isalnum() or c == '_')
+    return safe or DEFAULT_ENTITY_EDGE_TYPE
+
+
+def get_relationship_types_query() -> LiteralString:
+    """List the relationship types the graph currently holds."""
+    return 'CALL db.relationshipTypes()'
+
 
 def get_range_indices(provider: GraphProvider) -> list[LiteralString]:
     if provider == GraphProvider.FALKORDB:
