@@ -32,34 +32,45 @@ from tests._env_guard import (  # noqa: E402
     unsafe_falkordb_uri,
 )
 
-# The gate is read ONCE, here, before any test module is imported — several of
-# them decide at import time whether to skip, and a gate that moved underneath
-# them would make that decision incoherent.
-_LIVE_GATE_OPEN = live_gate_is_open()
+_LIVE_GATE_OPEN = False
+"""Set for real in `pytest_configure`, once the CLI has been parsed.
 
-if not _LIVE_GATE_OPEN:
-    stamp_dummy_api_keys()
+NOT decided at import time, and that ordering is the whole point. `-m
+integration` — the fork's own live CI invocation — is invisible until pytest
+has parsed its arguments, so an import-time gate reads CLOSED for it. When the
+stamp below hung off that early answer, a live run with real secrets had every
+credential overwritten with a dummy before the first call, and a keyless fork PR
+had a dummy planted where the live module's `if not OPENAI_API_KEY: skip` looks.
+"""
 
 from config.schema import GraphitiConfig  # noqa: E402
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Refuse an offline run that is aimed at a real graph store (BUG-85).
+    """Settle the gate, then arm the two guards it governs.
 
-    Raised as a UsageError so the session ends before collection: a warning here
-    would be advice, and the failure mode being guarded is precisely the run
-    that did not read the advice.
+    Runs after CLI parsing and BEFORE collection, which is the only window that
+    works for both halves: `-m` is readable here, and no test module has been
+    imported yet — so the credential stamp still lands ahead of
+    `graphiti_mcp_server`'s `load_dotenv()`, which is what it has to beat.
     """
     global _LIVE_GATE_OPEN
-    # Re-evaluated with the parsed options in hand: `-m integration` is an
-    # explicit opt-in, and it is only visible once pytest has parsed the CLI.
     expression = config.getoption('-m', default='') or ''
     _LIVE_GATE_OPEN = live_gate_is_open({'-m': expression})
+
     if _LIVE_GATE_OPEN:
+        # An opted-in run gets its environment untouched: it was started to talk
+        # to a real backend with real credentials, and stamping over them would
+        # break exactly the run that asked for them.
         return
+
+    stamp_dummy_api_keys()
 
     import os
 
+    # Refuse an offline run aimed at a real graph store (BUG-85). A UsageError
+    # ends the session before collection: a warning here would be advice, and
+    # the failure mode being guarded is precisely the run that did not read it.
     reason = unsafe_falkordb_uri(os.environ.get('FALKORDB_URI'))
     if reason:
         raise pytest.UsageError(reason)

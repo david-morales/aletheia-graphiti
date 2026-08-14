@@ -51,6 +51,13 @@ _PROVIDER_KEY_VARS: tuple[str, ...] = (
 DUMMY_KEY = 'sk-dummy-offline-suite'
 
 
+# Values that mean "no" when someone writes them into the gate variable. Without
+# this, `MCP_LIVE_TESTS=0` — the obvious way to say "not this run" — read as
+# truthy and OPENED the gate, turning the one deliberate off-switch into a
+# silent on-switch.
+_FALSY_GATE_VALUES = frozenset({'', '0', 'false', 'no', 'off'})
+
+
 def live_gate_is_open(known_args: dict[str, str] | None = None) -> bool:
     """Has this run explicitly asked for live/integration tests?
 
@@ -66,7 +73,8 @@ def live_gate_is_open(known_args: dict[str, str] | None = None) -> bool:
     `-m "not integration"` is the opposite request and must NOT open the gate,
     so the expression is inspected rather than merely searched for a substring.
     """
-    if os.environ.get(LIVE_GATE_ENV):
+    value = os.environ.get(LIVE_GATE_ENV)
+    if value is not None and value.strip().lower() not in _FALSY_GATE_VALUES:
         return True
     expression = (known_args or {}).get('-m') or ''
     if not expression:
@@ -104,6 +112,13 @@ def unsafe_falkordb_uri(uri: str | None) -> str | None:
         port = parsed.port
     except ValueError:  # malformed port
         host, port = '', None
+
+    # An OMITTED port is not "no port": every redis client dials 6379 when the
+    # URI leaves it out, so `redis://localhost` reaches exactly the store this
+    # check exists to protect. Reading None as "some other port" let the most
+    # natural spelling of the dangerous endpoint through.
+    if port is None:
+        port = _RESERVED_PORT
 
     if host not in _LOOPBACK_HOSTS:
         return (

@@ -71,6 +71,26 @@ def test_a_real_looking_endpoint_is_refused(uri, why):
     assert uri in reason and LIVE_GATE_ENV in reason, reason
 
 
+@pytest.mark.parametrize(
+    'uri',
+    [
+        'redis://localhost',
+        'redis://127.0.0.1',
+        'redis://[::1]',
+        'redis://localhost/0',
+    ],
+)
+def test_a_PORTLESS_endpoint_is_read_as_the_default_port(uri):
+    """F3: `urlsplit(...).port` is None when the URI omits it — and the client
+    that dials it does NOT treat that as "no port", it dials 6379. So an
+    omitted port used to sail through the reserved-port check and reach exactly
+    the store the check exists to protect.
+    """
+    reason = unsafe_falkordb_uri(uri)
+    assert reason is not None, uri
+    assert '6379' in reason, reason
+
+
 def test_an_unparseable_uri_is_refused_rather_than_ignored():
     """Fail closed: a URI we cannot read is not a URI we can call harmless."""
     assert unsafe_falkordb_uri('not a uri at all') is not None
@@ -80,6 +100,24 @@ def test_the_gate_reads_the_environment(monkeypatch):
     monkeypatch.delenv(LIVE_GATE_ENV, raising=False)
     assert live_gate_is_open({}) is False
     monkeypatch.setenv(LIVE_GATE_ENV, '1')
+    assert live_gate_is_open({}) is True
+
+
+@pytest.mark.parametrize('value', ['0', 'false', 'False', 'FALSE', 'no', 'off', 'NO', ''])
+def test_an_explicitly_FALSY_gate_value_stays_closed(monkeypatch, value):
+    """F2: the gate used to open on any non-empty string.
+
+    `MCP_LIVE_TESTS=0` is how a human says "not this run" — reading it as an
+    opt-in turns the one deliberate off-switch into an on-switch, and does so
+    silently.
+    """
+    monkeypatch.setenv(LIVE_GATE_ENV, value)
+    assert live_gate_is_open({}) is False
+
+
+@pytest.mark.parametrize('value', ['1', 'true', 'TRUE', 'yes', 'on', 'anything-else'])
+def test_a_truthy_gate_value_opens(monkeypatch, value):
+    monkeypatch.setenv(LIVE_GATE_ENV, value)
     assert live_gate_is_open({}) is True
 
 
@@ -125,6 +163,74 @@ def _run_pytest(*args, env_overrides=None):
         timeout=180,
         env=env,
     )
+
+
+REAL_LOOKING_KEY = 'sk-proj-a-real-looking-key'
+
+
+@pytest.mark.integration
+def test_credentials_are_untouched_when_the_gate_is_open():
+    """The in-process probe for F1. `integration`-marked ON PURPOSE.
+
+    That marker is what makes one test cover both opt-in arms: under
+    `-m integration` pytest's own filter selects it and nothing else, and under
+    `MCP_LIVE_TESTS=1` with no `-m` it survives because the gate is open. Under
+    a default run it is deselected, which is the arm the sibling tests cover.
+
+    Driven by the two subprocess tests below; skips when run directly.
+    """
+    expected = os.environ.get('GUARD_EXPECT_KEY')
+    if expected is None:
+        pytest.skip('driven by the open-gate arms below')
+    assert os.environ.get('OPENAI_API_KEY') == expected
+
+
+def test_the_marker_opt_in_leaves_real_credentials_alone():
+    """F1, the arm the fork's own live CI job runs.
+
+    `uv run pytest tests/test_live_falkordb_int.py -m integration` with real
+    secrets in the environment. The stamp ran at conftest IMPORT, before pytest
+    had parsed `-m`, so the gate read CLOSED and every real key was overwritten
+    with a dummy — the live job would have 401'd on every call. Worse for a
+    fork PR with no key at all: the dummy made the live module's
+    `if not os.environ.get('OPENAI_API_KEY'): skip` see a key and RUN.
+    """
+    result = _run_pytest(
+        'tests/test_live_gate_guard.py',
+        '-m',
+        'integration',
+        env_overrides={
+            'OPENAI_API_KEY': REAL_LOOKING_KEY,
+            'GUARD_EXPECT_KEY': REAL_LOOKING_KEY,
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '1 passed' in result.stdout, result.stdout
+
+
+def test_the_env_gate_opt_in_leaves_real_credentials_alone():
+    """F1, the other opt-in arm: the deliberate human gate."""
+    result = _run_pytest(
+        'tests/test_live_gate_guard.py::test_credentials_are_untouched_when_the_gate_is_open',
+        env_overrides={
+            LIVE_GATE_ENV: '1',
+            'OPENAI_API_KEY': REAL_LOOKING_KEY,
+            'GUARD_EXPECT_KEY': REAL_LOOKING_KEY,
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '1 passed' in result.stdout, result.stdout
+
+
+def test_a_closed_gate_still_stamps_over_a_real_key():
+    """The other direction of F1: opening the gate correctly must not disarm
+    the guard for everybody else. A default run stamps, real key or not."""
+    result = _run_pytest(
+        'tests/test_live_gate_guard.py::test_this_sessions_own_key_is_a_dummy',
+        env_overrides={'OPENAI_API_KEY': REAL_LOOKING_KEY},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '1 passed' in result.stdout, result.stdout
 
 
 def test_the_dialect_module_collects_nothing_without_the_gate():
