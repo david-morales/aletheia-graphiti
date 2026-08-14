@@ -272,6 +272,34 @@ You can set these variables in a `.env` file in the project directory.
   the server re-censuses its domain profile and re-announces the surface
   (default `60`; `0` disables). See "Push-based freshness" below.
 
+### Prompts (`investigate`)
+
+The server exposes one MCP prompt, `investigate`, taking a required `topic`
+string. It returns an investigation-starter workflow for this graph: call
+`get_schema` first, `search` for the topic, `explore_entity` on the hits, and
+escalate to `graph_query` only when counts, aggregations or paths require it —
+followed by a live census of the graph (partition, entity types with counts,
+relationship types, fact time range).
+
+The two halves behave differently on purpose:
+
+- The **list entry** — name, title, description, arguments — is static and
+  domain-agnostic. `prompts/list` never moves when the graph does.
+- The **messages** are rendered at `prompts/get` time from the current domain
+  profile. Nothing is cached, so the census a client reads is the one the server
+  holds at that moment, with none of the invalidation machinery the tool
+  descriptions need (see "Push-based freshness" below).
+
+The prompt carries no Cypher dialect of its own: it points at `get_schema`'s
+`dialect_reference`, which is the backend flavour's own text. Where the server
+has not censused its graph — before startup finishes, on an ingest-only
+deployment, or after introspection failed and the surface degraded — the census
+block is replaced by an explicit "census unavailable" marker rather than an empty
+list, so a client can tell "not profiled" from "profiled and empty".
+
+Because the list holds exactly one statically registered prompt, the announced
+`prompts.listChanged` is a capability this server never needs to exercise.
+
 ### Push-based freshness (`listChanged`)
 
 The served surface is rendered from a census of the graph: the nine dynamic tool
