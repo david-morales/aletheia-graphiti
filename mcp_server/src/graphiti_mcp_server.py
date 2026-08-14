@@ -2684,8 +2684,11 @@ def register_resources(profile: DomainProfile) -> None:
 # fingerprint the list, compare across the re-render, and publish a
 # `PromptsListChanged` on the subscription bus only when it actually moved.
 #
-# After P2 the one remaining dishonest bit is `resources.subscribe`, which is
-# announced `true` with no content subscriptions behind it. That is P4.
+# `resources.subscribe` was the last announced bit with nothing behind it. P4
+# closed it: `resources/updated` now fires when a served body actually moves
+# (see "Content freshness" below), so of the four derived bits, three have a
+# publisher and the fourth is this one — honest, merely louder than it needs to
+# be.
 
 
 def _live_domain_profile() -> DomainProfile | None:
@@ -2744,12 +2747,20 @@ def investigate(
 # announce ONLY what actually moved. See the ALETHEIA repo:
 # docs/plans/2026-08-13-mcp-p3-listchanged-design.md (not in this repo).
 #
-# Of the four bits, two are now backed. `prompts` was declared-and-EMPTY when
-# this was written; P2 (the section above) gave it a real prompt, so
-# `prompts.listChanged` is now merely louder than needed rather than false — one
-# statically registered prompt, a list that cannot move. `resources.subscribe`
-# is still announced with no content subscriptions behind it: that is P4, and it
-# is the last dishonest bit on this surface.
+# THE LEDGER, CLOSED. All four bits are now honest, by three different routes.
+# `tools.listChanged` and `resources.listChanged` are published here, from the
+# fingerprint comparison below. `prompts` was declared-and-EMPTY when this was
+# written; P2 (the section above) gave it a real prompt, so
+# `prompts.listChanged` is merely louder than needed rather than false — one
+# statically registered prompt, a list that cannot move.
+# `resources.subscribe` was the last one announced with nothing behind it, and
+# P4 gave it its event: `resources/updated`, published from the "Content
+# freshness" section further down when a SERVED body actually moves. Design:
+# ALETHEIA repo `docs/plans/2026-08-14-mcp-p4-resource-subscribe.md`.
+#
+# The rule the three publishers share is the one to keep: announce ONLY what
+# actually moved. A channel that fires on no-ops is a channel consumers learn
+# to ignore, which costs more than never having announced at all.
 
 DEFAULT_SURFACE_REFRESH_DEBOUNCE_SECONDS = 60.0
 """Coalescing window between a graph mutation and the re-census it triggers.
