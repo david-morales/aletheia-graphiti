@@ -26,6 +26,7 @@ import pytest
 import graphiti_mcp_server as srv
 import prompt_surface
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
+from tests.retired_tool_names import RETIRED_TOOL_NAMES
 from tool_annotations import TOOL_ANNOTATIONS
 
 # Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
@@ -46,31 +47,10 @@ WORKFLOW_TOOLS = frozenset(
 # that claim should cost a line of review.
 NON_TOOL_IDENTIFIERS = frozenset({'dialect_reference', 'group_id'})
 
-# Tool names this connector once served, or that its README once invented, and
-# does not serve now. A DENYLIST rather than an allowlist subtraction, and that
-# is what lets it carry a single-word name: the identifier heuristic below has
-# to require an underscore or it matches every English word in the prose (204 of
-# them, measured), so a one-word stale name is invisible to it. No name here is
-# single-word today — every retirement this connector has had was `snake_case`
-# — but the guard must not be the reason the next one slips through.
-RETIRED_TOOL_NAMES = frozenset(
-    {
-        # P1 renamed these on the fork, with no aliases.
-        'run_cypher',
-        'explore_node',
-        'profile_graph',
-        # Replaced by the unified `search`.
-        'search_nodes',
-        'search_facts',
-        'search_memory_nodes',
-        'search_memory_facts',
-        'get_entity_edge',
-        # Upstream README inventions this fork has never served (A-D5).
-        'add_triplet',
-        'summarize_saga',
-        'get_episode_entities',
-    }
-)
+# The retired roster lives in one place for every guard that scans a served
+# text — see `tests/retired_tool_names.py` for why, and for why a denylist is
+# the half that can see a single-word name at all. No name in it is single-word
+# today; the guard must not be the reason the next one slips through.
 
 
 def _static_text(source: str) -> str:

@@ -17,6 +17,7 @@ import pytest
 
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 from flavours.age import AgeFlavour
+from tests.retired_tool_names import RETIRED_TOOL_NAMES
 from tool_annotations import TOOL_ANNOTATIONS
 from tool_descriptions import build_degraded_instructions, build_instructions
 
@@ -115,9 +116,17 @@ def test_build_communities_announces_the_delete_inside_the_requested_groups(inst
 
 
 def test_the_catalog_does_not_announce_a_tool_that_is_not_served(instructions):
-    """A phantom in the announcement costs a wasted call and a confused agent."""
-    phantoms = {'add_triplet', 'search_nodes', 'search_memory_facts', 'get_entity_edge'}
-    named = {p for p in phantoms if p in instructions}
+    """A phantom in the announcement costs a wasted call and a confused agent.
+
+    Scans the FULL retired roster, not the four upstream inventions it used to.
+    This guard and the prompt's kept separate lists, and the shorter one was
+    guarding the longer text: `instructions` is several times the size of the
+    prompt and reaches every consumer through the handshake, yet the three P1
+    renames — `run_cypher`, `explore_node`, `profile_graph`, retired with no
+    aliases — were checked only against the prompt. Measured before the switch:
+    every arm names none of the eleven, so this widened cleanly.
+    """
+    named = {name for name in RETIRED_TOOL_NAMES if name in instructions}
     assert not named, f'announced but not served: {sorted(named)}'
 
 
