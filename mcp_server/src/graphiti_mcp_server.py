@@ -1811,6 +1811,13 @@ async def health_check(request) -> JSONResponse:
 
     The degraded body is machine-readable and carries the cause, so an operator
     reading `curl` output does not have to go find the log line.
+
+    ACCEPTED CONSEQUENCE: a compose service depending on this one with
+    `condition: service_healthy` now stays blocked while the connector is
+    degraded. That is intended — a dependent started against a connector that
+    cannot describe its own graph is the failure BUG-50 shipped — and
+    `refresh_domain_surface` clears the flag on a successful re-census, so
+    recovery unblocks them without a restart.
     """
     if _degraded_reason is not None:
         return JSONResponse(
@@ -3131,6 +3138,7 @@ async def refresh_domain_surface(reason: str) -> bool:
     out turns a transient graph blip into a connector telling every consumer its
     guidance is not derived from this graph.
     """
+    global _degraded_reason
     if graphiti_service is None:
         return False
     async with _surface_refresh_lock:
@@ -3150,6 +3158,15 @@ async def refresh_domain_surface(reason: str) -> bool:
             graphiti_service.domain_profile = domain_profile
             register_dynamic_tools(domain_profile)
             register_resources(domain_profile)
+            # Clear the probe HERE, alongside the resources this call restores.
+            # This is the only path that rebuilds a served surface in a running
+            # process, so it is the only place a degraded connector can recover
+            # — and a flag left standing would make /health's 503 a one-way
+            # door: fully recovered, permanently reported unhealthy, with
+            # compose `service_healthy` dependents still blocked behind it.
+            # Deliberately inside the try, after the last step that can raise:
+            # a refresh that did not rebuild has recovered nothing.
+            _degraded_reason = None
             rebuilt = True
         except Exception as e:
             logger.error(

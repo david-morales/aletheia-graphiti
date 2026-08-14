@@ -124,3 +124,92 @@ async def test_a_healthy_startup_leaves_the_probe_green(monkeypatch):
     assert srv._degraded_reason is None
     status, _ = await _probe()
     assert status == 200
+
+
+async def test_a_successful_refresh_clears_a_degraded_probe(monkeypatch):
+    """F5: recovery must be reachable, or 503 is a one-way door.
+
+    `refresh_domain_surface` is the ONE path that rebuilds a served surface in
+    a running process — it re-censuses, re-registers all nine dynamic tools and
+    restores the three resources `register_fallback_tools` pruned. It rebuilt
+    everything except the flag, so a connector that had recovered completely
+    went on answering 503 for the life of the process. That turns the probe
+    from a signal into a permanent verdict, and it is sharper than a stale
+    field: a compose `service_healthy` dependency (F6, accepted) keeps
+    dependents blocked on it.
+    """
+    from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
+
+    class _StubClient:
+        driver = object()
+
+    class _StubService:
+        flavour = FalkorDbFlavour()
+        ontology_client = None
+        domain_profile = None
+
+        def __init__(self):
+            self.config = srv.GraphitiConfig()
+
+        async def get_client(self):
+            return _StubClient()
+
+    service = _StubService()
+    monkeypatch.setattr(srv, 'graphiti_service', service)
+    monkeypatch.setattr(srv, 'config', service.config, raising=False)
+
+    # Degrade first, through the real path, and prove the probe reports it.
+    srv.register_fallback_tools(reason='graph introspection exploded')
+    assert (await _probe())[0] == 503
+
+    async def _ok(*a, **k):
+        return DomainProfile(
+            group_id='recovered_graph',
+            entity_types={'Widget': EntityTypeInfo('Widget', 4, 'A widget', ['W-1'])},
+            edge_types={'USES': EdgeTypeInfo('USES', 2, 'uses', 'Widget -> Widget')},
+            time_range=None,
+        )
+
+    monkeypatch.setattr(srv, 'build_domain_profile', _ok)
+    assert await srv.refresh_domain_surface(reason='test recovery') is True
+
+    assert srv._degraded_reason is None
+    status, body = await _probe()
+    assert status == 200, body
+    assert body['status'] == 'healthy'
+
+
+async def test_a_FAILED_refresh_leaves_the_degraded_probe_standing(monkeypatch):
+    """The other direction: a refresh that could not rebuild must not clear the
+    flag. `refresh_domain_surface` restores the surface in force on failure and
+    deliberately does not fall through to the fallback path — so the connector
+    is still exactly as degraded as it was, and the probe must keep saying so.
+    """
+    class _StubClient:
+        driver = object()
+
+    class _StubService:
+        flavour = FalkorDbFlavour()
+        ontology_client = None
+        domain_profile = None
+
+        def __init__(self):
+            self.config = srv.GraphitiConfig()
+
+        async def get_client(self):
+            return _StubClient()
+
+    service = _StubService()
+    monkeypatch.setattr(srv, 'graphiti_service', service)
+    monkeypatch.setattr(srv, 'config', service.config, raising=False)
+
+    srv.register_fallback_tools(reason='graph introspection exploded')
+
+    async def _boom(*a, **k):
+        raise RuntimeError('still unreachable')
+
+    monkeypatch.setattr(srv, 'build_domain_profile', _boom)
+    assert await srv.refresh_domain_surface(reason='test failed recovery') is False
+
+    assert srv._degraded_reason == 'graph introspection exploded'
+    assert (await _probe())[0] == 503
