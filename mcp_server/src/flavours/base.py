@@ -71,6 +71,10 @@ class Flavour(Protocol):
     dialect_id: str
     dialect_reference: str   # full dialect teaching text (ADR-019 R5, surfaced via get_schema)
     dialect_summary: str     # short form for server instructions / tool descriptions (ADR-019 R1/R6)
+    # The map a backend keeps its DOMAIN fields in, or None when they are
+    # top-level. Announced in the get_schema payload so a consumer never has to
+    # infer it from the dialect id (ADR-019 R6, dialect as data).
+    attribute_container: str | None
 
     def check_dialect(self, query: str) -> CypherError | None: ...
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
@@ -82,6 +86,7 @@ class Flavour(Protocol):
     def subgraph_node_query(self) -> str: ...
     def subgraph_edge_query(self, uuids: list[str]) -> str: ...
     def node_sample_query(self) -> str: ...
+    def property_keys_query(self, label: str, sample: int = 50) -> str: ...
     def flatten_node_props(self, props: dict[str, Any]) -> dict[str, Any]: ...
     def property_accessor(self, prop: str) -> str: ...
     async def attribute_keys(self, driver: Any, label: str, sample: int = 50) -> list[str]: ...
@@ -97,6 +102,9 @@ class BaseFlavour:
     dialect_id = "opencypher"
     dialect_reference = ""
     dialect_summary = ""
+    # Flat backend: every domain field is a top-level property, so there is no
+    # container to address them through and `n.attributes.x` really is wrong here.
+    attribute_container: str | None = None
 
     def check_dialect(self, query: str) -> CypherError | None:
         return None
@@ -135,9 +143,22 @@ class BaseFlavour:
         `storage_labels` (alias `storage_label`) is the set of labels a vertex is
         actually STORED under. get_schema diffs it against the label census to mark
         the remainder `hierarchy: True` — labels that are censusable and searchable
-        but that no `MATCH (n:Label)` can reach."""
+        but that no `MATCH (n:Label)` can reach.
+
+        `rel_counts` (aliases `rel_type`/`cnt`) is the relationship census. Its
+        ENDPOINT SCOPE mirrors this flavour's own `profile_queries()['edge_types']`,
+        and that is a correctness requirement, not tidiness: both answer "which
+        relationship types does this graph hold", and while the census matched a
+        bare `()-[r]->()` the two tools of one connector reported different sets
+        for the same graph — the profile excluded the Episodic->Entity `MENTIONS`
+        bookkeeping edge, get_schema advertised it as a domain relationship (with
+        an empty `patterns` list, since both its endpoint labels are internal)."""
         return {
             "label_counts": "MATCH (n) RETURN labels(n) AS lbls, count(n) AS cnt",
+            "rel_counts": (
+                "MATCH (s:Entity)-[r]->(t:Entity) "
+                "RETURN type(r) AS rel_type, count(r) AS cnt"
+            ),
             "rel_patterns": (
                 "MATCH (s)-[r:`{rel_type}`]->(t) "
                 "RETURN DISTINCT labels(s) AS source_labels, labels(t) AS target_labels LIMIT 20"
@@ -268,6 +289,35 @@ class BaseFlavour:
         names an unaliased variable projection `col0`, so a flavour that needs an
         explicit alias says so here."""
         return 'MATCH (n:`{label}`) RETURN n LIMIT {limit}'
+
+    def property_keys_query(self, label: str, sample: int = 50) -> str:
+        """The TOP-LEVEL property keys of a label — get_schema's `properties`.
+
+        Returns rows with one column, `key`. The alias is not decoration: AGE
+        names an unaliased projection `col0`, so a bare `RETURN DISTINCT key`
+        would make the shared `rec['key']` read miss on that arm (the same
+        failure mode as `node_sample_query`'s `RETURN n AS n`).
+
+        This text lived as a literal in the server module while its sibling
+        `attribute_keys` probe was already flavour-routed. That asymmetry is
+        BLK-1's mechanism: `properties` is FalkorDB-shaped — the full key set of
+        a flat vertex — and on a backend that nests its domain fields it answers
+        with the transport envelope instead, so every correct nested-path query
+        diffed as a schema mismatch. The two probes now sit on the same seam:
+        `properties` = what `keys(n)` returns, `attribute_keys` = the canonical
+        domain-queryable keys, and `attribute_container` names the map that joins
+        them.
+
+        AGE inherits this text deliberately. `keys(n)` there returns exactly the
+        honest top-level set — Graphiti's bookkeeping columns plus the
+        `attributes` container — which is what `properties` claims to be. What
+        AGE needed was never a different probe; it was for the OTHER two fields
+        to be read alongside this one.
+        """
+        return (
+            f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT {int(sample)} '
+            f'UNWIND k AS key RETURN DISTINCT key AS key'
+        )
 
     def flatten_node_props(self, props: dict[str, Any]) -> dict[str, Any]:
         """Normalize one sampled node's properties to a flat domain-field mapping.

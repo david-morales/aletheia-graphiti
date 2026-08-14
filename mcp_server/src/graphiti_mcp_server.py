@@ -1773,9 +1773,61 @@ async def explore_ontology(
         return OntologyClassContextResponse(error=f'Ontology explore error: {e}')
 
 
+_degraded_reason: str | None = None
+"""Why the served surface is degraded, or None while it is whole.
+
+Written by `register_fallback_tools` (the only degrade path) and cleared by a
+successful surface build. Read by `/health`, which is the only thing outside the
+MCP session that can act on it.
+
+Process-global, like the tool and resource registries it mirrors: it describes
+what THIS process is currently serving, and a restart re-derives it.
+"""
+
+
 @mcp.custom_route('/health', methods=['GET'])
 async def health_check(request) -> JSONResponse:
-    """Health check endpoint for Docker and load balancers."""
+    """Liveness/readiness probe for Docker and load balancers.
+
+    SEMANTICS, because the choice is not obvious from the code:
+
+    A degraded connector answers 503, not 200. `docker/Dockerfile.standalone`
+    probes this with `curl -f`, which fails on any non-2xx — so 200 is the only
+    thing that reads as healthy to the infrastructure, and until now that is
+    what a connector serving static fallback descriptions returned. The real
+    probe lived in `get_status`, an MCP TOOL: reachable by an agent that has
+    already connected and by nothing in the operational layer. So a degraded
+    process was indistinguishable from a whole one, and a restart — the ONLY
+    recovery this state has, since `refresh_domain_surface` deliberately does
+    not fall through to the degrade path — was never triggered.
+
+    NO STARTUP FLAP, and that is what makes 503 safe rather than a restart loop:
+    `initialize_server()` runs to completion BEFORE any transport binds
+    (`run_mcp_server` awaits it, then calls `run_*_async`), so this route is
+    unreachable until the surface — whole or degraded — is already decided. The
+    flag cannot toggle underneath a probe either: the only writer runs during
+    that same startup, so a degraded process stays degraded for its lifetime.
+    A probe therefore reports a settled fact, never a transient.
+
+    The degraded body is machine-readable and carries the cause, so an operator
+    reading `curl` output does not have to go find the log line.
+
+    ACCEPTED CONSEQUENCE: a compose service depending on this one with
+    `condition: service_healthy` now stays blocked while the connector is
+    degraded. That is intended — a dependent started against a connector that
+    cannot describe its own graph is the failure BUG-50 shipped — and
+    `refresh_domain_surface` clears the flag on a successful re-census, so
+    recovery unblocks them without a restart.
+    """
+    if _degraded_reason is not None:
+        return JSONResponse(
+            {
+                'status': 'degraded',
+                'service': 'graphiti-mcp',
+                'reason': _degraded_reason,
+            },
+            status_code=503,
+        )
     return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
 
 
@@ -1887,13 +1939,16 @@ async def get_schema() -> SchemaResponse:
             # a probe that cannot answer degrades ONE entry, and says so via
             # `sampled`. The census count is independent and always survives.
             try:
-                # RETURN DISTINCT key AS key: AGE names an unaliased projection `col0`
-                # (openCypher variable projections lose their name), so `r['key']`
-                # would KeyError on AGE. The explicit alias makes the column `key` on
-                # both flavours (FalkorDB already returns `key`). Regression: AGE
-                # get_schema live test.
+                # BOTH probes come from the flavour. The top-level one used to be a
+                # literal here — FalkorDB-shaped, and already carrying an AGE-driven
+                # fix (`RETURN DISTINCT key AS key`, because AGE names an unaliased
+                # projection `col0`). That asymmetry with its flavour-routed sibling
+                # is BLK-1's mechanism: on a nesting backend `properties` answers
+                # with the transport envelope, and cypher_quality — which validated
+                # against `properties` alone — called every correct nested-path query
+                # a schema mismatch.
                 prop_records, _, _ = await driver.execute_query(
-                    f'MATCH (n:`{label}`) WITH keys(n) AS k LIMIT 50 UNWIND k AS key RETURN DISTINCT key AS key'
+                    flavour.property_keys_query(label)
                 )
                 attribute_keys = await flavour.attribute_keys(driver, label)
             except Exception as probe_error:  # noqa: BLE001 — one label must not break schema
@@ -1917,10 +1972,13 @@ async def get_schema() -> SchemaResponse:
             if storage_labels is not None and label not in storage_labels:
                 node_labels[label]['hierarchy'] = True
 
-        # 3. Relationship counts (single-pass)
-        rel_records, _, _ = await driver.execute_query(
-            'MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS cnt'
-        )
+        # 3. Relationship counts (single-pass). Flavour-owned like every census
+        #    around it: the bare `()-[r]->()` literal that used to sit here was
+        #    dialect-blind AND scope-blind, so it counted the Episodic->Entity
+        #    `MENTIONS` bookkeeping edge that `domain_profile.edge_types` — the
+        #    other half of this connector's answer to the same question — filters
+        #    out. Each flavour now reuses its own profile endpoint scope (H-F4).
+        rel_records, _, _ = await driver.execute_query(census['rel_counts'])
         rel_counts: dict[str, int] = {}
         for rec in rel_records:
             rel_type = rec.get('rel_type', '')
@@ -1953,6 +2011,13 @@ async def get_schema() -> SchemaResponse:
             'domain': group_id.replace('_', ' ').title(),
             'dialect': flavour.dialect_id,
             'dialect_reference': flavour.dialect_reference,
+            # The map this backend keeps its DOMAIN fields in, or None when they
+            # are top-level (ADR-019 R6 — dialect as DATA). Announced rather than
+            # left to be inferred from `dialect`: cypher_quality reads it to tell
+            # `n.<container>.<field>`'s transport half from a hallucinated
+            # property, and a consumer that had to map "age-opencypher" ->
+            # "attributes" itself would be re-deriving a producer fact.
+            'attribute_container': flavour.attribute_container,
             'node_labels': node_labels,
             'relationship_types': relationship_types,
         }
@@ -2510,7 +2575,14 @@ def register_fallback_tools(reason: str) -> None:
 
     The announcement is rebuilt to say so, in the lead position, and keeps the
     backend dialect (the flavour is known even when the graph cannot be read).
+
+    Also raises the flag `/health` reports on (H-F1). The announcement declares
+    the degradation to an MCP client that reads `instructions`; the flag is how
+    the same fact reaches the operational layer, which never opens a session.
     """
+    global _degraded_reason
+    _degraded_reason = reason
+
     flavour = graphiti_service.flavour if graphiti_service is not None else None
     # `config` is declared but not assigned at import time — read it defensively so a
     # very early failure degrades honestly instead of raising NameError on the way out.
@@ -2555,6 +2627,7 @@ async def _build_and_register_domain_surface() -> None:
     Split out of `initialize_server` so the failure path is reachable from a test:
     it is the branch that used to collapse the served surface in silence.
     """
+    global _degraded_reason
     try:
         profile_client = await graphiti_service.get_client()
         ontology_client = graphiti_service.ontology_client
@@ -2567,6 +2640,9 @@ async def _build_and_register_domain_surface() -> None:
         graphiti_service.domain_profile = domain_profile
         register_dynamic_tools(domain_profile)
         register_resources(domain_profile)
+        # A whole surface clears the probe, so a rebuilt process never inherits a
+        # previous build's verdict — the same rule the announcement follows.
+        _degraded_reason = None
     except Exception as e:
         # ERROR, not warning: the connector is now answering with guidance it did
         # not derive from this graph, and nothing else in the stack will say so.
@@ -3062,6 +3138,7 @@ async def refresh_domain_surface(reason: str) -> bool:
     out turns a transient graph blip into a connector telling every consumer its
     guidance is not derived from this graph.
     """
+    global _degraded_reason
     if graphiti_service is None:
         return False
     async with _surface_refresh_lock:
@@ -3081,6 +3158,15 @@ async def refresh_domain_surface(reason: str) -> bool:
             graphiti_service.domain_profile = domain_profile
             register_dynamic_tools(domain_profile)
             register_resources(domain_profile)
+            # Clear the probe HERE, alongside the resources this call restores.
+            # This is the only path that rebuilds a served surface in a running
+            # process, so it is the only place a degraded connector can recover
+            # — and a flag left standing would make /health's 503 a one-way
+            # door: fully recovered, permanently reported unhealthy, with
+            # compose `service_healthy` dependents still blocked behind it.
+            # Deliberately inside the try, after the last step that can raise:
+            # a refresh that did not rebuild has recovered nothing.
+            _degraded_reason = None
             rebuilt = True
         except Exception as e:
             logger.error(

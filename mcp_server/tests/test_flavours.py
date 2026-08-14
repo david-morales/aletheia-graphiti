@@ -172,3 +172,89 @@ def test_falkordb_classify_ignores_the_query_argument():
 def test_classify_execution_error_query_argument_is_optional():
     # Legacy positional-only callers must keep working (backward-compatible default).
     assert BaseFlavour().classify_execution_error("boom").reason == "execution_error"
+
+
+# --- The dialect-sensitive probes get_schema issues (BLK-1 / H-F4) ---
+#
+# Every query text get_schema sends must come from the flavour, never from a
+# literal in the server module: the one that stayed hardcoded (the top-level
+# `properties` probe) was FalkorDB-shaped and silently mis-described the AGE arm.
+
+
+def _all_flavours():
+    from flavours.age import AgeFlavour
+    from flavours.falkordb import FalkorDbFlavour
+
+    return (BaseFlavour(), FalkorDbFlavour(), AgeFlavour())
+
+
+def test_every_flavour_owns_its_property_keys_probe():
+    for flavour in _all_flavours():
+        q = flavour.property_keys_query("Persona", sample=50)
+        assert isinstance(q, str) and q, flavour.name
+        assert "Persona" in q, flavour.name
+        assert "50" in q, flavour.name
+        # The column the shared parsing reads back. AGE names an unaliased
+        # projection `col0`, so the alias is not optional on that arm.
+        assert "AS key" in q, flavour.name
+
+
+def test_every_flavour_announces_whether_it_nests_its_attributes():
+    from flavours.age import AgeFlavour
+    from flavours.falkordb import FalkorDbFlavour
+
+    # Flat backends: domain fields are top-level, so there is no container.
+    assert BaseFlavour().attribute_container is None
+    assert FalkorDbFlavour().attribute_container is None
+    # AGE keeps every domain field inside the queryable `attributes` agtype map.
+    assert AgeFlavour().attribute_container == "attributes"
+
+
+def test_every_flavour_owns_its_relationship_census():
+    """H-F4: the relationship census was raw dialect-blind Cypher in the server."""
+    for flavour in _all_flavours():
+        census = flavour.census_queries()
+        assert "rel_counts" in census, flavour.name
+        q = census["rel_counts"]
+        # The aliases the shared get_schema loop reads by key.
+        assert "AS rel_type" in q, flavour.name
+        assert "AS cnt" in q, flavour.name
+
+
+def test_the_relationship_census_scopes_endpoints_like_the_edge_profile():
+    """The census and `domain_profile.edge_types` must agree on what an edge IS.
+
+    Both answer "which relationship types does this graph hold". The profile
+    probe has always scoped its endpoints to entity vertices, so bookkeeping
+    edges (Episodic -> Entity `MENTIONS`) are excluded there; the census matched
+    `()-[r]->()` and included them. The same graph therefore reported two
+    different relationship sets through two tools of the same connector.
+
+    The scope is expressed differently per backend — `:Entity` labels on
+    FalkorDB / openCypher, the stored `labels` list on AGE, where Episodic
+    vertices carry none — so the check is that each flavour's census reuses its
+    OWN profile scope rather than that the two texts match.
+
+    BOTH ENDPOINTS, checked separately. `MENTIONS` runs Episodic -> Entity, so a
+    census that scoped only the source (`(s:Entity)-[r]->(t)`) would still admit
+    every bookkeeping edge in the other direction while looking scoped — and a
+    single "is the scope mentioned" assertion passes it happily.
+    """
+    for flavour in _all_flavours():
+        census = flavour.census_queries()["rel_counts"]
+        profile = flavour.profile_queries()["edge_types"]
+        for source_scope, target_scope in (
+            ("(s:Entity)", "(t:Entity)"),
+            ("s.labels IS NOT NULL", "t.labels IS NOT NULL"),
+        ):
+            if source_scope not in profile:
+                continue
+            assert source_scope in census, (
+                f"{flavour.name}: census does not carry the profile's `{source_scope}` "
+                f"SOURCE scope, so the two disagree about bookkeeping edges"
+            )
+            assert target_scope in census, (
+                f"{flavour.name}: census scopes the source but not the TARGET "
+                f"(`{target_scope}` missing) — an Episodic->Entity edge like "
+                f"MENTIONS is still counted"
+            )

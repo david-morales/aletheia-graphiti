@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
@@ -162,6 +164,223 @@ class TestPropertyValidation:
 
 
 # ---------------------------------------------------------------------------
+# Nested-attribute backends (BLK-1)
+# ---------------------------------------------------------------------------
+
+# A schema as get_schema builds it on a backend that NESTS its domain fields —
+# Apache AGE. `properties` is the honest TOP-LEVEL key set (Graphiti's own
+# bookkeeping columns plus the `attributes` container itself); the domain fields
+# live one level down and are announced in `attribute_keys`. The backend names
+# the container in `attribute_container` — dialect as DATA (ADR-019 R6), so the
+# validator stays dialect-blind and no backend name is hardcoded here.
+NESTED_SCHEMA = {
+    'dialect': 'age-opencypher',
+    'attribute_container': 'attributes',
+    'node_labels': {
+        'Persona': {
+            'count': 500,
+            'properties': ['attributes', 'created_at', 'group_id', 'labels', 'name', 'uuid'],
+            'attribute_keys': ['documento', 'edad'],
+        },
+        'Ubicacion': {
+            'count': 30,
+            'properties': ['attributes', 'created_at', 'group_id', 'labels', 'name', 'uuid'],
+            'attribute_keys': ['municipio'],
+        },
+    },
+    'relationship_types': {
+        'VIVE_EN': {'count': 40, 'patterns': [['Persona', 'Ubicacion']]},
+    },
+}
+
+
+class TestNestedAttributeValidation:
+    """BLK-1: the query form the AGE dialect_reference TEACHES must assess CLEAN.
+
+    Measured before this guard: `n.attributes.edad` — the exact nested-path
+    access `dialect_reference` documents as the way to read a domain field on
+    AGE — came back `outcome: suspect / verdict: schema_mismatch` on 500
+    correct rows, because `_validate_properties` diffed against `properties`
+    only. `properties` is top-level, so both halves of the path (`attributes`
+    and `edad`) were unknown, and `refine_verdict` never downgrades
+    `schema_mismatch` — so the whole result was flagged for the life of the call.
+    """
+
+    def test_nested_path_access_is_clean(self):
+        q = assess_quality(
+            'MATCH (n:Persona) WHERE n.attributes.edad > 30 '
+            'RETURN n.name AS name, n.attributes.edad AS edad',
+            schema=NESTED_SCHEMA,
+        )
+        assert q.schema_match.properties.unknown == [], q.schema_match.properties.unknown
+        assert q.schema_match.properties.wrong_label == []
+        assert q.verdict == 'success'
+        assert q.outcome == 'ok'
+
+    def test_the_container_alone_is_clean(self):
+        """`RETURN n.attributes` returns the whole map — valid, not a domain field."""
+        q = assess_quality('MATCH (n:Persona) RETURN n.attributes', schema=NESTED_SCHEMA)
+        assert q.schema_match.properties.unknown == []
+        assert q.verdict == 'success'
+
+    def test_the_container_is_valid_even_when_the_probe_never_sampled_it(self):
+        """The container is a BACKEND fact, not a sampling outcome.
+
+        A label whose top-level probe degrades comes back `properties: []` /
+        `sampled: false` — get_schema reports one entry unsampled rather than
+        failing the whole call. If the container's validity were read off
+        `properties`, that degraded entry would flag every correct nested query
+        against it. It is read off `attribute_container` instead, which the
+        flavour announces unconditionally.
+        """
+        schema = {
+            'attribute_container': 'attributes',
+            'node_labels': {
+                'Persona': {'count': 5, 'properties': [], 'attribute_keys': ['edad'],
+                            'sampled': False},
+            },
+            'relationship_types': {},
+        }
+        q = assess_quality('MATCH (n:Persona) RETURN n.attributes.edad', schema=schema)
+        assert q.schema_match.properties.unknown == [], q.schema_match.properties.unknown
+        assert q.verdict == 'success'
+
+    def test_a_genuinely_wrong_nested_field_is_still_flagged(self):
+        """The fix must not blanket-accept everything under the container."""
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.attributes.no_such_field',
+            schema=NESTED_SCHEMA,
+        )
+        unknown = q.schema_match.properties.unknown
+        assert any(
+            u.property_name == 'no_such_field' and u.on_label == 'Persona' for u in unknown
+        ), unknown
+        assert q.verdict == 'schema_mismatch'
+
+    def test_a_nested_field_on_the_wrong_label_is_flagged(self):
+        """`municipio` is a Ubicacion attribute — naming it on Persona is a mismatch."""
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.attributes.municipio',
+            schema=NESTED_SCHEMA,
+        )
+        wrong = q.schema_match.properties.wrong_label
+        assert any(
+            w.property_name == 'municipio'
+            and w.on_label == 'Persona'
+            and 'Ubicacion' in w.exists_on
+            for w in wrong
+        ), wrong
+        assert q.verdict == 'schema_mismatch'
+
+    def test_top_level_bookkeeping_still_validates(self):
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.uuid, n.name, n.created_at',
+            schema=NESTED_SCHEMA,
+        )
+        assert q.schema_match.properties.unknown == []
+        assert q.verdict == 'success'
+
+    @pytest.mark.parametrize(
+        'query,expected,note',
+        [
+            (
+                'MATCH (n:Persona) RETURN n.attributes.edad',
+                'success',
+                'the form the dialect teaches — clean',
+            ),
+            (
+                'MATCH (n:Persona) RETURN n.attributes.no_such_field',
+                'schema_mismatch',
+                'nested, but no such attribute',
+            ),
+            (
+                'MATCH (n:Persona) RETURN n.edad',
+                'schema_mismatch',
+                'F4: right key, WRONG PATH — addresses nothing on this backend',
+            ),
+        ],
+    )
+    def test_the_access_PATH_is_checked_not_just_the_key(self, query, expected, note):
+        """F4: unioning the two key sets made the validator container-BLIND.
+
+        `edad` lives only inside the container on this backend, so `n.edad`
+        returns null for every row — a silently empty column, which is the
+        failure mode `cypher_quality` exists to catch. Before the union it was
+        correctly flagged; the union accepted it. The schema carries enough to
+        tell the two apart: a key in `attribute_keys` but NOT in top-level
+        `properties` is reachable ONLY through the announced container.
+        """
+        q = assess_quality(query, schema=NESTED_SCHEMA)
+        assert q.verdict == expected, (note, q.to_dict())
+
+    def test_the_bare_access_is_reported_against_the_right_label(self):
+        q = assess_quality('MATCH (n:Persona) RETURN n.edad', schema=NESTED_SCHEMA)
+        assert any(
+            u.property_name == 'edad' and u.on_label == 'Persona'
+            for u in q.schema_match.properties.unknown
+        ), q.to_dict()
+
+    def test_a_top_level_key_is_reachable_without_the_container(self):
+        """The rule is about keys that ONLY exist nested. `name` is top-level on
+        every backend, so `n.name` stays clean — an over-broad path rule would
+        have flagged it."""
+        q = assess_quality('MATCH (n:Persona) RETURN n.name', schema=NESTED_SCHEMA)
+        assert q.verdict == 'success', q.to_dict()
+
+    def test_a_flat_backend_is_unaffected_by_the_path_rule(self):
+        """F4 no-change guard: with no container announced, nothing is
+        path-restricted and FalkorDB's verdicts are exactly what they were."""
+        for query in (
+            'MATCH (n:Persona) RETURN n.edad',
+            'MATCH (n:Persona) RETURN n.name, n.summary',
+        ):
+            assert assess_quality(query, schema=SCHEMA).verdict == 'success', query
+
+    def test_an_UNSAMPLED_label_does_not_accuse_a_nested_access(self):
+        """F8: a probe that could not answer must not become an accusation.
+
+        get_schema degrades ONE label rather than failing the whole call, and
+        says so with `sampled: False`; `attribute_keys` comes back empty by the
+        same route (AgeFlavour.attribute_keys swallows its exception). With no
+        evidence about this label's attributes, a container-nested access gets
+        no field-level verdict — the container name itself is still checked.
+        """
+        for entry in (
+            {'count': 5, 'properties': [], 'attribute_keys': ['edad'], 'sampled': False},
+            {'count': 5, 'properties': ['attributes'], 'attribute_keys': [], 'sampled': True},
+        ):
+            schema = {
+                'attribute_container': 'attributes',
+                'node_labels': {'Persona': entry},
+                'relationship_types': {},
+            }
+            q = assess_quality(
+                'MATCH (n:Persona) RETURN n.attributes.edad', schema=schema
+            )
+            assert q.verdict == 'success', (entry, q.to_dict())
+
+    def test_the_SAMPLED_path_is_not_weakened_by_the_unsampled_allowance(self):
+        """F8 must not become a blanket amnesty: a label that WAS sampled and
+        does have attributes still catches a hallucinated one."""
+        q = assess_quality(
+            'MATCH (n:Persona) RETURN n.attributes.no_such_field', schema=NESTED_SCHEMA
+        )
+        assert q.verdict == 'schema_mismatch', q.to_dict()
+
+    def test_a_flat_backend_does_not_inherit_the_nested_allowance(self):
+        """No `attribute_container` announced -> the nested form is a real mismatch.
+
+        On FalkorDB `n.attributes.edad` addresses nothing: there is no container
+        and `edad` is a top-level property. Accepting it there would trade one
+        silent wrong answer for another.
+        """
+        q = assess_quality('MATCH (n:Persona) RETURN n.attributes.edad', schema=SCHEMA)
+        unknown = {u.property_name for u in q.schema_match.properties.unknown}
+        assert 'attributes' in unknown, unknown
+        assert q.verdict == 'schema_mismatch'
+
+
+# ---------------------------------------------------------------------------
 # Verdict logic
 # ---------------------------------------------------------------------------
 
@@ -239,8 +458,6 @@ class TestSerialization:
 # ---------------------------------------------------------------------------
 # Result signals (post-execution)
 # ---------------------------------------------------------------------------
-
-import pytest
 
 
 class TestResultSignals:
