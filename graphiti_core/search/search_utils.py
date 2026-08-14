@@ -29,9 +29,12 @@ from graphiti_core.driver.driver import (
 )
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import (
+    DEFAULT_ENTITY_EDGE_TYPE,
+    get_entity_edge_types_query,
     get_nodes_query,
     get_relationships_query,
     get_vector_cosine_func_query,
+    sanitize_edge_type,
 )
 from graphiti_core.helpers import (
     lucene_sanitize,
@@ -182,6 +185,54 @@ async def get_communities_by_nodes(
     return communities
 
 
+async def resolve_entity_edge_types(driver: GraphDriver) -> list[str]:
+    """The relationship types entity edges are actually stored under, per graph.
+
+    Everywhere except FalkorDB an entity edge is a ``RELATES_TO`` relationship, so
+    the answer is a constant. FalkorDB is the exception: its bulk writer MERGEs
+    each edge under the edge's own ``name`` (``DETIENE``, ``WORKS_AT``, …) while
+    the single-edge writer still uses ``RELATES_TO``, so one graph holds an
+    open-ended mix that no constant can describe. Reading the set back from the
+    database is what makes searching for a type nothing was written under
+    impossible, rather than merely unlikely.
+
+    The set is derived from ENDPOINTS rather than names — see
+    ``get_entity_edge_types_query`` — because the name a fact edge carries comes
+    from extraction and may collide with a structural one.
+    """
+    if driver.provider != GraphProvider.FALKORDB:
+        return [DEFAULT_ENTITY_EDGE_TYPE]
+
+    try:
+        records, _, _ = await driver.execute_query(get_entity_edge_types_query(), routing_='r')
+    except Exception as e:
+        # A driver that cannot answer still searches the default type rather than
+        # failing the whole query.
+        logger.warning(f'Could not enumerate entity edge types, defaulting to RELATES_TO: {e}')
+        return [DEFAULT_ENTITY_EDGE_TYPE]
+
+    edge_types: list[str] = []
+    for record in records:
+        # FalkorDriver.execute_query normalises every row to a dict keyed by the
+        # result header, so a single-column result is a single-entry dict.
+        edge_type = record.get('edge_type') if isinstance(record, dict) else None
+        if not isinstance(edge_type, str) or not edge_type:
+            continue
+        edge_types.append(sanitize_edge_type(edge_type))
+
+    if not edge_types:
+        # Either the graph holds no entity edges yet, or the rows came back in a
+        # shape this cannot read. Both look identical to a caller getting no
+        # facts back, so say which one happened.
+        logger.warning(
+            f'No entity edge types found in {len(records)} row(s) from the graph; '
+            f'falling back to {DEFAULT_ENTITY_EDGE_TYPE}'
+        )
+        return [DEFAULT_ENTITY_EDGE_TYPE]
+
+    return edge_types
+
+
 async def edge_fulltext_search(
     driver: GraphDriver,
     query: str,
@@ -201,9 +252,10 @@ async def edge_fulltext_search(
     if fuzzy_query == '':
         return []
 
-    # Default to RELATES_TO if no edge types specified
+    # No explicit types: ask the graph what its entity edges are stored under.
+    # Assuming RELATES_TO here is what made FalkorDB edge search return nothing.
     if edge_types is None:
-        edge_types = ['RELATES_TO']
+        edge_types = await resolve_entity_edge_types(driver)
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
@@ -266,7 +318,10 @@ async def edge_fulltext_search(
     elif driver.provider == GraphProvider.FALKORDB:
         # For FalkorDB, query each edge type's fulltext index and combine results
         all_records: list[Any] = []
-        for edge_type in edge_types:
+        for requested_type in edge_types:
+            # Relationship types cannot be parameterised, so they are inlined —
+            # including the ones a caller supplied through EdgeSearchConfig.
+            edge_type = sanitize_edge_type(requested_type)
             match_query = f"""
             YIELD relationship AS rel, score
             MATCH (n:Entity)-[e:{edge_type} {{uuid: rel.uuid}}]->(m:Entity)
@@ -299,8 +354,10 @@ async def edge_fulltext_search(
                 )
                 all_records.extend(records)
             except Exception as e:
-                # Index may not exist for this edge type - skip silently
-                logger.debug(f'Fulltext search skipped for edge type {edge_type}: {e}')
+                # No fulltext index for this type: the edges exist but are
+                # unreachable by bm25, so the cosine leg carries them alone.
+                # Worth saying out loud — it is a partial BUG-62 in the making.
+                logger.info(f'Fulltext search skipped for edge type {edge_type}: {e}')
                 continue
 
         # Dedupe by uuid and sort by score
@@ -381,6 +438,21 @@ async def edge_similarity_search(
     if driver.provider == GraphProvider.KUZU:
         match_query = """
             MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity)
+        """
+    elif driver.provider == GraphProvider.FALKORDB:
+        # FalkorDB stores each entity edge under its own relationship type, so an
+        # untyped match is the only pattern that reaches all of them. The
+        # endpoints are what excludes Graphiti's structural edges: it writes
+        # MENTIONS Episodic->Entity, HAS_MEMBER Community->Entity, HAS_EPISODE
+        # Saga->Episodic and NEXT_EPISODE Episodic->Episodic, none of which can
+        # match Entity->Entity. That is an invariant of the structural WRITERS,
+        # not of the names — the bulk writer names an edge from extraction, so a
+        # fact edge may well be called HAS_MEMBER and belongs here. This is the
+        # same pattern get_entity_edge_types_query() enumerates, which is what
+        # keeps this leg and the bm25 leg agreeing. The `e.fact_embedding IS NOT
+        # NULL` filter below keeps the cosine call safe.
+        match_query = """
+            MATCH (n:Entity)-[e]->(m:Entity)
         """
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
