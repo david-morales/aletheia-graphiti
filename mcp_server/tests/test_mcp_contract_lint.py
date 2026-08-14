@@ -341,6 +341,13 @@ CONTRACT_GUARDS = {
     # MCPServer does unconditionally — so the connector announced it while
     # serving an empty list until P2 gave it the `investigate` prompt.
     'R7 announced capabilities are backed by something': 'test_prompt_surface.py',
+    # R7's other half. `resources.subscribe` is derived from the same
+    # unconditionally-served `subscriptions/listen` handler, and was announced
+    # with no publisher behind it until P4 gave it `resources/updated`. A
+    # content event that stops firing is invisible to every list-level guard.
+    'R7 the announced resource subscription has a publisher': (
+        'test_resource_updated_notifications.py'
+    ),
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'

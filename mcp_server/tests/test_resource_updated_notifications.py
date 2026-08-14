@@ -41,6 +41,13 @@ from mcp_types import SubscriptionFilter
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 
+# Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
+# these guards need no database and no API key, so they gate every change. This
+# is the R7 guard for the CONTENT half — an announced `resources.subscribe` with
+# no publisher behind it is the same defect the prompt surface guards for
+# `prompts`, and it is not one to discover on a droplet.
+pytestmark = pytest.mark.contract
+
 DOMAIN_SUMMARY = 'graphiti://domain_summary'
 ENTITY_CATALOG = 'graphiti://entity_catalog'
 RELATIONSHIP_TYPES = 'graphiti://relationship_types'
@@ -610,9 +617,33 @@ class TestEveryAnnouncedFreshnessBitIsNowBacked:
         caps = srv.mcp._lowlevel_server.get_capabilities(protocol_version='2026-07-28')
         assert caps.resources.subscribe is True
 
-    def test_the_server_publishes_resource_updated_somewhere(self):
-        import inspect
+    @pytest.mark.asyncio
+    async def test_the_publisher_puts_a_resource_updated_on_the_bus(self, monkeypatch):
+        """Driven, not grepped.
 
-        assert 'ResourceUpdated(' in inspect.getsource(srv._publish_surface_change), (
+        This assertion used to read `'ResourceUpdated(' in
+        inspect.getsource(...)` — satisfiable by a comment, a docstring or dead
+        code, so the message "the announced bit has no publisher" was one the
+        test had not earned. Publishing through the seam and reading the bus is
+        the claim itself.
+        """
+        bus = _Bus()
+        monkeypatch.setattr(srv.mcp, '_subscriptions', bus, raising=False)
+
+        await srv._publish_surface_change(
+            tools=False, resources=False, updated=('graphiti://anything',)
+        )
+
+        assert bus.published == [ResourceUpdated(uri='graphiti://anything')], (
             'the announced `resources.subscribe` has no publisher behind it'
         )
+
+    @pytest.mark.asyncio
+    async def test_the_publisher_stays_silent_when_nothing_moved(self, monkeypatch):
+        """The same seam's other half: no event kind, no publish at all."""
+        bus = _Bus()
+        monkeypatch.setattr(srv.mcp, '_subscriptions', bus, raising=False)
+
+        await srv._publish_surface_change(tools=False, resources=False, updated=())
+
+        assert bus.published == []

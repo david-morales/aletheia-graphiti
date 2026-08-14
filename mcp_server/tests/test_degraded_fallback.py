@@ -46,7 +46,19 @@ class _StubService:
 
 @pytest.fixture
 def degraded(monkeypatch):
-    """Run the real domain-surface build with introspection guaranteed to fail."""
+    """Run the real domain-surface build with introspection guaranteed to fail.
+
+    Restores the last-served fingerprint map too. Every test here drives
+    `_build_and_register_domain_surface`, which takes the P4 content baseline as
+    its last act, so ten runs of this fixture leave ten URIs' fingerprints
+    behind — process-global state `monkeypatch` knows nothing about, since it
+    was never patched. The freshness suites then read those as bodies this
+    process served, and a resource registered by hand looks like a content
+    change.
+
+    Fixed HERE as well as in the consumers: a leak closed only where it happens
+    to be noticed will be re-opened by the next module that drives startup.
+    """
     service = _StubService()
     monkeypatch.setattr(srv, 'graphiti_service', service)
     monkeypatch.setattr(srv, 'config', service.config, raising=False)
@@ -55,7 +67,12 @@ def degraded(monkeypatch):
         raise RuntimeError('graph introspection exploded')
 
     monkeypatch.setattr(srv, 'build_domain_profile', _boom)
-    return service
+    served = dict(srv._last_served_resource_bodies)
+    try:
+        yield service
+    finally:
+        srv._last_served_resource_bodies.clear()
+        srv._last_served_resource_bodies.update(served)
 
 
 async def test_the_degraded_surface_still_serves_all_eighteen_tools(degraded):
