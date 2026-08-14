@@ -301,6 +301,40 @@ async def test_combined_mode_edge_leg_returns_facts():
     assert {e.uuid for e in results.edges} == {'edge-detiene-1', 'edge-interviene-1'}
 
 
+async def test_live_probe_bm25_fallback_never_calls_the_embedder():
+    """verify_live.py runs without API keys, so it must not reach for an embedder.
+
+    Its cosine leg borrows a fact_embedding from the graph; when the graph has
+    none to borrow it strips the vector-dependent methods instead. search() then
+    takes its zero-vector path — if a method survived the strip, it would call
+    `embedder.create` on the None this probe passes and die at runtime.
+    """
+    import verify_live
+    from graphiti_core.search.search import search
+    from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
+
+    original_methods = list(COMBINED_HYBRID_SEARCH_RRF.edge_config.search_methods)
+
+    log = FakeFalkorQueryLog(PRESENT_RELATIONSHIP_TYPES, WRITTEN_EDGES)
+    clients = MagicMock()
+    clients.driver = _falkor_driver(log)
+    clients.embedder = None  # exactly what the probe passes with no key
+    clients.cross_encoder = AsyncMock()
+
+    results = await search(
+        clients,
+        'robo',
+        ['policia'],
+        verify_live._bm25_only(COMBINED_HYBRID_SEARCH_RRF),
+        SearchFilters(),
+    )
+
+    # The bm25 leg still finds the typed edges.
+    assert {e.uuid for e in results.edges} == {'edge-detiene-1', 'edge-interviene-1'}
+    # And the shared module-level recipe is untouched for every later caller.
+    assert COMBINED_HYBRID_SEARCH_RRF.edge_config.search_methods == original_methods
+
+
 async def test_falkordb_and_default_arms_return_the_same_edges():
     """Two-arm parity: the same written edges are found on either flavour.
 
