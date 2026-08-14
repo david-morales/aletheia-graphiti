@@ -73,7 +73,9 @@ def _bm25_only(config):
     stripped = config.model_copy(deep=True)
     if stripped.edge_config:
         stripped.edge_config.search_methods = [
-            m for m in stripped.edge_config.search_methods if m != EdgeSearchMethod.cosine_similarity
+            m
+            for m in stripped.edge_config.search_methods
+            if m != EdgeSearchMethod.cosine_similarity
         ]
     if stripped.node_config:
         stripped.node_config.search_methods = [
@@ -115,12 +117,16 @@ async def _borrow_fact_embedding(driver) -> list[float] | None:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description='BUG-62 live probe (read-only)')
-    parser.add_argument('--graph', default=os.environ.get('FALKORDB_GRAPH') or os.environ.get('FALKORDB_DATABASE'))
+    parser.add_argument(
+        '--graph', default=os.environ.get('FALKORDB_GRAPH') or os.environ.get('FALKORDB_DATABASE')
+    )
     parser.add_argument('--host', default=os.environ.get('FALKORDB_HOST', '127.0.0.1'))
     parser.add_argument('--port', type=int, default=int(os.environ.get('FALKORDB_PORT', '6379')))
     parser.add_argument('--group-id', action='append', dest='group_ids', default=None)
     parser.add_argument('--limit', type=int, default=10)
-    parser.add_argument('--embed', action='store_true', help='use a real embedder (needs OPENAI_API_KEY)')
+    parser.add_argument(
+        '--embed', action='store_true', help='use a real embedder (needs OPENAI_API_KEY)'
+    )
     parser.add_argument('--allow-reserved-port', action='store_true')
     args = parser.parse_args()
 

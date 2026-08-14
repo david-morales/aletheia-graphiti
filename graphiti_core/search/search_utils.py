@@ -212,7 +212,7 @@ async def resolve_entity_edge_types(driver: GraphDriver) -> list[str]:
     for record in records:
         if isinstance(record, dict):
             values = list(record.values())
-        elif isinstance(record, (list, tuple)):
+        elif isinstance(record, list | tuple):
             values = list(record)
         else:
             values = [record]

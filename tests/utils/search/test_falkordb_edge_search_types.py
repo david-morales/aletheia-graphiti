@@ -343,17 +343,13 @@ async def test_falkordb_and_default_arms_return_the_same_edges():
     """
     falkor_log = FakeFalkorQueryLog(PRESENT_RELATIONSHIP_TYPES, WRITTEN_EDGES)
     falkor_driver = _falkor_driver(falkor_log)
-    falkor_edges = await edge_fulltext_search(
-        falkor_driver, 'robo', SearchFilters(), ['policia']
-    )
+    falkor_edges = await edge_fulltext_search(falkor_driver, 'robo', SearchFilters(), ['policia'])
 
     # Default arm: one RELATES_TO index holding the same two edges.
     default_driver = _plain_driver(GraphProvider.NEO4J)
     all_records = [r for records in WRITTEN_EDGES.values() for r in records]
     default_driver.execute_query = AsyncMock(return_value=(all_records, None, None))
-    default_edges = await edge_fulltext_search(
-        default_driver, 'robo', SearchFilters(), ['policia']
-    )
+    default_edges = await edge_fulltext_search(default_driver, 'robo', SearchFilters(), ['policia'])
 
     assert {e.uuid for e in falkor_edges} == {e.uuid for e in default_edges}
     assert {e.fact for e in falkor_edges} == {e.fact for e in default_edges}
