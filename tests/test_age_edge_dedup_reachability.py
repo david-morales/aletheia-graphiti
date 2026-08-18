@@ -684,16 +684,54 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
     async def test_an_edge_without_an_embedding_yields_no_candidates_but_keeps_its_slot(
         self, age_search, method
     ):
-        """A missing embedding is one edge's problem, not the whole batch's."""
-        driver = _FakeAGEDriver(rows=[{'idx': 0, 'uuid': 'a', 'score': 0.9}])
+        """A missing embedding is one edge's problem, not the whole batch's.
+
+        The skipped edge goes FIRST on purpose. `idx` is the INPUT position, not
+        the row number of the bound array, and the two only diverge once a
+        skipped edge precedes a kept one — with the skip second, `idxs.append(i)`
+        and `idxs.append(len(idxs))` produce the same array and the off-by-N
+        hides. Here the bound index must be [1]: get it wrong and every DB row is
+        attributed to the wrong input edge, which is a silently wrong dedup.
+        """
+        driver = _FakeAGEDriver(rows=[{'idx': 1, 'uuid': 'a', 'score': 0.9}])
         result = await getattr(age_search, method)(
             driver,
-            [_edge(uuid='with'), _edge(uuid='without', embedding=[])],
+            [_edge(uuid='without', embedding=[]), _edge(uuid='with')],
             SearchFilters(),
         )
+        assert driver.args[0][0] == [1], (
+            'the bound index is the position in `edges`, not the position in the '
+            'array of edges that survived the embedding check'
+        )
         assert len(result) == 2
-        assert [e.uuid for e in result[0]] == ['a']
-        assert result[1] == []
+        assert result[0] == []
+        assert [e.uuid for e in result[1]] == ['a']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
+    )
+    async def test_every_bound_column_is_aligned_to_the_same_input_edges(
+        self, age_search, method
+    ):
+        """idx / group / source / target / embedding must describe the same rows."""
+        driver = _FakeAGEDriver()
+        await getattr(age_search, method)(
+            driver,
+            [
+                _edge(uuid='skipped', source='s0', target='t0', group_id='g0', embedding=[]),
+                _edge(uuid='kept-1', source='s1', target='t1', group_id='g1'),
+                _edge(uuid='skipped-2', source='s2', target='t2', group_id='g2', embedding=[]),
+                _edge(uuid='kept-3', source='s3', target='t3', group_id='g3'),
+            ],
+            SearchFilters(),
+        )
+        idxs, gids, srcs, tgts, embs = driver.args[0]
+        assert idxs == [1, 3]
+        assert gids == ['g1', 'g3']
+        assert srcs == ['s1', 's3']
+        assert tgts == ['t1', 't3']
+        assert len(embs) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
