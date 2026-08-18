@@ -31,10 +31,16 @@ Same nodes, same order, scores related by exactly ``falkor = (1 + age) / 2``.
 The legs agreed on the ranking and disagreed only on the scale the floor was
 applied to — so the semantically correct hit was found and then thrown away.
 
-These tests are offline (no live backend) so they gate every CI run. The
-behavioural ones drive the REAL SQL the driver emits through a fake driver that
-evaluates the projected score expression against a known cosine distance, which
-is the exact condition that triggered the bug: a node at raw cosine 0.4130 must
+These tests are offline — no live backend, no fixtures from
+``tests/driver/conftest.py`` — and they live at ``tests/`` root DELIBERATELY.
+The unit-test CI job runs ``pytest tests/ -m "not integration"`` with
+``--ignore=tests/driver/`` (``.github/workflows/unit_tests.yml``), so a
+regression guard placed beside the other AGE tests would never have run in CI
+at all. Here it gates every push.
+
+The behavioural tests drive the REAL SQL the driver emits through a fake driver
+that evaluates the projected score expression against a known cosine distance —
+the exact condition that triggered the bug: a node at raw cosine 0.4130 must
 survive ``min_score=0.6``.
 """
 
