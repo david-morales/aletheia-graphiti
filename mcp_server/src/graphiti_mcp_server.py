@@ -304,13 +304,19 @@ class GraphitiService:
         elif provider == 'age':
             # AGE ontology lives in a companion graph (<graph>_ontology) in the same Postgres/AGE
             # instance — same DSN + embedding_dim, different graph_name.
-            from graphiti_core.driver.age_driver import AGEDriver
+            from graphiti_core.driver.age_driver import (
+                DEFAULT_TEXT_SEARCH_CONFIG,
+                AGEDriver,
+            )
 
             ontology_driver = AGEDriver(
                 dsn=db_config['dsn'],
                 graph_name=ontology_graph_name,
                 embedding_dim=db_config['embedding_dim'],
-                text_search_config=db_config['text_search_config'],
+                # Optional knob: a config dict built before it existed still works.
+                text_search_config=db_config.get(
+                    'text_search_config', DEFAULT_TEXT_SEARCH_CONFIG
+                ),
             )
         else:
             logger.warning(f'Ontology graph not supported for {provider} provider')
@@ -434,13 +440,20 @@ class GraphitiService:
                     )
                 elif self.config.database.provider.lower() == 'age':
                     # For AGE (PostgreSQL + Apache AGE), create an AGEDriver instance directly.
-                    from graphiti_core.driver.age_driver import AGEDriver
+                    from graphiti_core.driver.age_driver import (
+                        DEFAULT_TEXT_SEARCH_CONFIG,
+                        AGEDriver,
+                    )
 
                     age_driver = AGEDriver(
                         dsn=db_config['dsn'],
                         graph_name=db_config['graph_name'],
                         embedding_dim=db_config['embedding_dim'],
-                        text_search_config=db_config['text_search_config'],
+                        # Optional knob: a config dict built before it existed
+                        # still works.
+                        text_search_config=db_config.get(
+                            'text_search_config', DEFAULT_TEXT_SEARCH_CONFIG
+                        ),
                     )
 
                     self.client = Graphiti(

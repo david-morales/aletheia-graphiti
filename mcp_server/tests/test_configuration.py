@@ -230,3 +230,31 @@ def test_database_driver_factory_age():
     assert out["driver"] == "age"
     assert out["graph_name"] == "policia_age_poc"
     assert out["embedding_dim"] == 1024
+    assert out["text_search_config"] == "simple"
+
+
+def test_age_text_search_config_defaults_to_simple():
+    """`simple` folds case and nothing else — the only safe default for a
+    language-agnostic connector. Anything else would be a domain assumption."""
+    from config.schema import AgeProviderConfig
+    c = AgeProviderConfig(dsn="postgresql://age:age@localhost:5433/age_test")
+    assert c.text_search_config == "simple"
+
+
+def test_age_text_search_config_is_configurable_and_env_overridable(monkeypatch):
+    """The corpus language is a deployment fact, so it travels through the same
+    seam `embedding_dim` uses: YAML field first, `AGE_*` env override on top."""
+    from config.schema import AgeProviderConfig, DatabaseConfig, DatabaseProvidersConfig
+    from services.factories import DatabaseDriverFactory
+    cfg = DatabaseConfig(
+        provider="age",
+        providers=DatabaseProvidersConfig(
+            age=AgeProviderConfig(dsn="postgresql://age:age@localhost:5433/age_test",
+                                  text_search_config="spanish")
+        ),
+    )
+    monkeypatch.delenv("AGE_TEXT_SEARCH_CONFIG", raising=False)
+    assert DatabaseDriverFactory.create_config(cfg)["text_search_config"] == "spanish"
+
+    monkeypatch.setenv("AGE_TEXT_SEARCH_CONFIG", "english")
+    assert DatabaseDriverFactory.create_config(cfg)["text_search_config"] == "english"
