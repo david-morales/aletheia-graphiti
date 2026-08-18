@@ -229,6 +229,60 @@ class SearchInterface(BaseModel):
         """
         raise NotImplementedError
 
+    # ---------- INGESTION-TIME CANDIDATE LOOKUPS ----------
+    #
+    # The default values below repeat `search_utils.DEFAULT_MIN_SCORE` (0.6) and
+    # `RELEVANT_SCHEMA_LIMIT` (10) as literals rather than importing them: this
+    # module is imported by `driver.py`, which `search_utils` itself imports, so
+    # the import would close a cycle. The callers always pass both explicitly.
+
+    async def get_relevant_edges(
+        self,
+        driver: Any,
+        edges: list[Any],
+        search_filter: Any,
+        min_score: float = 0.6,
+        limit: int = 10,
+    ) -> list[list[Any]]:
+        """Find existing edges that may DUPLICATE each of `edges`.
+
+        The candidate set for one input edge is the edges already in the graph
+        that run between the SAME node pair — in either direction — scoped to the
+        edge's group, ranked by fact-embedding cosine similarity, gated strictly
+        above `min_score` and truncated to `limit`.
+
+        Args:
+            driver: GraphDriver instance
+            edges: EntityEdge objects to find duplicate candidates for
+            search_filter: SearchFilters instance for filtering results
+            min_score: Minimum similarity score, exclusive
+            limit: Maximum candidates per input edge
+
+        Returns:
+            list[list[EntityEdge]]: One candidate list per input edge, in the
+                same order as `edges` (an edge with no candidates gets []).
+        """
+        raise NotImplementedError
+
+    async def get_edge_invalidation_candidates(
+        self,
+        driver: Any,
+        edges: list[Any],
+        search_filter: Any,
+        min_score: float = 0.6,
+        limit: int = 10,
+    ) -> list[list[Any]]:
+        """Find existing edges each of `edges` may CONTRADICT (temporal invalidation).
+
+        Same contract as `get_relevant_edges` but a wider candidate set: every
+        edge INCIDENT to either endpoint of the input edge, not only the edges
+        between that exact pair.
+
+        Returns:
+            list[list[EntityEdge]]: One candidate list per input edge, in order.
+        """
+        raise NotImplementedError
+
     async def community_fulltext_search(
         self,
         driver: Any,
