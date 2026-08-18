@@ -7,6 +7,7 @@ FROM falkordb/falkordb:latest AS falkordb-base
 # Install Python and system dependencies
 # Note: Debian Bookworm (FalkorDB base) ships with Python 3.11
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    perl-base \
     python3 \
     python3-dev \
     python3-pip \
