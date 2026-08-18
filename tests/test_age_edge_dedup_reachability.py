@@ -581,7 +581,14 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
     @pytest.mark.asyncio
     @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_shuffled_rows_are_also_regrouped_by_input_edge(self, age_search, method):
-        """`q.idx` leading the ORDER BY is what keeps each input edge's rows together."""
+        """Each input edge's rows come back in its own bucket, score-ranked.
+
+        Grouping itself does NOT depend on `q.idx` leading the ORDER BY —
+        `_edge_candidates` buckets through `ranked.setdefault(int(row['idx']), [])`,
+        a dict, so contiguity is not required and `ORDER BY score DESC` alone is
+        an equivalent mutant behaviourally (it dies on the string pin only).
+        What this test pins is the per-bucket score ranking under shuffled rows.
+        """
         driver = _FakeAGEDriver(
             rows=[
                 {'idx': 1, 'uuid': 'b-low', 'score': 0.70},
