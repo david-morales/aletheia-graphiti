@@ -38,10 +38,16 @@ DEFAULT_ENTITY_EDGE_TYPE = 'RELATES_TO'
 #     its typed relationship name; `RELATES_TO` never appears at all.
 #
 # On Neo4j, Kuzu and Neptune the type genuinely is the constant, so a pattern
-# that names it stays both correct and index-served there. Any query that pins
-# `:RELATES_TO` matches ZERO rows on the providers listed here, and matching
-# nothing is not an error — which is why every instance of this bug has been
-# silent.
+# that names it stays both correct and index-served there.
+#
+# How a pinned `:RELATES_TO` fails is NOT the same on the two providers listed
+# here, and the difference is worth stating because only one half is dangerous:
+#   * FALKORDB — the pattern parses and matches ZERO rows. Matching nothing is
+#     not an error, so the failure is SILENT. This is the dangerous half, and
+#     the reason every instance of this bug survived so long.
+#   * AGE — the alternation form is not silent at all: `MENTIONS|RELATES_TO
+#     |HAS_MEMBER` is a hard `ERROR: syntax error at or near "|"` (measured).
+#     A loud failure cannot have quietly corrupted anything.
 TYPED_EDGE_LABEL_PROVIDERS = frozenset({GraphProvider.FALKORDB, GraphProvider.AGE})
 
 

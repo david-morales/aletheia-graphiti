@@ -135,6 +135,26 @@ def _build_falkor_fulltext_query(
 
 
 class FalkorSearchOperations(SearchOperations):
+    """FalkorDB search operations — STAGED, not yet wired up.
+
+    Nothing constructs this class. `FalkorDriver` sets no `search_ops`, and
+    `search_utils` reaches FalkorDB through its own provider branches, so every
+    live FalkorDB search today runs the `search_utils` code — NOT this. The
+    module exists for a staged upstream refactor that moves per-provider search
+    behind this interface.
+
+    That makes it dead code, and dead code is exactly where a fixed bug comes
+    back: the three edge methods here still carried the `RELATES_TO` constant
+    that BUG-62 removed from the live legs, so wiring the refactor up would have
+    re-shipped BUG-62 with no diff to blame. They are corrected here (BUG-87) so
+    that cannot happen, and each is kept byte-compatible in SHAPE with the live
+    leg it is meant to replace — a divergence between the two is a behaviour
+    change hiding inside a refactor.
+
+    Anything asserted about these methods is therefore a statement about a
+    FUTURE wiring, never about what a FalkorDB deployment does today.
+    """
+
     # --- Node search ---
 
     async def node_fulltext_search(
@@ -471,10 +491,28 @@ class FalkorSearchOperations(SearchOperations):
         # result is asserted where it belongs — on the ENDPOINTS of the hydrating
         # match, which no structural edge (Episodic->Entity, Community->Entity,
         # Saga->Episodic, Episodic->Episodic) can satisfy.
+        #
+        # Byte-for-byte the shape of the LIVE leg (`search_utils.edge_bfs_search`,
+        # the non-Kuzu non-Neptune branch), including its direction. That is
+        # deliberate: this module is staged to REPLACE that leg, so any
+        # divergence between them is a behaviour change smuggled in under a
+        # refactor. NOTE, carried over from the live leg: we traverse in BOTH
+        # directions (`-[*1..N]-`) to find edges regardless of direction. The
+        # previous version here was directed (`->`), which silently returned
+        # fewer edges than the leg it is meant to stand in for.
+        #
+        # RECORDED, latent until this module is wired up: dropping the
+        # `RELATES_TO|MENTIONS` type list from the traversal WIDENS the reachable
+        # set — an Episodic origin can now walk `NEXT_EPISODE`/`HAS_EPISODE`
+        # before reaching an entity, so origins reach edges they previously could
+        # not. No WRONG-TYPE row can result (the hydrating match is
+        # Entity–Entity, which filters them out); the change is in which entity
+        # edges are considered NEAR an origin. Matches the live leg, which has
+        # been untyped since the BUG-62 wave.
         cypher = (
             f"""
             UNWIND $bfs_origin_node_uuids AS origin_uuid
-            MATCH path = (origin {{uuid: origin_uuid}})-[*1..{max_depth}]->(:Entity)
+            MATCH path = (origin {{uuid: origin_uuid}})-[*1..{max_depth}]-(:Entity)
             UNWIND relationships(path) AS rel
             MATCH (n:Entity)-[e {{uuid: rel.uuid}}]-(m:Entity)
             """

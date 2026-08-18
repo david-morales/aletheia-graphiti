@@ -391,11 +391,18 @@ class TestCommunityProjectionReachesATypedEdge:
 class _FakeExecutor:
     """A QueryExecutor whose graph holds ONE typed entity edge.
 
-    `driver.search_ops` is not wired up today — nothing calls
-    `FalkorSearchOperations` — but the ledger records these three methods
-    because they reintroduce BUG-62 the day the staged upstream refactor lands.
-    So they are tested through their real signatures, against a graph that
-    reports the types a bulk ingest actually produces.
+    ⚠️ Everything below this line tests DEAD CODE. `FalkorSearchOperations` has
+    zero consumers repo-wide: `FalkorDriver` sets no `search_ops`, and every
+    live FalkorDB search runs the `search_utils` provider branches, which have
+    been untyped since the BUG-62 wave. **This branch does not fix a live falkor
+    fulltext, similarity or BFS leg — there was nothing left to fix in one.**
+
+    The module is staged for an upstream refactor that would move per-provider
+    search behind this interface, and it still carried the constant BUG-62
+    removed — so wiring that refactor up would have re-shipped BUG-62 with no
+    diff to blame for it. These tests hold the corrected shape until then, and
+    every assertion here is a statement about a FUTURE wiring, never about what
+    a FalkorDB deployment does today.
     """
 
     def __init__(self, edge_types: list[str] | None = None):
@@ -470,3 +477,19 @@ class TestTheFalkorOpsModuleEdgeMethods:
         assert 'RELATES_TO|MENTIONS' not in cypher, 'the traversal cannot walk a typed edge'
         assert pattern_selects(cypher, TYPED_LABEL)
         assert '(n:Entity)-[e {uuid: rel.uuid}]-(m:Entity)' in cypher
+
+    @pytest.mark.asyncio
+    async def test_bfs_traverses_undirected_like_the_leg_it_would_replace(self, ops):
+        """A direction divergence is a behaviour change hiding in a refactor.
+
+        The live leg (`search_utils.edge_bfs_search`, non-Kuzu non-Neptune) has
+        an explicit NOTE that it traverses BOTH directions to find edges
+        regardless of direction. This module is staged to replace it, so it must
+        traverse the same way — a directed `->` here would silently return fewer
+        edges the day the refactor lands.
+        """
+        executor = _FakeExecutor()
+        await ops.edge_bfs_search(executor, ['origin-1'], 2, SearchFilters(), limit=5)
+        cypher = executor.search_queries[0]
+        assert '-[*1..2]-(:Entity)' in cypher
+        assert '-[*1..2]->(:Entity)' not in cypher, 'directed traversal — the live leg is not'
