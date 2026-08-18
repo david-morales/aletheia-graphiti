@@ -96,6 +96,27 @@ _NORMALIZED_COSINE = '(2 - ({col} <=> $1::vector)) / 2'
 # `_OR_TSQUERY` and DESIGN-age-fulltext.md.
 _DEFAULT_TEXT_SEARCH_CONFIG = 'simple'
 
+
+def _validated_text_search_config(driver: Any) -> str:
+    """The configuration to lexize with, re-checked before it is inlined.
+
+    `AGEDriver.__init__` already validates, and every production path goes
+    through it — but this module inlines the value into SQL text (see
+    `_OR_TSQUERY`), and "inlined" plus "trusted because someone else checked"
+    is how injections happen. Re-validating here makes the invariant local:
+    NOTHING unvalidated is ever inlined, whatever object the search interface
+    was handed. The regex is a few microseconds against a per-query database
+    round trip.
+
+    Imported inside the function so this module keeps its dependency footprint
+    (the driver module imports asyncpg; the search interface need not).
+    """
+    from graphiti_core.driver.age_driver import validate_text_search_config
+
+    return validate_text_search_config(
+        getattr(driver, 'text_search_config', None) or _DEFAULT_TEXT_SEARCH_CONFIG
+    )
+
 # The tsquery both fulltext legs match on: OR over the query's terms (BUG-98
 # residue (a)).
 #
@@ -119,25 +140,26 @@ _DEFAULT_TEXT_SEARCH_CONFIG = 'simple'
 #   * whitespace-, punctuation- or stopword-only input yields the empty tsquery,
 #     which matches nothing — the behaviour before this change.
 #
-# The configuration travels as `$2::text::regconfig`: a bind parameter (asyncpg
-# has no `regconfig` codec, hence the `::text` hop) resolved server-side. It is
-# NEVER interpolated. Its index-side twin — the `tsv` generated column — cannot
-# take a parameter and is validated + inlined instead, in `AGEDriver`.
+# The configuration is INLINED as a literal, not bound as a parameter, and that
+# is a measured decision rather than a stylistic one. Bound as
+# `$2::text::regconfig` the cast runs `regconfigin`, which is STABLE
+# (search_path-dependent) — so the whole expression is no longer foldable, and
+# `ts_rank_cd` re-evaluates the tsquery construction ONCE PER ROW. Measured by
+# review on a 774-row table, same rows returned: 5.33 ms bound vs 1.62 ms
+# inlined. With a literal the argument is a plan-time constant, the rewrite is
+# evaluated once, and `tsv @@ …` stays a GIN index probe.
 #
-# Parameter layout for both legs: $1 = query text, $2 = configuration,
-# $3 = group_ids (only when filtering by group).
-_OR_TSQUERY = "replace(plainto_tsquery($2::text::regconfig, $1)::text, ' & ', ' | ')::tsquery"
-
-
-def _text_search_config(driver: Any) -> str:
-    """The text-search configuration this driver's shadow tables were built with.
-
-    Read off the driver rather than held on the search interface: every method
-    already receives the driver, and the driver is the thing that knows how its
-    own tables were generated. The default keeps a driver that predates the
-    parameter working on its `simple`-generated tables.
-    """
-    return getattr(driver, 'text_search_config', None) or _DEFAULT_TEXT_SEARCH_CONFIG
+# Inlining is safe because the name is validated — at `AGEDriver.__init__` and
+# again at `_validated_text_search_config` immediately before it lands here —
+# against a regex that admits no quote, no whitespace and no semicolon. This is
+# the SAME discipline the index side already had to use: a generated column
+# cannot take a parameter either, so `AGEDriver._tsv_generated_expr` has always
+# inlined it. One rule now covers both sites: validated at construction, inlined
+# at both, and the USER TEXT is the thing that stays a bind parameter.
+#
+# Parameter layout for both legs: $1 = query text, $2 = group_ids (only when
+# filtering by group).
+_OR_TSQUERY = "replace(plainto_tsquery('{cfg}', $1)::text, ' & ', ' | ')::tsquery"
 
 
 def _cy_list(values: list[str]) -> str:
@@ -271,15 +293,16 @@ class AGESearch(SearchInterface):
     ) -> list[Any]:
         if not query or not query.strip():
             return []
-        args: list[Any] = [query, _text_search_config(driver)]
+        tsquery = _OR_TSQUERY.format(cfg=_validated_text_search_config(driver))
+        args: list[Any] = [query]
         group_clause = ''
         if group_ids:
-            group_clause = 'AND group_id = ANY($3::text[])'
+            group_clause = 'AND group_id = ANY($2::text[])'
             args.append(group_ids)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, ts_rank_cd(tsv, {_OR_TSQUERY}) AS rank
+            f"""SELECT uuid, ts_rank_cd(tsv, {tsquery}) AS rank
                 FROM {driver._node_tbl}
-                WHERE tsv @@ {_OR_TSQUERY} {group_clause}
+                WHERE tsv @@ {tsquery} {group_clause}
                 ORDER BY rank DESC
                 LIMIT {int(limit)}""",
             *args,
@@ -297,15 +320,16 @@ class AGESearch(SearchInterface):
     ) -> list[Any]:
         if not query or not query.strip():
             return []
-        args: list[Any] = [query, _text_search_config(driver)]
+        tsquery = _OR_TSQUERY.format(cfg=_validated_text_search_config(driver))
+        args: list[Any] = [query]
         group_clause = ''
         if group_ids:
-            group_clause = 'AND group_id = ANY($3::text[])'
+            group_clause = 'AND group_id = ANY($2::text[])'
             args.append(group_ids)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, ts_rank_cd(tsv, {_OR_TSQUERY}) AS rank
+            f"""SELECT uuid, ts_rank_cd(tsv, {tsquery}) AS rank
                 FROM {driver._edge_tbl}
-                WHERE tsv @@ {_OR_TSQUERY} {group_clause}
+                WHERE tsv @@ {tsquery} {group_clause}
                 ORDER BY rank DESC
                 LIMIT {int(limit)}""",
             *args,

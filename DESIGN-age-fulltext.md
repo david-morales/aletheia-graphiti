@@ -81,25 +81,35 @@ driver is the thing that knows how its own tables were built.
 
 ## Injection safety
 
-The configuration name reaches SQL by two routes, and they are not equally safe:
+One rule covers both sites: **the configuration name is validated, then inlined; the user's query
+text is the thing that stays a bind parameter.**
 
-* **Query side — parameterised.** `plainto_tsquery($2::text::regconfig, $1)`. The name travels as a
-  bind parameter; the `::text::regconfig` double cast keeps the wire type `text` (asyncpg has no
-  `regconfig` codec) and lets Postgres resolve it. Nothing is interpolated.
-* **DDL side — validated, then inlined.** A generated-column expression cannot take a bind
-  parameter, so the name must appear as a literal. It is validated at **driver construction**
-  against `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$` (an optionally schema-qualified
-  identifier — the shape `regconfig` accepts) and rejected with `ValueError` otherwise. Validation
-  at construction, not at DDL time, so a bad value fails before it can touch a database and can be
-  tested with no database at all. The validated name is then emitted as a single-quoted SQL string
-  literal; the regex admits no quote character, so the quoting cannot be broken out of.
+* **Validated** at `AGEDriver.__init__` against
+  `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$` — an optionally schema-qualified
+  identifier, the shape `regconfig` accepts — and rejected with `ValueError` otherwise. At
+  construction, not at use, so a bad value fails before it can touch a database and the check needs
+  no database to test. It is validated **again** in `age_search._validated_text_search_config`,
+  immediately before the value is written into SQL text: the search interface is handed a driver
+  object, and "inlined because someone upstream checked" is how injections happen. Re-checking makes
+  the invariant local — nothing unvalidated is ever inlined — for a regex against a per-query
+  database round trip.
+* **Inlined** at both sites. The DDL side has no choice: a generated-column expression takes no bind
+  parameters. The query side had one, and chose the literal on a **measurement**. Bound as
+  `$2::text::regconfig`, the cast runs `regconfigin`, which is **STABLE** (it resolves through
+  `search_path`) — that poisons constant folding, so `ts_rank_cd` re-evaluates the entire
+  `replace(plainto_tsquery(…))` rewrite **once per row**. Review measured 5.33 ms bound vs 1.62 ms
+  inlined for the identical query returning the identical rows on a 774-row table. With a literal
+  the argument is a plan-time constant, the rewrite is evaluated once, and `tsv @@ …` remains a GIN
+  index probe.
+
+Because the regex admits no quote character, the single-quoted literal cannot be broken out of.
 
 The **query text** itself never reaches the tsquery grammar as syntax — see below.
 
 ## How OR is built
 
 ```sql
-replace(plainto_tsquery($2::text::regconfig, $1)::text, ' & ', ' | ')::tsquery
+replace(plainto_tsquery('<validated config>', $1)::text, ' & ', ' | ')::tsquery
 ```
 
 `plainto_tsquery` does the parsing, the dictionary lookup and the quoting; the rewrite only swaps
@@ -112,7 +122,16 @@ its conjunction for a disjunction. Why this and not the alternatives:
   lexemes, spaces included — and never `|`, `!`, `<->` or weight suffixes (that is
   `phraseto_tsquery` / `to_tsquery` territory). A lexeme cannot contain a space: the default parser
   never emits whitespace inside a token, so ` & ` cannot occur inside the quoted lexemes the
-  replace scans past.
+  replace scans past. Review put 360 adversarial trials through this — every stock configuration,
+  every token type — and found zero corruption routes.
+
+  **The residual, recorded:** that last sentence is a property of the *stock* configurations, not a
+  theorem. A CUSTOM text-search configuration whose dictionary emits whitespace-bearing lexemes —
+  reachable in principle through the schema-qualified-name path, since `thesaurus`- or
+  `tag`-mapping dictionaries can return multi-word replacements — would put a space, and therefore
+  a possible ` & `, inside a quoted lexeme, and the rewrite would corrupt it. Unreachable with all
+  30 stock configurations; the cost of admitting a custom one is that this argument has to be
+  re-checked against its dictionaries.
 * **Empty input stays empty.** Whitespace-only, punctuation-only or all-stopword input yields the
   empty tsquery, which matches nothing — identical to today's behaviour, and the Python-side
   `if not query.strip(): return []` guard is kept in front of it as the cheap path.

@@ -22,8 +22,11 @@ What these tests prove, and how
 Two levels, both driven through the SQL the driver ACTUALLY emits:
 
 * *shape* — the emitted SQL is asserted directly: the disjunction rewrite is
-  present on both legs, the configuration travels as a bind PARAMETER (never
-  interpolated), and the group-id parameter is renumbered around it.
+  present on both legs, the configuration is inlined as an IMMUTABLE literal
+  (a bound ``::regconfig`` cast is STABLE and costs a per-row re-evaluation of
+  the whole rewrite — measured 5.33 ms vs 1.62 ms), the USER TEXT is the half
+  that stays a bind parameter, and an unvalidated configuration cannot reach
+  the SQL text at all.
 * *behaviour* — ``_FakePostgres`` extracts the tsquery expression out of that
   same SQL and evaluates it against a tiny corpus with a faithful model of the
   Postgres pieces involved: ``plainto_tsquery`` (lexize + quote + ``' & '``
@@ -56,9 +59,7 @@ from graphiti_core.driver.search_interface.age_search import AGESearch
 
 # ---------------------------------------------------------------- the PG model
 
-_PLAINTO_RE = re.compile(
-    r'plainto_tsquery\(\s*\$(?P<cfg>\d+)::text::regconfig\s*,\s*\$(?P<txt>\d+)\s*\)'
-)
+_PLAINTO_RE = re.compile(r"plainto_tsquery\(\s*'(?P<cfg>[^']*)'\s*,\s*\$(?P<txt>\d+)\s*\)")
 # `replace(<x>, 'a', 'b')` — the two literal arguments, in order of application.
 _REPLACE_ARGS_RE = re.compile(r",\s*'(?P<old>[^']*)'\s*,\s*'(?P<new>[^']*)'\s*\)")
 _RANK_RE = re.compile(r'ts_rank_cd\(tsv,\s*(?P<expr>.+?)\)\s+AS rank', re.DOTALL)
@@ -79,7 +80,7 @@ def _tsquery_from_sql(expr: str, args: list) -> tuple[str, list[list[str]]]:
     assumes OR.
     """
     call = _PLAINTO_RE.search(expr)
-    assert call, f'no parameterised plainto_tsquery call in: {expr}'
+    assert call, f'no plainto_tsquery call with an inlined configuration in: {expr}'
     text = args[int(call.group('txt')) - 1]
     lexemes = _lexize(text)
     rendered = ' & '.join(f"'{lexeme}'" for lexeme in lexemes)
@@ -268,24 +269,34 @@ class TestTheEmittedSql:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('leg', ['node_fulltext_search', 'edge_fulltext_search'])
-    async def test_the_configuration_is_a_bind_parameter_not_an_interpolation(self, search, leg):
+    async def test_the_configuration_is_inlined_as_an_immutable_literal(self, search, leg):
+        """Inlined ON PURPOSE, and the reason is a measurement.
+
+        Bound as `$2::text::regconfig` the cast runs `regconfigin`, which is
+        STABLE — the expression stops being foldable and `ts_rank_cd`
+        re-evaluates the whole rewrite PER ROW (review measured 5.33 ms vs
+        1.62 ms on a 774-row table, same rows returned). A literal is a
+        plan-time constant. Safe because the value is validated before it ever
+        gets here — see `TestTheConfigurationIsValidatedBeforeItCanReachSql`.
+        """
         driver = _FakePostgres(CORPUS, text_search_config='spanish')
         await getattr(search, leg)(driver, 'tipo de hecho', None, limit=10)
-        assert '$2::text::regconfig' in driver.last_sql
-        assert driver.last_args[1] == 'spanish', 'the configuration must travel as an argument'
-        assert "'spanish'" not in driver.last_sql, (
-            'the configuration was interpolated into the SQL text — the one thing the '
-            'design forbids on the query side:\n' + driver.last_sql
+        assert "plainto_tsquery('spanish', $1)" in driver.last_sql
+        assert '::regconfig' not in driver.last_sql, (
+            'the STABLE regconfig cast is back — this is the per-row re-evaluation '
+            'the inlining exists to avoid:\n' + driver.last_sql
         )
+        assert driver.last_args == ['tipo de hecho'], 'only the USER TEXT may be bound'
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('leg', ['node_fulltext_search', 'edge_fulltext_search'])
-    async def test_a_hostile_configuration_value_cannot_reach_the_sql_text(self, search, leg):
-        """Even an unvalidated driver attribute stays inert: it is a parameter."""
-        driver = _FakePostgres(CORPUS, text_search_config="simple'); DROP TABLE x; --")
-        await getattr(search, leg)(driver, 'hecho', None, limit=10)
+    async def test_the_user_text_is_never_inlined(self, search, leg):
+        """The half that must stay a parameter, whatever the configuration does."""
+        hostile = "x'); DROP TABLE nodes; --"
+        driver = _FakePostgres(CORPUS)
+        await getattr(search, leg)(driver, hostile, None, limit=10)
         assert 'DROP TABLE' not in driver.last_sql
-        assert driver.last_args[1] == "simple'); DROP TABLE x; --"
+        assert driver.last_args == [hostile]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('leg', ['node_fulltext_search', 'edge_fulltext_search'])
@@ -293,7 +304,8 @@ class TestTheEmittedSql:
         driver = _FakePostgres(CORPUS)
         del driver.text_search_config  # a driver predating the parameter
         await getattr(search, leg)(driver, 'hecho', None, limit=10)
-        assert driver.last_args[1] == DEFAULT_TEXT_SEARCH_CONFIG == 'simple'
+        assert f"plainto_tsquery('{DEFAULT_TEXT_SEARCH_CONFIG}', $1)" in driver.last_sql
+        assert DEFAULT_TEXT_SEARCH_CONFIG == 'simple'
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -303,34 +315,47 @@ class TestTheEmittedSql:
             ('edge_fulltext_search', '"g__edge_search"'),
         ],
     )
-    async def test_group_ids_are_renumbered_around_the_configuration(self, search, leg, table):
-        """The configuration took $2, so the group filter must have moved to $3."""
+    async def test_group_ids_take_the_second_parameter(self, search, leg, table):
+        """Nothing but the query text and the group ids is bound."""
         driver = _FakePostgres(CORPUS)
         await getattr(search, leg)(driver, 'hecho', None, group_ids=['g1'], limit=10)
-        assert 'AND group_id = ANY($3::text[])' in driver.last_sql
-        assert driver.last_args == ['hecho', 'simple', ['g1']]
+        assert 'AND group_id = ANY($2::text[])' in driver.last_sql
+        assert driver.last_args == ['hecho', ['g1']]
         assert table in driver.last_sql
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('leg', ['node_fulltext_search', 'edge_fulltext_search'])
-    async def test_without_group_ids_only_two_arguments_are_bound(self, search, leg):
+    async def test_without_group_ids_only_the_query_text_is_bound(self, search, leg):
         driver = _FakePostgres(CORPUS)
         await getattr(search, leg)(driver, 'hecho', None, limit=10)
-        assert driver.last_args == ['hecho', 'simple']
-        assert '$3' not in driver.last_sql
+        assert driver.last_args == ['hecho']
+        assert '$2' not in driver.last_sql
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('leg', ['node_fulltext_search', 'edge_fulltext_search'])
-    async def test_the_bare_and_gate_is_gone(self, search, leg):
+    async def test_no_bare_plainto_tsquery_survives_anywhere(self, search, leg):
+        """The AND gate is gone from BOTH the ranking and the matching halves.
+
+        `plainto_tsquery(…)` still appears — it is the thing being rewritten —
+        so the assertion is that EVERY occurrence is wrapped in the rewrite,
+        which is what an occurrence-counting check can state and a substring
+        check cannot.
+        """
         driver = _FakePostgres(CORPUS)
         await getattr(search, leg)(driver, 'hecho', None, limit=10)
-        assert "plainto_tsquery('simple', $1)" not in driver.last_sql
+        calls = driver.last_sql.count('plainto_tsquery(')
+        wrapped = driver.last_sql.count('replace(plainto_tsquery(')
+        assert calls == 2, driver.last_sql  # one to rank with, one to match on
+        assert wrapped == calls, (
+            'a bare plainto_tsquery survived the rewrite — that half still ANDs:\n'
+            + driver.last_sql
+        )
 
 
 # ------------------------------------------------- configuration & validation
 
 
-class TestTheConfigurationIsValidatedBeforeItCanReachDdl:
+class TestTheConfigurationIsValidatedBeforeItCanReachSql:
     @pytest.mark.parametrize('name', ['simple', 'spanish', 'english', 'pg_catalog.spanish', '_x9'])
     def test_valid_names_are_accepted(self, name):
         assert validate_text_search_config(name) == name
@@ -369,6 +394,27 @@ class TestTheConfigurationIsValidatedBeforeItCanReachDdl:
             dsn='postgresql://unused/unused', graph_name='g', text_search_config='spanish'
         )
         assert driver.text_search_config == 'spanish'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('leg', ['node_fulltext_search', 'edge_fulltext_search'])
+    @pytest.mark.parametrize(
+        'hostile', ["simple'); DROP TABLE x; --", "simple' || (SELECT 1) || '", 'a b', 'x;']
+    )
+    async def test_the_search_leg_refuses_to_inline_an_unvalidated_value(
+        self, search, leg, hostile
+    ):
+        """The ctor is the first gate; this is the one that makes inlining LOCAL.
+
+        `AGEDriver.__init__` validates, and every production path goes through
+        it — but the search leg now writes the value into SQL text, and
+        "inlined because someone upstream checked" is how injections happen.
+        Handed an object that never saw the ctor, the leg must still refuse
+        rather than emit the string.
+        """
+        driver = _FakePostgres(CORPUS, text_search_config=hostile)
+        with pytest.raises(ValueError, match='Invalid text_search_config'):
+            await getattr(search, leg)(driver, 'hecho', None, limit=10)
+        assert driver.last_sql is None, 'nothing may reach the database on this path'
 
 
 class TestTheIndexAndTheQueryAgree:
