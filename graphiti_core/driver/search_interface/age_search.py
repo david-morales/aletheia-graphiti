@@ -37,6 +37,7 @@ from typing import Any
 
 from graphiti_core.driver.graph_operations.age_graph_operations import _cy, _vec
 from graphiti_core.driver.search_interface.search_interface import SearchInterface
+from graphiti_core.search.search_utils import DEFAULT_MIN_SCORE
 
 # "Is an entity vertex" is asked POSITIVELY, of the `labels` property that
 # `node_save` always writes, not by excluding the labels we happen to know about
@@ -87,6 +88,57 @@ _NON_ENTITY_EDGE_LABELS = ('MENTIONS', 'HAS_MEMBER')
 # arithmetic, which is why the looser comparison never showed.
 _NORMALIZED_COSINE = '(2 - ({col} <=> $1::vector)) / 2'
 
+# The text-search configuration to lexize with when the driver does not name one.
+#
+# `simple` folds case and does nothing else: no stemming, no stopwords. It is the
+# only safe DEFAULT for a language-agnostic engine — picking a real language here
+# would be a domain assumption — but it is a floor, not a recommendation. See
+# `_OR_TSQUERY` and DESIGN-age-fulltext.md.
+_DEFAULT_TEXT_SEARCH_CONFIG = 'simple'
+
+# The tsquery both fulltext legs match on: OR over the query's terms (BUG-98
+# residue (a)).
+#
+# `plainto_tsquery` ANDs: `plainto_tsquery('simple', 'tipo de hecho')` is
+# `'tipo' & 'de' & 'hecho'`, so a document had to carry EVERY term. The FalkorDB
+# arm does the opposite — `FalkorDriver.build_fulltext_query` drops stopwords and
+# joins the rest with ` | ` — so the two flavours answered different questions
+# from the same corpus, and on AGE a paraphrase matched only documents holding
+# all of its words verbatim. `ts_rank_cd` then ranks the documents that DO match
+# more terms higher, which is exactly the ordering the AND-gate discarded by
+# refusing to emit the row at all.
+#
+# The disjunction is built by rewriting `plainto_tsquery`'s own output rather
+# than by re-entering the tsquery grammar from Python:
+#   * the query text stays a BIND PARAMETER to the function whose whole job is
+#     turning arbitrary text into a valid tsquery, so no user byte is ever parsed
+#     as tsquery syntax — there is no injection surface to get wrong;
+#   * ` & ` (spaces included) is the only operator `plainto_tsquery` emits, and a
+#     lexeme cannot contain a space (the default parser never puts whitespace
+#     inside a token), so the replace cannot corrupt a quoted lexeme;
+#   * whitespace-, punctuation- or stopword-only input yields the empty tsquery,
+#     which matches nothing — the behaviour before this change.
+#
+# The configuration travels as `$2::text::regconfig`: a bind parameter (asyncpg
+# has no `regconfig` codec, hence the `::text` hop) resolved server-side. It is
+# NEVER interpolated. Its index-side twin — the `tsv` generated column — cannot
+# take a parameter and is validated + inlined instead, in `AGEDriver`.
+#
+# Parameter layout for both legs: $1 = query text, $2 = configuration,
+# $3 = group_ids (only when filtering by group).
+_OR_TSQUERY = "replace(plainto_tsquery($2::text::regconfig, $1)::text, ' & ', ' | ')::tsquery"
+
+
+def _text_search_config(driver: Any) -> str:
+    """The text-search configuration this driver's shadow tables were built with.
+
+    Read off the driver rather than held on the search interface: every method
+    already receives the driver, and the driver is the thing that knows how its
+    own tables were generated. The default keeps a driver that predates the
+    parameter working on its `simple`-generated tables.
+    """
+    return getattr(driver, 'text_search_config', None) or _DEFAULT_TEXT_SEARCH_CONFIG
+
 
 def _cy_list(values: list[str]) -> str:
     """A Cypher list literal, for inlining into AGE Cypher.
@@ -133,7 +185,7 @@ class AGESearch(SearchInterface):
         search_filter: Any,
         group_ids: list[str] | None = None,
         limit: int = 100,
-        min_score: float = 0.7,
+        min_score: float = DEFAULT_MIN_SCORE,
     ) -> list[Any]:
         args: list[Any] = [_vec(search_vector)]
         group_clause = ''
@@ -160,7 +212,7 @@ class AGESearch(SearchInterface):
         search_filter: Any,
         group_ids: list[str] | None = None,
         limit: int = 100,
-        min_score: float = 0.7,
+        min_score: float = DEFAULT_MIN_SCORE,
     ) -> list[Any]:
         # Spike simplification: summaries are not embedded in the shadow table
         # (only name embeddings are indexed), so summary-similarity contributes
@@ -177,7 +229,7 @@ class AGESearch(SearchInterface):
         search_filter: Any,
         group_ids: list[str] | None = None,
         limit: int = 100,
-        min_score: float = 0.7,
+        min_score: float = DEFAULT_MIN_SCORE,
     ) -> list[Any]:
         args: list[Any] = [_vec(search_vector)]
         conds = ['fact_embedding IS NOT NULL']
@@ -219,15 +271,15 @@ class AGESearch(SearchInterface):
     ) -> list[Any]:
         if not query or not query.strip():
             return []
-        args: list[Any] = [query]
+        args: list[Any] = [query, _text_search_config(driver)]
         group_clause = ''
         if group_ids:
-            group_clause = 'AND group_id = ANY($2::text[])'
+            group_clause = 'AND group_id = ANY($3::text[])'
             args.append(group_ids)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, ts_rank_cd(tsv, plainto_tsquery('simple', $1)) AS rank
+            f"""SELECT uuid, ts_rank_cd(tsv, {_OR_TSQUERY}) AS rank
                 FROM {driver._node_tbl}
-                WHERE tsv @@ plainto_tsquery('simple', $1) {group_clause}
+                WHERE tsv @@ {_OR_TSQUERY} {group_clause}
                 ORDER BY rank DESC
                 LIMIT {int(limit)}""",
             *args,
@@ -245,15 +297,15 @@ class AGESearch(SearchInterface):
     ) -> list[Any]:
         if not query or not query.strip():
             return []
-        args: list[Any] = [query]
+        args: list[Any] = [query, _text_search_config(driver)]
         group_clause = ''
         if group_ids:
-            group_clause = 'AND group_id = ANY($2::text[])'
+            group_clause = 'AND group_id = ANY($3::text[])'
             args.append(group_ids)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, ts_rank_cd(tsv, plainto_tsquery('simple', $1)) AS rank
+            f"""SELECT uuid, ts_rank_cd(tsv, {_OR_TSQUERY}) AS rank
                 FROM {driver._edge_tbl}
-                WHERE tsv @@ plainto_tsquery('simple', $1) {group_clause}
+                WHERE tsv @@ {_OR_TSQUERY} {group_clause}
                 ORDER BY rank DESC
                 LIMIT {int(limit)}""",
             *args,
@@ -307,7 +359,7 @@ class AGESearch(SearchInterface):
         search_vector: list[float],
         group_ids: list[str] | None = None,
         limit: int = 100,
-        min_score: float = 0.6,
+        min_score: float = DEFAULT_MIN_SCORE,
     ) -> list[Any]:
         """Vector similarity search over community name embeddings.
 

@@ -31,6 +31,68 @@ _SESSION_INIT = "LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;"
 
 _PARAM_RE = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)')
 
+# The text-search configuration used when none is named. `simple` folds case and
+# does nothing else — no stemming, no stopwords — which is the only defensible
+# DEFAULT for a language-agnostic engine. A deployment that knows its corpus
+# language names it (`spanish`, `english`, …) and gets stemming + stopwords.
+DEFAULT_TEXT_SEARCH_CONFIG = 'simple'
+
+# An optionally schema-qualified SQL identifier — the shape `regconfig` accepts.
+#
+# The configuration name reaches SQL by two routes. The QUERY side takes it as a
+# bind parameter (`age_search._OR_TSQUERY`) and needs no validation at all. The
+# INDEX side cannot: a generated-column expression takes no parameters, so the
+# name has to be inlined as a literal. This regex is what makes that literal
+# safe — it admits no quote, no semicolon, no whitespace, nothing that could
+# break out of the single quotes it is emitted inside.
+_TEXT_SEARCH_CONFIG_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$')
+
+# Pulls the configuration back out of a stored generated-column expression, which
+# Postgres renders as e.g. `to_tsvector('simple'::regconfig, COALESCE(content, ''::text))`.
+_STORED_TSV_CONFIG_RE = re.compile(r"to_tsvector\(\s*'([^']*)'")
+
+
+def validate_text_search_config(name: str) -> str:
+    """Check a text-search configuration name is safe to inline into DDL.
+
+    Raised at driver CONSTRUCTION rather than at DDL time so a bad value fails
+    before it can reach a database — and so the check is testable with no
+    database at all.
+    """
+    if not isinstance(name, str) or not _TEXT_SEARCH_CONFIG_RE.match(name):
+        raise ValueError(
+            f'Invalid text_search_config {name!r}: expected a PostgreSQL text-search '
+            'configuration name (an optionally schema-qualified identifier, e.g. '
+            "'simple', 'spanish', 'pg_catalog.english')."
+        )
+    return name
+
+
+def stored_tsv_config(generated_expr: str | None) -> str | None:
+    """The configuration a stored `tsv` column was generated with, if readable."""
+    if not generated_expr:
+        return None
+    match = _STORED_TSV_CONFIG_RE.search(generated_expr)
+    return match.group(1) if match else None
+
+
+def text_search_configs_agree(configured: str, stored: str | None) -> bool:
+    """Whether a query-time configuration matches the one a `tsv` column holds.
+
+    A tsquery only matches a tsvector when both were produced by the same
+    configuration — stemmed query lexemes cannot match unstemmed stored ones — so
+    a disagreement here means fulltext search silently returns nothing.
+
+    An unreadable stored expression is NOT reported as a disagreement: absence of
+    evidence would otherwise turn into a false alarm on every start-up.
+    Schema-qualified names compare on their last segment, because Postgres
+    resolves `spanish` and `pg_catalog.spanish` to the same configuration and
+    renders whichever the search_path yields.
+    """
+    if stored is None:
+        return True
+    return configured.rsplit('.', 1)[-1].lower() == stored.rsplit('.', 1)[-1].lower()
+
 
 def _inline_cypher_params(query: str, params: dict[str, Any]) -> str:
     """Substitute openCypher ``$name`` parameters into the query as escaped
@@ -193,11 +255,24 @@ class AGEDriver(GraphDriver):
     fulltext_syntax: str = ''  # Postgres tsquery needs no prefix
     aoss_client: None = None
 
-    def __init__(self, dsn: str, graph_name: str = 'graphiti', embedding_dim: int = 1536):
+    def __init__(
+        self,
+        dsn: str,
+        graph_name: str = 'graphiti',
+        embedding_dim: int = 1536,
+        text_search_config: str = DEFAULT_TEXT_SEARCH_CONFIG,
+    ):
         super().__init__()
         self._dsn = dsn
         self._database = graph_name
         self.embedding_dim = embedding_dim
+        # Language is a property of the CORPUS, never of the engine (ADR-003's
+        # rule in the fork's own terms), so it arrives the same way
+        # `embedding_dim` does: as a driver parameter. It is read back by
+        # `AGESearch` off the driver, and inlined into the `tsv` generated column
+        # below — the two must name the SAME configuration or fulltext matches
+        # nothing. See DESIGN-age-fulltext.md.
+        self.text_search_config = validate_text_search_config(text_search_config)
         self._pool: asyncpg.Pool | None = None
         # (kind, label) pairs this driver has already materialised — see
         # `_ensure_label`. Positive entries only, so a label another process
@@ -332,6 +407,18 @@ class AGEDriver(GraphDriver):
     def _ix(self) -> str:
         # index-name prefix; graph names use only safe identifier chars
         return self._database
+
+    @property
+    def _tsv_generated_expr(self) -> str:
+        """The generated-column expression behind every shadow table's `tsv`.
+
+        The configuration is INLINED, not parameterised: a generated column takes
+        no parameters, and the two-argument `to_tsvector` is the immutable form a
+        generated column requires. `validate_text_search_config` in `__init__` is
+        what makes inlining safe — the accepted shape contains no quote to break
+        out of.
+        """
+        return f"to_tsvector('{self.text_search_config}', coalesce(content, ''))"
 
     # ---- agtype / RETURN-clause helpers (Phase 0: simple queries only) ----
 
@@ -493,7 +580,7 @@ class AGEDriver(GraphDriver):
                     content text,
                     name_embedding vector({dim}),
                     tsv tsvector GENERATED ALWAYS AS
-                        (to_tsvector('simple', coalesce(content, ''))) STORED
+                        ({self._tsv_generated_expr}) STORED
                 )"""
             )
             await conn.execute(
@@ -505,7 +592,7 @@ class AGEDriver(GraphDriver):
                     content text,
                     fact_embedding vector({dim}),
                     tsv tsvector GENERATED ALWAYS AS
-                        (to_tsvector('simple', coalesce(content, ''))) STORED
+                        ({self._tsv_generated_expr}) STORED
                 )"""
             )
             await conn.execute(
@@ -528,6 +615,47 @@ class AGEDriver(GraphDriver):
             await conn.execute(
                 f'CREATE INDEX IF NOT EXISTS {self._ix}_edge_gid ON {self._edge_tbl} (group_id)'
             )
+            await self._warn_on_text_search_config_drift(conn)
+
+    async def _warn_on_text_search_config_drift(self, conn: asyncpg.Connection) -> None:
+        """Say so when the tables on disk were lexized differently than we query.
+
+        `CREATE TABLE IF NOT EXISTS` does not alter a table that already exists,
+        so pointing a driver with `text_search_config='spanish'` at a graph whose
+        `tsv` columns were generated with `simple` leaves the two disagreeing —
+        and a tsquery that disagrees with its tsvector does not error, it just
+        stops matching. That is the same silence BUG-98 cost a benchmark wave to
+        find, so it is detected rather than documented.
+
+        Detected, NOT repaired: rewriting a generated column on a live graph is a
+        migration (the whole table is rewritten and every row re-lexized), not
+        something a start-up path may do behind the operator's back. The cure is
+        `build_indices_and_constraints(delete_existing=True)` plus a re-ingest.
+        """
+        for table in (self._node_tbl, self._edge_tbl):
+            try:
+                expr = await conn.fetchval(
+                    'SELECT pg_get_expr(ad.adbin, ad.adrelid) '
+                    'FROM pg_attribute a '
+                    'JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum '
+                    'WHERE a.attrelid = $1::regclass AND a.attname = $2',
+                    table,
+                    'tsv',
+                )
+            except Exception as e:
+                # The check is advisory; never let it fail a start-up that would
+                # otherwise have worked.
+                logger.debug(f'Could not read the tsv expression for {table}: {e}')
+                continue
+            stored = stored_tsv_config(expr)
+            if not text_search_configs_agree(self.text_search_config, stored):
+                logger.warning(
+                    f'{table}.tsv was generated with text-search configuration {stored!r} but '
+                    f'this driver queries with {self.text_search_config!r}. Fulltext search will '
+                    f'silently return nothing for stemmed terms. Rebuild the shadow tables '
+                    f'(build_indices_and_constraints(delete_existing=True) + re-ingest) or set '
+                    f'text_search_config={stored!r}.'
+                )
 
     async def delete_all_indexes(self) -> None:
         pool = await self._get_pool()

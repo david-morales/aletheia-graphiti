@@ -310,6 +310,7 @@ class GraphitiService:
                 dsn=db_config['dsn'],
                 graph_name=ontology_graph_name,
                 embedding_dim=db_config['embedding_dim'],
+                text_search_config=db_config['text_search_config'],
             )
         else:
             logger.warning(f'Ontology graph not supported for {provider} provider')
@@ -439,6 +440,7 @@ class GraphitiService:
                         dsn=db_config['dsn'],
                         graph_name=db_config['graph_name'],
                         embedding_dim=db_config['embedding_dim'],
+                        text_search_config=db_config['text_search_config'],
                     )
 
                     self.client = Graphiti(
