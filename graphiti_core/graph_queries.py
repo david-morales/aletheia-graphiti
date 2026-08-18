@@ -226,12 +226,31 @@ def get_nodes_query(name: str, query: str, limit: int, provider: GraphProvider) 
 
 
 def get_vector_cosine_func_query(vec1, vec2, provider: GraphProvider) -> str:
+    """A cosine similarity on the NORMALIZED [0, 1] scale, in the provider's dialect.
+
+    Every caller gates the result on `DEFAULT_MIN_SCORE` (0.6, `search_utils`),
+    which is calibrated on the normalized `(1 + cos) / 2` scale — the scale
+    Neo4j's `vector.similarity.cosine` produces by definition. A provider whose
+    native function returns the RAW cosine must therefore be rescaled here, or it
+    silently runs a different floor than the rest: raw 0.6 is normalized 0.8.
+
+    That is exactly what BUG-98 was on the AGE flavour — nine phrasings of one
+    question returned 5 nodes each on FalkorDB and 0 on AGE, because the legs
+    agreed on the ranking and disagreed only on the scale a shared threshold was
+    applied to. Kuzu carried the SAME defect: `array_cosine_similarity` is the
+    raw cosine (measured on kuzu 0.11.3 — identical +1.0, orthogonal 0.0,
+    opposite -1.0), so a Kuzu graph ran an effective ~0.8 floor too.
+
+    Rescaling changes the SCORE only, never the ORDER: `(1 + c) / 2` is monotone
+    in `c`, and both callers only gate and `ORDER BY` it.
+    """
     if provider == GraphProvider.FALKORDB:
-        # FalkorDB uses a different syntax for regular cosine similarity and Neo4j uses normalized cosine similarity
+        # `vec.cosineDistance` is `1 - cos`, so this is `(1 + cos) / 2`.
         return f'(2 - vec.cosineDistance({vec1}, vecf32({vec2})))/2'
 
     if provider == GraphProvider.KUZU:
-        return f'array_cosine_similarity({vec1}, {vec2})'
+        # `array_cosine_similarity` is the raw cosine, [-1, 1].
+        return f'(1 + array_cosine_similarity({vec1}, {vec2})) / 2'
 
     return f'vector.similarity.cosine({vec1}, {vec2})'
 
