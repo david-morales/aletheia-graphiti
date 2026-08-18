@@ -12,6 +12,8 @@ import math
 import os
 import sys
 import time
+import unicodedata
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
@@ -625,6 +627,49 @@ def format_node_result(node: EntityNode) -> dict[str, Any]:
     }
 
 
+def _normalize_name(value: str | None) -> str:
+    """Fold a name to its comparison form: NFC, casefolded, whitespace-collapsed.
+
+    The NFC pass is load-bearing, not decoration. 'JOSÉ' composed (U+00C9) and
+    'JOSÉ' decomposed (E + U+0301) are the same name and different bytes, and
+    casefold does not reconcile them — so without this an accent-carrying exact
+    name silently loses its match and falls back to the ranking, which is the
+    very failure BUG-100 is about. Clients and graph writers do not agree on a
+    form: macOS filesystems and some IME paths emit NFD while most databases
+    hold NFC, so both reach this comparison in a Spanish corpus.
+
+    Composition only — accents are NOT stripped. 'JOSE' must keep failing to
+    match 'JOSÉ': they are different names, and folding them together would
+    re-introduce exactly the wrong-person answer this function exists to stop.
+    """
+    if not value:
+        return ''
+    return unicodedata.normalize('NFC', ' '.join(value.split())).casefold()
+
+
+def _pick_named_node(nodes: Sequence[EntityNode], name: str) -> EntityNode:
+    """The node actually NAMED `name`, else the top-ranked one.
+
+    A hybrid search returns a relevance ordering, and relevance is not identity:
+    `nodes[0]` is "closest to the query", which for person-shaped names is
+    routinely a different person who shares a surname or a given name. When the
+    caller handed us a name and some node carries exactly that name, that node
+    is the answer regardless of where the reranker filed it. Only when nothing
+    matches does the ranking get to decide, which keeps genuinely fuzzy lookups
+    ("KHADIJA", a misspelling, a partial) working as before.
+
+    Comparison is case- and whitespace-insensitive: callers type names as prose
+    while graphs commonly store them uppercased. Ties keep search order, so the
+    result stays deterministic.
+    """
+    wanted = _normalize_name(name)
+    if wanted:
+        for node in nodes:
+            if _normalize_name(node.name) == wanted:
+                return node
+    return nodes[0]
+
+
 @mcp.tool(annotations=annotations_for('add_memory'))
 async def add_memory(
     name: str | None = None,
@@ -997,7 +1042,17 @@ async def explore_entity(
                     edges=[],
                     communities=[],
                 )
-            center_node = resolve_results.nodes[0]
+            # A ranking answers "what is most relevant", NOT "which node IS
+            # this". Taking nodes[0] blind made a hybrid relevance score decide
+            # an identity: on the FalkorDB arm 'KHADIJA DAOUD' centred on
+            # 'KHADIJA NASRE EDDINE' — a different person, born 1974 vs 2002,
+            # different NIE — because the embedding leg lifted the fuzzy
+            # neighbour to rank 0 while the exact node sat at rank 1 (BUG-100).
+            # So prefer an exact name, and only fall back to the ranking when
+            # the caller's string names nothing in the results. This mirrors
+            # explore_ontology, which has always resolved uuid -> exact name ->
+            # case-insensitive name -> semantic rank.
+            center_node = _pick_named_node(resolve_results.nodes, node_name)
             resolved_uuid = center_node.uuid
         else:
             try:

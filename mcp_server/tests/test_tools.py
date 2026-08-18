@@ -6,6 +6,7 @@ build_communities, and add_memory.
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -634,6 +635,258 @@ class TestExploreNode:
         call_kwargs = client.search_.call_args.kwargs
         search_filter = call_kwargs['search_filter']
         assert search_filter.edge_types == ['OWNERSHIP']
+
+
+# ---------------------------------------------------------------------------
+# TestExploreCentreResolution — BUG-100
+# ---------------------------------------------------------------------------
+
+class TestExploreCentreResolution:
+    """Regression tests for BUG-100: relevance rank used as identity lookup.
+
+    `explore_entity(node_name=...)` resolved its centre by taking
+    `resolve_results.nodes[0]` — the top hit of a hybrid (BM25 + embedding, RRF)
+    search. A ranking answers "what is most relevant", not "which node IS this".
+    Measured on the live FalkorDB arm (policia_partes_bench_v1, 2026-08-18):
+    query 'KHADIJA DAOUD' ranked the *different person* 'KHADIJA NASRE EDDINE'
+    at 0 and the exact-named node at 1, so the tool centred on the wrong person.
+    """
+
+    @pytest.mark.asyncio
+    async def test_exact_name_match_beats_higher_ranked_fuzzy_neighbour(self):
+        """BUG-100: the exact-named node wins even when ranked below a neighbour."""
+        svc, queue, cfg, client = make_mock_services()
+
+        # The live shape: a same-first-name different person outranks the exact node.
+        fuzzy = make_mock_node(uuid='wrong-uuid', name='KHADIJA NASRE EDDINE')
+        exact = make_mock_node(uuid='right-uuid', name='KHADIJA DAOUD')
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[fuzzy, exact]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='KHADIJA DAOUD')
+
+        assert result['center_node']['name'] == 'KHADIJA DAOUD'
+        assert result['center_node']['uuid'] == 'right-uuid'
+        # The neighbourhood expansion must follow the corrected centre, not the
+        # top hit — a right centre with a wrong traversal is still the wrong answer.
+        second_call_kwargs = client.search_.call_args_list[1].kwargs
+        assert second_call_kwargs['center_node_uuid'] == 'right-uuid'
+        assert second_call_kwargs['bfs_origin_node_uuids'] == ['right-uuid']
+
+    @pytest.mark.asyncio
+    async def test_no_exact_match_keeps_top_ranked_node(self):
+        """Without an exact name, ranking still decides — behaviour unchanged."""
+        svc, queue, cfg, client = make_mock_services()
+
+        first = make_mock_node(uuid='first-uuid', name='KHADIJA NASRE EDDINE')
+        second = make_mock_node(uuid='second-uuid', name='KHADIJA ABDELKADER')
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[first, second]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='KHADIJA')
+
+        assert result['center_node']['uuid'] == 'first-uuid'
+
+    @pytest.mark.asyncio
+    async def test_exact_match_is_case_and_whitespace_insensitive(self):
+        """Callers type names as prose; the graph stores them uppercased."""
+        svc, queue, cfg, client = make_mock_services()
+
+        fuzzy = make_mock_node(uuid='wrong-uuid', name='KHADIJA NASRE EDDINE')
+        exact = make_mock_node(uuid='right-uuid', name='KHADIJA DAOUD')
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[fuzzy, exact]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='  khadija   daoud ')
+
+        assert result['center_node']['uuid'] == 'right-uuid'
+
+    @pytest.mark.asyncio
+    async def test_first_exact_match_wins_when_several_share_the_name(self):
+        """Ties among exact matches keep search order — deterministic, not arbitrary."""
+        svc, queue, cfg, client = make_mock_services()
+
+        other = make_mock_node(uuid='other-uuid', name='KHADIJA NASRE EDDINE')
+        exact_a = make_mock_node(uuid='exact-a', name='KHADIJA DAOUD')
+        exact_b = make_mock_node(uuid='exact-b', name='khadija daoud')
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[other, exact_a, exact_b]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='KHADIJA DAOUD')
+
+        assert result['center_node']['uuid'] == 'exact-a'
+
+    @pytest.mark.asyncio
+    async def test_uuid_branch_untouched_by_name_matching(self):
+        """A uuid is already an identity; exact-name preference must not apply."""
+        svc, queue, cfg, client = make_mock_services()
+        target = make_mock_node(uuid='direct-uuid', name='KHADIJA NASRE EDDINE')
+        client.search_ = AsyncMock(return_value=make_mock_search_results())
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EntityNode.get_by_uuid',
+                AsyncMock(return_value=target),
+            ),
+        ):
+            result = await explore_entity(
+                node_uuid='direct-uuid', node_name='KHADIJA DAOUD',
+            )
+
+        assert result['center_node']['uuid'] == 'direct-uuid'
+        assert result['center_node']['name'] == 'KHADIJA NASRE EDDINE'
+
+    @pytest.mark.asyncio
+    async def test_replays_the_measured_live_ranking(self):
+        """The real BUG-100 ranking, verbatim, driven through the tool.
+
+        Captured 2026-08-18 from the FalkorDB arm (connector mcp-v2.4.0, graph
+        `policia_partes_bench_v1`) via MCP `search` with search_mode='nodes',
+        reranker='rrf' — SEARCH_RECIPES[('nodes','rrf')] is the very
+        NODE_HYBRID_SEARCH_RRF config the centre resolution uses, so this is the
+        ordering explore_entity actually saw when it answered with the wrong
+        person. Held as data, not prose, so the fix stays pinned to the
+        observation that motivated it.
+        """
+        live_ranking = [
+            ('a3bb5a1f-0593-49bb-acd1-5231e027dbc2', 'KHADIJA NASRE EDDINE'),
+            ('c08eb5e2-bc36-451e-91ef-c657b1e61f7f', 'KHADIJA DAOUD'),
+            ('b043b0a9-adf3-4145-ae7b-1c3d1fd0188d', 'KHADIJA ABDELKADER'),
+            ('711ceaf7-1c76-428b-a146-d444da2a13e8', 'KHADIJA BEN AISA'),
+            ('b2dcec4a-6bdb-42ec-98d1-d5cbf8a1e331', 'KHADIJA EL YOUSFI'),
+            ('69f80556-455e-4886-a4d8-9a6183a31cc8', 'MOHAMED DAOUD'),
+            ('4437f6e6-2db6-40e3-80af-28bd24bcfe70', 'IBRAHIM DAOUD'),
+            ('85a5d53a-c3f7-4dce-9553-deb38481fc6c',
+             'Identificacion de KHADIJA DAOUD en 20260000100001'),
+            ('a22d03a9-4769-454d-8033-d37c2068f0dc',
+             'Identificacion de KHADIJA DAOUD en 20260000100018'),
+            ('33155c38-ff47-4396-be1a-e3fb96343643',
+             'Testimonio de KHADIJA DAOUD en 20260000100089'),
+        ]
+
+        svc, queue, cfg, client = make_mock_services()
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(
+                    nodes=[make_mock_node(uuid=u, name=n) for u, n in live_ranking],
+                ),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='KHADIJA DAOUD')
+
+        # The Persona, not the rank-0 different person and not one of the role
+        # nodes whose names merely CONTAIN the query string.
+        assert result['center_node']['name'] == 'KHADIJA DAOUD'
+        assert result['center_node']['uuid'] == 'c08eb5e2-bc36-451e-91ef-c657b1e61f7f'
+
+    @pytest.mark.asyncio
+    async def test_exact_match_survives_nfc_nfd_disagreement(self):
+        """Same letters, different Unicode form, still the same name.
+
+        The graph holds 'JOSÉ MARÍA' composed (U+00C9 / U+00CD); the caller
+        sends it decomposed (E + U+0301, I + U+0301). Byte-unequal, casefold
+        does not reconcile them, so without NFC folding the exact match is lost
+        and resolution drops back to the ranking — the wrong person, which is
+        BUG-100 all over again on the accent-carrying half of a Spanish corpus.
+        """
+        # Built with unicodedata rather than written as two source literals: a
+        # formatter or editor that normalizes this file would quietly collapse
+        # the literals into one form and leave the test asserting nothing.
+        name = 'JOSÉ MARÍA GARCIA'
+        composed = unicodedata.normalize('NFC', name)
+        decomposed = unicodedata.normalize('NFD', name)
+        assert composed != decomposed  # different bytes...
+        # ...which casefold alone does NOT reconcile - the reason NFC is needed.
+        assert composed.casefold() != decomposed.casefold()
+
+        svc, queue, cfg, client = make_mock_services()
+        fuzzy = make_mock_node(uuid='wrong-uuid', name='JOSE MARIA GARRIDO')
+        exact = make_mock_node(uuid='right-uuid', name=composed)
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[fuzzy, exact]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name=decomposed)
+
+        assert result['center_node']['uuid'] == 'right-uuid'
+
+    @pytest.mark.asyncio
+    async def test_nameless_node_in_results_does_not_break_matching(self):
+        """A node whose name is None must not blow up the comparison."""
+        svc, queue, cfg, client = make_mock_services()
+
+        nameless = make_mock_node(uuid='nameless-uuid', name='KHADIJA NASRE EDDINE')
+        nameless.name = None
+        exact = make_mock_node(uuid='right-uuid', name='KHADIJA DAOUD')
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[nameless, exact]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='KHADIJA DAOUD')
+
+        assert result['center_node']['uuid'] == 'right-uuid'
 
 
 # ---------------------------------------------------------------------------
