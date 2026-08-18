@@ -52,6 +52,23 @@ path neo4j/kuzu/neptune/falkordb share. AGE instead owns both functions through
 overrides — and answers from the uuid-keyed pgvector shadow tables, which carry
 no labels at all and so cannot have this bug in any form.
 
+What this does NOT fix — read before quoting it
+-----------------------------------------------
+Neither function has a caller inside ``graphiti_core`` today. Upstream commit
+3efe085 ("OpenSearch updates", #906, 2025-09-14) took them out of
+``resolve_extracted_edges`` and replaced them with ``EntityEdge.get_between_nodes``
+plus two hybrid ``search`` calls. They remain exported public API — and they
+carried the defect — but repairing them does not, on its own, change what an AGE
+ingest does. The LIVE AGE dedup path is:
+
+  * ``EntityEdge.get_between_nodes`` -> ``AGEGraphOperations.edge_get_between_nodes``,
+    which is already label-free (``MATCH (a)-[r]->(b) WHERE a.uuid = … AND
+    b.uuid = …``) and does NOT have this bug; and
+  * ``search(..., EDGE_HYBRID_SEARCH_RRF, SearchFilters(edge_uuids=[…]))`` —
+    where ``edge_uuids`` is one of the SearchFilters the AGE legs drop, so the
+    "edges between these two nodes" restriction is not applied on that arm at
+    all. That is a separate defect in a different layer and is NOT fixed here.
+
 How these tests prove it
 ------------------------
 * the SEAM classes drive the real ``search_utils`` functions against a fake

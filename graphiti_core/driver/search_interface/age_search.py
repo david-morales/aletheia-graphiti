@@ -387,8 +387,10 @@ class AGESearch(SearchInterface):
         filters have nothing to read. Dropped filters BROADEN — an extra
         candidate is offered to the resolver, never a real one withheld — which
         is the safe direction for a dedup/invalidation candidate set and is why
-        this is a documented gap rather than a silent one. Both in-tree callers
-        pass an empty `SearchFilters()`.
+        this is a documented gap rather than a silent one. The last call site
+        either function had (`resolve_extracted_edges`, until upstream 3efe085
+        replaced it with the hybrid `search` path) passed an empty
+        `SearchFilters()`, so nothing was being honoured there either.
 
         The whole batch is one round trip: the input edges are `unnest`ed into a
         relation `q` and joined to the shadow table, so `predicate` compares
