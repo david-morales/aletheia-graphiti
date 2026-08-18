@@ -513,9 +513,17 @@ class TestTheAGECandidateSets:
         'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
     )
     async def test_the_candidate_set_is_scoped_to_the_edges_group(self, age_search, method):
+        """The exact join term, not the word `group_id` somewhere in the SQL.
+
+        `'group_id' in sql` is satisfied by any mention of the column, so
+        neutering the join to `AND (e.group_id = q.gid OR TRUE)` — which offers
+        every group's edges as dedup candidates for every input edge — passed.
+        The candidate set must be scoped by the term itself.
+        """
         driver = _FakeAGEDriver()
         await getattr(age_search, method)(driver, [_edge(group_id='g7')], SearchFilters())
-        assert 'group_id' in driver.sql[0]
+        assert 'e.group_id = q.gid' in driver.sql[0]
+        assert ' OR TRUE' not in driver.sql[0].upper()
         assert ['g7'] in [list(a) for a in driver.args[0] if isinstance(a, list)]
 
 
