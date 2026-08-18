@@ -79,9 +79,7 @@ class _FakeAGEDriver:
         assert match, f'no `... AS score` projection found in:\n{sql}'
         expr = match.group('expr')
         # Substitute the pgvector distance operand with the numeric distance.
-        numeric = re.sub(
-            r'\w+\s*<=>\s*\$1::vector', repr(self._distance), expr
-        )
+        numeric = re.sub(r'\w+\s*<=>\s*\$1::vector', repr(self._distance), expr)
         assert '<=>' not in numeric, f'distance operand not substituted in: {expr}'
         return [{'uuid': self._uuid, 'score': eval(numeric)}]  # noqa: S307 - our own SQL
 
@@ -97,33 +95,31 @@ class TestTheProjectedScoreIsNormalized:
     @pytest.mark.asyncio
     async def test_node_similarity_projects_the_normalized_cosine(self, search, monkeypatch):
         driver = _FakeAGEDriver(MEASURED_RAW_COSINE)
-        monkeypatch.setattr(
-            AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True
-        )
+        monkeypatch.setattr(AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True)
         await search.node_similarity_search(
             driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=DEFAULT_MIN_SCORE
         )
         assert driver.last_sql is not None
         expr = _SCORE_RE.search(driver.last_sql).group('expr')
         # `1 - (... <=> ...)` is the RAW cosine and is the bug.
-        assert '(2 -' in expr.replace(' ', ' '), (
-            f'expected the normalized (2 - distance)/2 form, got: {expr!r}'
-        )
+        assert '(2 -' in expr, f'expected the normalized (2 - distance)/2 form, got: {expr!r}'
 
     @pytest.mark.asyncio
     async def test_edge_similarity_projects_the_normalized_cosine(self, search, monkeypatch):
         driver = _FakeAGEDriver(MEASURED_RAW_COSINE)
-        monkeypatch.setattr(
-            AGESearch, '_hydrate_edges_in_order', _capture_uuids, raising=True
-        )
+        monkeypatch.setattr(AGESearch, '_hydrate_edges_in_order', _capture_uuids, raising=True)
         await search.edge_similarity_search(
-            driver, [0.1] * 4, None, None, None,
-            group_ids=['g'], limit=10, min_score=DEFAULT_MIN_SCORE,
+            driver,
+            [0.1] * 4,
+            None,
+            None,
+            None,
+            group_ids=['g'],
+            limit=10,
+            min_score=DEFAULT_MIN_SCORE,
         )
         expr = _SCORE_RE.search(driver.last_sql).group('expr')
-        assert '(2 -' in expr, (
-            f'expected the normalized (2 - distance)/2 form, got: {expr!r}'
-        )
+        assert '(2 -' in expr, f'expected the normalized (2 - distance)/2 form, got: {expr!r}'
 
 
 class TestTheMinScoreGateKeepsTheMeasuredHit:
@@ -134,9 +130,7 @@ class TestTheMinScoreGateKeepsTheMeasuredHit:
         self, search, monkeypatch
     ):
         driver = _FakeAGEDriver(MEASURED_RAW_COSINE)
-        monkeypatch.setattr(
-            AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True
-        )
+        monkeypatch.setattr(AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True)
         kept = await search.node_similarity_search(
             driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=DEFAULT_MIN_SCORE
         )
@@ -152,29 +146,25 @@ class TestTheMinScoreGateKeepsTheMeasuredHit:
     ):
         # Live AGE edge scores for the same dead query were 0.5141/0.5140/0.5138 raw.
         driver = _FakeAGEDriver(0.5141)
-        monkeypatch.setattr(
-            AGESearch, '_hydrate_edges_in_order', _capture_uuids, raising=True
-        )
+        monkeypatch.setattr(AGESearch, '_hydrate_edges_in_order', _capture_uuids, raising=True)
         kept = await search.edge_similarity_search(
-            driver, [0.1] * 4, None, None, None,
-            group_ids=['g'], limit=10, min_score=DEFAULT_MIN_SCORE,
+            driver,
+            [0.1] * 4,
+            None,
+            None,
+            None,
+            group_ids=['g'],
+            limit=10,
+            min_score=DEFAULT_MIN_SCORE,
         )
         assert kept == ['n1'], (
             'edges=0 for a paraphrase while edges=10 for a literal was the same '
             'raw-vs-normalized scale bug on the edge leg'
         )
 
-    @pytest.mark.parametrize(
-        'leg, hydrator, call',
-        [
-            ('node', '_hydrate_nodes_in_order', 'node'),
-            ('edge', '_hydrate_edges_in_order', 'edge'),
-        ],
-    )
+    @pytest.mark.parametrize('leg', ['node', 'edge'])
     @pytest.mark.asyncio
-    async def test_a_score_exactly_at_the_floor_is_excluded(
-        self, search, monkeypatch, leg, hydrator, call
-    ):
+    async def test_a_score_exactly_at_the_floor_is_excluded(self, search, monkeypatch, leg):
         """The gate is STRICT, as it is for every other provider.
 
         Reachable in practice, not theoretical: an ORTHOGONAL vector (raw cosine
@@ -184,16 +174,7 @@ class TestTheMinScoreGateKeepsTheMeasuredHit:
         which is why the loose comparison never showed.
         """
         driver = _FakeAGEDriver(0.0)  # orthogonal -> normalized exactly 0.5
-        monkeypatch.setattr(AGESearch, hydrator, _capture_uuids, raising=True)
-        if call == 'node':
-            kept = await search.node_similarity_search(
-                driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=0.5
-            )
-        else:
-            kept = await search.edge_similarity_search(
-                driver, [0.1] * 4, None, None, None,
-                group_ids=['g'], limit=10, min_score=0.5,
-            )
+        kept = await _run_leg(search, monkeypatch, driver, leg, min_score=0.5)
         assert kept == [], (
             f'{leg} leg admitted a score exactly equal to min_score; every other '
             f'provider gates `WHERE score > $min_score`'
@@ -207,9 +188,7 @@ class TestTheMinScoreGateKeepsTheMeasuredHit:
         otherwise the floor stops discriminating at all.
         """
         driver = _FakeAGEDriver(0.10)
-        monkeypatch.setattr(
-            AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True
-        )
+        monkeypatch.setattr(AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True)
         kept = await search.node_similarity_search(
             driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=DEFAULT_MIN_SCORE
         )
@@ -219,19 +198,15 @@ class TestTheMinScoreGateKeepsTheMeasuredHit:
 class TestTheScaleMatchesTheOtherProviders:
     """Parity with `get_vector_cosine_func_query`'s FalkorDB normalization."""
 
+    @pytest.mark.parametrize('leg', ['node', 'edge'])
     @pytest.mark.parametrize('cosine', [-1.0, -0.25, 0.0, 0.3926, 0.4130, 0.6241, 1.0])
     @pytest.mark.asyncio
     async def test_age_score_equals_the_falkordb_normalized_score(
-        self, search, monkeypatch, cosine
+        self, search, monkeypatch, cosine, leg
     ):
         driver = _FakeAGEDriver(cosine)
-        monkeypatch.setattr(
-            AGESearch, '_hydrate_nodes_in_order', _capture_uuids, raising=True
-        )
         # min_score=-1 keeps every row so the raw score reaches the assertion.
-        await search.node_similarity_search(
-            driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=-1.0
-        )
+        await _run_leg(search, monkeypatch, driver, leg, min_score=-1.0)
         expr = _SCORE_RE.search(driver.last_sql).group('expr')
         numeric = re.sub(r'\w+\s*<=>\s*\$1::vector', repr(1.0 - cosine), expr)
         age_score = eval(numeric)  # noqa: S307 - our own SQL
@@ -245,3 +220,22 @@ class TestTheScaleMatchesTheOtherProviders:
 async def _capture_uuids(self, driver, uuids):
     """Stand in for hydration — returns the uuids that passed the min_score gate."""
     return list(uuids)
+
+
+_HYDRATORS = {'node': '_hydrate_nodes_in_order', 'edge': '_hydrate_edges_in_order'}
+
+
+async def _run_leg(search, monkeypatch, driver, leg: str, *, min_score: float) -> list[str]:
+    """Drive one similarity leg with hydration stubbed, returning the kept uuids.
+
+    The two legs take different signatures (edges carry source/target filters),
+    so parametrizing over them needs this seam rather than a single call.
+    """
+    monkeypatch.setattr(AGESearch, _HYDRATORS[leg], _capture_uuids, raising=True)
+    if leg == 'node':
+        return await search.node_similarity_search(
+            driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=min_score
+        )
+    return await search.edge_similarity_search(
+        driver, [0.1] * 4, None, None, None, group_ids=['g'], limit=10, min_score=min_score
+    )
