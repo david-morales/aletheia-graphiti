@@ -280,8 +280,9 @@ class TestTheRerankerReachesATypedEdge:
     async def test_a_typed_edge_makes_a_node_adjacent(self, provider):
         driver = _FakeDriver(provider)
         await node_distance_reranker(driver, ['a', 'b'], 'center')
-        # The pattern is anonymous here — `-[…]-`, no variable.
-        assert pattern_selects(driver.queries[0], TYPED_LABEL, var='')
+        # The pattern carries the `e` variable, per the helper's documented
+        # contract — `-[e]-` is the shape the live falkor legs already ship.
+        assert pattern_selects(driver.queries[0], TYPED_LABEL, var='e')
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
@@ -295,8 +296,8 @@ class TestTheRerankerReachesATypedEdge:
     async def test_neo4j_keeps_its_typed_pattern(self):
         driver = _FakeDriver(GraphProvider.NEO4J)
         await node_distance_reranker(driver, ['a'], 'center')
-        assert ')-[:RELATES_TO]-(' in driver.queries[0]
-        assert not pattern_selects(driver.queries[0], TYPED_LABEL, var='')
+        assert ')-[e:RELATES_TO]-(' in driver.queries[0]
+        assert not pattern_selects(driver.queries[0], TYPED_LABEL, var='e')
 
 
 class TestBulkEmbeddingLoadReachesATypedEdge:

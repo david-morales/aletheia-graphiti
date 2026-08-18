@@ -2068,7 +2068,7 @@ async def node_distance_reranker(
     # symptom the AGE flavour had before it grew its own reranker override.
     query = f"""
     UNWIND $node_uuids AS node_uuid
-    MATCH (center:Entity {{uuid: $center_uuid}})-[{entity_edge_pattern_type(driver.provider)}]-(n:Entity {{uuid: node_uuid}})
+    MATCH (center:Entity {{uuid: $center_uuid}})-[e{entity_edge_pattern_type(driver.provider)}]-(n:Entity {{uuid: node_uuid}})
     RETURN 1 AS score, node_uuid AS uuid
     """
     if driver.provider == GraphProvider.KUZU:
