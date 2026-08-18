@@ -767,10 +767,62 @@ class TestExploreCentreResolution:
                 AsyncMock(return_value=target),
             ),
         ):
-            result = await explore_entity(node_uuid='direct-uuid', node_name='KHADIJA DAOUD')
+            result = await explore_entity(
+                node_uuid='direct-uuid', node_name='KHADIJA DAOUD',
+            )
 
         assert result['center_node']['uuid'] == 'direct-uuid'
         assert result['center_node']['name'] == 'KHADIJA NASRE EDDINE'
+
+    @pytest.mark.asyncio
+    async def test_replays_the_measured_live_ranking(self):
+        """The real BUG-100 ranking, verbatim, driven through the tool.
+
+        Captured 2026-08-18 from the FalkorDB arm (connector mcp-v2.4.0, graph
+        `policia_partes_bench_v1`) via MCP `search` with search_mode='nodes',
+        reranker='rrf' — SEARCH_RECIPES[('nodes','rrf')] is the very
+        NODE_HYBRID_SEARCH_RRF config the centre resolution uses, so this is the
+        ordering explore_entity actually saw when it answered with the wrong
+        person. Held as data, not prose, so the fix stays pinned to the
+        observation that motivated it.
+        """
+        live_ranking = [
+            ('a3bb5a1f-0593-49bb-acd1-5231e027dbc2', 'KHADIJA NASRE EDDINE'),
+            ('c08eb5e2-bc36-451e-91ef-c657b1e61f7f', 'KHADIJA DAOUD'),
+            ('b043b0a9-adf3-4145-ae7b-1c3d1fd0188d', 'KHADIJA ABDELKADER'),
+            ('711ceaf7-1c76-428b-a146-d444da2a13e8', 'KHADIJA BEN AISA'),
+            ('b2dcec4a-6bdb-42ec-98d1-d5cbf8a1e331', 'KHADIJA EL YOUSFI'),
+            ('69f80556-455e-4886-a4d8-9a6183a31cc8', 'MOHAMED DAOUD'),
+            ('4437f6e6-2db6-40e3-80af-28bd24bcfe70', 'IBRAHIM DAOUD'),
+            ('85a5d53a-c3f7-4dce-9553-deb38481fc6c',
+             'Identificacion de KHADIJA DAOUD en 20260000100001'),
+            ('a22d03a9-4769-454d-8033-d37c2068f0dc',
+             'Identificacion de KHADIJA DAOUD en 20260000100018'),
+            ('33155c38-ff47-4396-be1a-e3fb96343643',
+             'Testimonio de KHADIJA DAOUD en 20260000100089'),
+        ]
+
+        svc, queue, cfg, client = make_mock_services()
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(
+                    nodes=[make_mock_node(uuid=u, name=n) for u, n in live_ranking],
+                ),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name='KHADIJA DAOUD')
+
+        # The Persona, not the rank-0 different person and not one of the role
+        # nodes whose names merely CONTAIN the query string.
+        assert result['center_node']['name'] == 'KHADIJA DAOUD'
+        assert result['center_node']['uuid'] == 'c08eb5e2-bc36-451e-91ef-c657b1e61f7f'
 
     @pytest.mark.asyncio
     async def test_nameless_node_in_results_does_not_break_matching(self):
