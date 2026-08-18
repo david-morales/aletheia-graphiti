@@ -320,6 +320,40 @@ def _predicate_selects(predicate: str, *, e_src: str, e_tgt: str, q_src: str, q_
     return bool(eval(python, {'__builtins__': {}}, namespace))  # noqa: S307 - our own SQL
 
 
+_ORDER_BY_RE = re.compile(r'ORDER BY\s+(?P<terms>[^\n]+?)\s*$', re.IGNORECASE | re.MULTILINE)
+
+
+def _apply_order_by(sql: str, rows: list[dict]) -> list[dict]:
+    """Sort `rows` the way the emitted SQL's own ORDER BY would.
+
+    A model of the database, not a stub that invents an order: the clause is read
+    out of the query under test and applied, so the ranking contract is covered by
+    BEHAVIOUR. A query with NO ORDER BY leaves the rows exactly as the "table"
+    hands them over — which is precisely what Postgres is entitled to do, and why
+    deleting the clause is a real defect rather than a cosmetic one.
+
+    NULLs sort last in both directions here (Postgres puts them first under DESC).
+    The difference cannot matter: a null score is dropped by the min_score gate
+    before it can reach a result list.
+    """
+    match = _ORDER_BY_RE.search(sql)
+    if match is None:
+        return list(rows)
+
+    terms = []
+    for term in match.group('terms').split(','):
+        parts = term.strip().split()
+        terms.append((parts[0].split('.')[-1], parts[-1].upper() == 'DESC'))
+
+    ordered = list(rows)
+    for column, descending in reversed(terms):  # stable: least significant first
+        ordered.sort(
+            key=lambda row, c=column: float('-inf') if row[c] is None else row[c],
+            reverse=descending,
+        )
+    return ordered
+
+
 class _FakeAGEDriver:
     """Records the SQL, answers canned rows, and hydrates through a fake ops layer."""
 
@@ -337,7 +371,7 @@ class _FakeAGEDriver:
     async def execute_sql(self, sql: str, *args):
         self.sql.append(sql)
         self.args.append(args)
-        return self.rows
+        return _apply_order_by(sql, self.rows)
 
     async def execute_query(self, *args, **kwargs):  # pragma: no cover - must not be used
         raise AssertionError('the AGE dedup legs must not touch the labelled graph')
@@ -508,16 +542,91 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
     @pytest.mark.parametrize(
         'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
     )
-    async def test_candidates_keep_the_score_ranking(self, age_search, method):
+    async def test_the_sql_orders_by_input_index_then_score_descending(
+        self, age_search, method
+    ):
+        """The ORDER BY is the WHOLE ranking contract — nothing else sorts.
+
+        Gating and truncation happen in Python over the rows AS DELIVERED, so if
+        this clause is wrong or absent there is no second line of defence: the
+        `limit` then keeps an arbitrary slice instead of the best candidates.
+        `q.idx` first is what makes the per-input-edge grouping contiguous.
+        """
+        driver = _FakeAGEDriver()
+        await getattr(age_search, method)(driver, [_edge()], SearchFilters())
+        assert 'ORDER BY q.idx, score DESC' in driver.sql[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
+    )
+    async def test_candidates_come_back_ranked_from_an_unordered_table(
+        self, age_search, method
+    ):
+        """Rows are handed over SHUFFLED — the query's own ORDER BY must rank them.
+
+        Feeding pre-sorted rows would only prove that Python preserves what it
+        receives. The fake applies the emitted clause instead (`_apply_order_by`),
+        so an ASC flip or a deleted ORDER BY changes what this test observes.
+        """
         driver = _FakeAGEDriver(
             rows=[
+                {'idx': 0, 'uuid': 'low', 'score': 0.70},
                 {'idx': 0, 'uuid': 'best', 'score': 0.99},
                 {'idx': 0, 'uuid': 'mid', 'score': 0.80},
-                {'idx': 0, 'uuid': 'low', 'score': 0.70},
             ]
         )
         result = await getattr(age_search, method)(driver, [_edge()], SearchFilters())
         assert [e.uuid for e in result[0]] == ['best', 'mid', 'low']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
+    )
+    async def test_a_limit_of_one_keeps_the_BEST_candidate_not_an_arbitrary_one(
+        self, age_search, method
+    ):
+        """The consequence of an unpinned ORDER BY, made observable.
+
+        With the clause flipped to ASC the worst candidate still above the floor
+        (0.61) is the one that survives `limit=1`, and the true 0.99 duplicate is
+        never offered to the resolver — a silently wrong merge decision.
+        """
+        driver = _FakeAGEDriver(
+            rows=[
+                {'idx': 0, 'uuid': 'worst-above-the-floor', 'score': 0.61},
+                {'idx': 0, 'uuid': 'the-real-duplicate', 'score': 0.99},
+                {'idx': 0, 'uuid': 'middling', 'score': 0.80},
+            ]
+        )
+        result = await getattr(age_search, method)(
+            driver, [_edge()], SearchFilters(), limit=1
+        )
+        assert [e.uuid for e in result[0]] == ['the-real-duplicate']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
+    )
+    async def test_the_shuffled_rows_are_also_regrouped_by_input_edge(
+        self, age_search, method
+    ):
+        """`q.idx` leading the ORDER BY is what keeps each input edge's rows together."""
+        driver = _FakeAGEDriver(
+            rows=[
+                {'idx': 1, 'uuid': 'b-low', 'score': 0.70},
+                {'idx': 0, 'uuid': 'a-best', 'score': 0.99},
+                {'idx': 1, 'uuid': 'b-best', 'score': 0.95},
+                {'idx': 0, 'uuid': 'a-low', 'score': 0.65},
+            ]
+        )
+        result = await getattr(age_search, method)(
+            driver, [_edge(uuid='in-0'), _edge(uuid='in-1')], SearchFilters()
+        )
+        assert [[e.uuid for e in lst] for lst in result] == [
+            ['a-best', 'a-low'],
+            ['b-best', 'b-low'],
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
