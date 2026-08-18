@@ -1658,6 +1658,23 @@ async def get_relevant_edges(
     if len(edges) == 0:
         return []
 
+    # BUG-104. The generic query below anchors on the NODE label
+    # (`(n:Entity {uuid: …})`), which AGE cannot satisfy — it stores one label
+    # per vertex and `age_graph_operations._node_label()` makes it the LEAF
+    # ontology class, so `:Entity` reached 42 of 554 entity vertices on the live
+    # bed and this query returned ZERO dedup candidates. Widening the label HERE
+    # would not have helped either: the score projection resolves to Neo4j's
+    # `vector.similarity.cosine`, which AGE rejects outright ("invalid
+    # indirection syntax"). A provider whose storage model these queries do not
+    # describe answers them itself, through the same seam as the reranker.
+    if driver.search_interface:
+        try:
+            return await driver.search_interface.get_relevant_edges(
+                driver, edges, search_filter, min_score, limit
+            )
+        except NotImplementedError:
+            pass
+
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
     )
@@ -1844,6 +1861,17 @@ async def get_edge_invalidation_candidates(
 ) -> list[list[EntityEdge]]:
     if len(edges) == 0:
         return []
+
+    # BUG-104, the temporal half — same node-label defect as `get_relevant_edges`
+    # above, same cure: the provider that owns a different storage model answers
+    # for itself rather than having its labels leak into the shared query.
+    if driver.search_interface:
+        try:
+            return await driver.search_interface.get_edge_invalidation_candidates(
+                driver, edges, search_filter, min_score, limit
+            )
+        except NotImplementedError:
+            pass
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider

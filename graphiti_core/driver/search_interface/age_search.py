@@ -37,7 +37,7 @@ from typing import Any
 
 from graphiti_core.driver.graph_operations.age_graph_operations import _cy, _vec
 from graphiti_core.driver.search_interface.search_interface import SearchInterface
-from graphiti_core.search.search_utils import DEFAULT_MIN_SCORE
+from graphiti_core.search.search_utils import DEFAULT_MIN_SCORE, RELEVANT_SCHEMA_LIMIT
 
 # "Is an entity vertex" is asked POSITIVELY, of the `labels` property that
 # `node_save` always writes, not by excluding the labels we happen to know about
@@ -86,7 +86,58 @@ _NON_ENTITY_EDGE_LABELS = ('MENTIONS', 'HAS_MEMBER')
 # gate at `min_score=0.5` would admit a node with nothing in common with the
 # query. Under the old raw scale that same node scored 0.0 and was excluded by
 # arithmetic, which is why the looser comparison never showed.
-_NORMALIZED_COSINE = '(2 - ({col} <=> $1::vector)) / 2'
+#
+# Two slots, one definition. The similarity legs compare a whole table against
+# ONE query vector bound as `$1`; the ingestion-time candidate legs (BUG-104)
+# compare each candidate row against the vector of the input edge it was joined
+# to, which is a per-row expression rather than a parameter. Both must project
+# the SAME scale or the shared `min_score` means two different things again, so
+# the operand is a slot instead of a second copy of the algebra.
+_NORMALIZED_COSINE = '(2 - ({col} <=> {vec})) / 2'
+
+# The query vector as the similarity legs pass it: a single bound parameter.
+_QUERY_VECTOR = '$1::vector'
+
+# ---------------------------------------------------------------------------
+# BUG-104 — the ingestion-time candidate sets, as SQL predicates.
+#
+# The generic Cypher expresses both of these as node patterns anchored on the
+# `:Entity` LABEL, which is the whole bug on this backend: `_node_label()` stores
+# each entity vertex under its LEAF ontology class, so `(n:Entity …)` reached 42
+# of 554 entity vertices on the live `policia_partes_real` bed and both queries
+# returned ZERO candidates for a typed edge (measured 2026-08-18: 0 vs 1 dedup
+# candidates, 0 vs 19 invalidation candidates, for the same real edge).
+#
+# Here the question is never asked of a label. The shadow tables are keyed by
+# UUID and carry `source_node_uuid` / `target_node_uuid` columns, so "which edges
+# join these two nodes" is a column comparison — there is no vertex to label,
+# and therefore no label for this bug to be wrong about. The candidate rows are
+# joined to the input edges by `unnest`, one round trip per call, and `q` is that
+# unnested input relation.
+#
+# They are module constants rather than inline SQL so a test can EVALUATE the
+# predicate — translate it and check what it would select — instead of asserting
+# that some substring is present.
+
+# Dedup: edges between the SAME node pair, in EITHER direction. Undirected on
+# purpose — the generic pattern it replaces is `-[e {…}]-`, and an already-stored
+# `B->A` is exactly the duplicate an incoming `A->B` must be resolved against.
+_SAME_PAIR_PREDICATE = (
+    '((e.source_node_uuid = q.src AND e.target_node_uuid = q.tgt)'
+    ' OR (e.source_node_uuid = q.tgt AND e.target_node_uuid = q.src))'
+)
+
+# Temporal invalidation: every edge INCIDENT to either endpoint. Wider than the
+# dedup set by design — a fact is contradicted by other facts about the same
+# nodes, not only by other facts about the same pair. Mirrors the generic
+# `WHERE n.uuid IN [src, tgt] OR m.uuid IN [tgt, src]`.
+_INCIDENT_PREDICATE = (
+    '(e.source_node_uuid IN (q.src, q.tgt) OR e.target_node_uuid IN (q.src, q.tgt))'
+)
+
+# The per-candidate similarity, scored against the vector of the input edge the
+# row was joined to (see `_NORMALIZED_COSINE`).
+_CANDIDATE_SCORE = _NORMALIZED_COSINE.format(col='e.fact_embedding', vec='q.emb::vector')
 
 # The text-search configuration to lexize with when the driver does not name one.
 #
@@ -215,7 +266,7 @@ class AGESearch(SearchInterface):
             group_clause = 'AND group_id = ANY($2::text[])'
             args.append(group_ids)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, {_NORMALIZED_COSINE.format(col='name_embedding')} AS score
+            f"""SELECT uuid, {_NORMALIZED_COSINE.format(col='name_embedding', vec=_QUERY_VECTOR)} AS score
                 FROM {driver._node_tbl}
                 WHERE name_embedding IS NOT NULL {group_clause}
                 ORDER BY name_embedding <=> $1::vector
@@ -270,7 +321,7 @@ class AGESearch(SearchInterface):
             idx += 1
         where = ' AND '.join(conds)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, {_NORMALIZED_COSINE.format(col='fact_embedding')} AS score
+            f"""SELECT uuid, {_NORMALIZED_COSINE.format(col='fact_embedding', vec=_QUERY_VECTOR)} AS score
                 FROM {driver._edge_tbl}
                 WHERE {where}
                 ORDER BY fact_embedding <=> $1::vector
@@ -281,6 +332,150 @@ class AGESearch(SearchInterface):
             r['uuid'] for r in rows if r['score'] is not None and float(r['score']) > min_score
         ]
         return await self._hydrate_edges_in_order(driver, ranked)
+
+    # ------------------------------------------- ingestion-time candidate sets
+    async def get_relevant_edges(
+        self,
+        driver: Any,
+        edges: list[Any],
+        search_filter: Any,
+        min_score: float = DEFAULT_MIN_SCORE,
+        limit: int = RELEVANT_SCHEMA_LIMIT,
+    ) -> list[list[Any]]:
+        """Existing edges that may DUPLICATE each input edge (BUG-104).
+
+        The generic Cypher this replaces anchors on `(n:Entity {uuid: …})`, a
+        pattern AGE's single-label storage cannot satisfy for any entity that has
+        an ontology class — which is nearly all of them — so it offered ZERO
+        dedup candidates and every re-ingested fact was written as a new edge.
+        See the `_SAME_PAIR_PREDICATE` comment for the measurements.
+        """
+        return await self._edge_candidates(
+            driver, edges, _SAME_PAIR_PREDICATE, min_score, limit
+        )
+
+    async def get_edge_invalidation_candidates(
+        self,
+        driver: Any,
+        edges: list[Any],
+        search_filter: Any,
+        min_score: float = DEFAULT_MIN_SCORE,
+        limit: int = RELEVANT_SCHEMA_LIMIT,
+    ) -> list[list[Any]]:
+        """Existing edges each input edge may CONTRADICT — the temporal half.
+
+        Same defect, same cure, wider candidate set (`_INCIDENT_PREDICATE`):
+        with zero candidates offered, no superseded fact was ever expired.
+        """
+        return await self._edge_candidates(
+            driver, edges, _INCIDENT_PREDICATE, min_score, limit
+        )
+
+    async def _edge_candidates(
+        self,
+        driver: Any,
+        edges: list[Any],
+        predicate: str,
+        min_score: float,
+        limit: int,
+    ) -> list[list[Any]]:
+        """One candidate list per input edge, in input order.
+
+        SearchFilters are DROPPED, as on every other shadow-table leg (see the
+        module docstring): the edge shadow table carries no relationship name and
+        no temporal columns, so `edge_types` and the `valid_at`/`invalid_at`
+        filters have nothing to read.
+
+        Dropped filters BROADEN, and broadening is safe for a SEARCH — an extra
+        row is offered and the caller ranks it. It is NOT automatically safe
+        here, because the consumer of these lists ACTS on them: a resolver that
+        is handed a candidate the `edge_types` filter would have excluded can
+        merge two edges that were never the same fact, or expire one that was
+        never contradicted. Wrong-merge and wrong-expiry are silent and they are
+        write-side. So this is a REAL limitation of the AGE arm, recorded here to
+        be closed (the shadow table needs the columns), not a gap that is fine
+        because it errs outward. What keeps it tolerable today is only that the
+        last call site either function had — `resolve_extracted_edges`, until
+        upstream 3efe085 replaced it with the hybrid `search` path — passed an
+        empty `SearchFilters()`, so no filter was being honoured there either.
+
+        The whole batch is one round trip: the input edges are `unnest`ed into a
+        relation `q` and joined to the shadow table, so `predicate` compares
+        columns to columns. Gating and truncation stay in Python — a window
+        function would push `limit` into the plan, but the candidate sets here
+        are per node pair and small, and this keeps the two legs' behaviour
+        readable in one place.
+
+        SHARED INSTANCES. Hydration runs ONCE over the de-duplicated union of
+        every candidate uuid, so a stored edge that is a candidate for two input
+        edges is the SAME `EntityEdge` OBJECT in both lists. The generic Cypher
+        path builds a fresh object per occurrence. It matters for a caller that
+        MUTATES a candidate — stamping `expired_at` / `invalid_at` on an
+        invalidation candidate writes through to every list holding it — so a
+        resolver that relies on per-occurrence copies must copy explicitly. Kept
+        deliberately: one hydration round trip instead of N, and identity is the
+        truthful model (there is one such edge in the graph).
+        """
+        if not edges:
+            return []
+
+        idxs: list[int] = []
+        gids: list[str] = []
+        srcs: list[str] = []
+        tgts: list[str] = []
+        embs: list[str] = []
+        for i, edge in enumerate(edges):
+            vector = _vec(getattr(edge, 'fact_embedding', None))
+            if vector is None:
+                # One edge missing its embedding is that edge's problem: it keeps
+                # its (empty) slot and the rest of the batch is still served. The
+                # Kuzu branch of the generic query abandons the WHOLE call here.
+                continue
+            idxs.append(i)
+            gids.append(edge.group_id)
+            srcs.append(edge.source_node_uuid)
+            tgts.append(edge.target_node_uuid)
+            embs.append(vector)
+
+        if not idxs:
+            return [[] for _ in edges]
+
+        rows = await driver.execute_sql(
+            f"""SELECT q.idx AS idx, e.uuid AS uuid, {_CANDIDATE_SCORE} AS score
+                FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[])
+                     AS q(idx, gid, src, tgt, emb)
+                JOIN {driver._edge_tbl} e
+                  ON e.fact_embedding IS NOT NULL
+                 AND e.group_id = q.gid
+                 AND {predicate}
+                ORDER BY q.idx, score DESC""",
+            idxs,
+            gids,
+            srcs,
+            tgts,
+            embs,
+        )
+
+        # `> min_score`, strictly — every other provider gates in-query with
+        # `WHERE score > $min_score`, and on the normalized scale the boundary is
+        # reachable rather than theoretical (BUG-98).
+        ranked: dict[int, list[str]] = {}
+        for row in rows:
+            score = row['score']
+            if score is None or float(score) <= min_score:
+                continue
+            bucket = ranked.setdefault(int(row['idx']), [])
+            if len(bucket) < limit:
+                bucket.append(row['uuid'])
+
+        wanted = list(dict.fromkeys(u for i in range(len(edges)) for u in ranked.get(i, [])))
+        fetched = await self._hydrate_edges_in_order(driver, wanted)
+        by_uuid = {edge.uuid: edge for edge in fetched}
+        # A uuid the graph no longer holds is skipped rather than raised on: the
+        # shadow table is a mirror, and a stale row must not fail an ingest.
+        return [
+            [by_uuid[u] for u in ranked.get(i, []) if u in by_uuid] for i in range(len(edges))
+        ]
 
     # ----------------------------------------------------------- keyword search
     async def node_fulltext_search(
