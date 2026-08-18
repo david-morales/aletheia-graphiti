@@ -44,6 +44,53 @@ async def test_connect_ontology_client_age_builds_client(monkeypatch):
     assert built["graph_name"] == "policia_age_poc_ontology"  # companion ontology graph
     assert built["dsn"] == "postgresql://age:age@localhost:5433/age_test"
     assert built["embedding_dim"] == 1024
+    # An optional knob absent from a hand-built config must default, not raise.
+    assert built["text_search_config"] == "simple"
+
+
+@pytest.mark.asyncio
+async def test_connect_ontology_client_age_forwards_the_text_search_config(monkeypatch):
+    """The ontology graph must be lexized the same way the main graph is.
+
+    A tsquery only matches a tsvector produced by the same text-search
+    configuration, so an ontology companion built with a different one answers
+    nothing — silently. See DESIGN-age-fulltext.md.
+    """
+    built: dict = {}
+
+    class _FakeAge:
+        def __init__(self, **kw):
+            built.update(kw)
+
+    class _FakeGraphiti:
+        def __init__(self, **kw):
+            self._kw = kw
+
+        async def build_indices_and_constraints(self):
+            return None
+
+    import graphiti_core.driver.age_driver as age_mod
+
+    monkeypatch.setattr(age_mod, "AGEDriver", _FakeAge)
+    monkeypatch.setattr(srv, "Graphiti", _FakeGraphiti)
+
+    cfg = srv.GraphitiConfig()
+    cfg.database.provider = "age"
+    cfg.graphiti.ontology_graph = "policia_age_poc_ontology"
+    svc = srv.GraphitiService(config=cfg)
+
+    client = await svc._connect_ontology_client(
+        {
+            "dsn": "postgresql://age:age@localhost:5433/age_test",
+            "graph_name": "policia_age_poc",
+            "embedding_dim": 1024,
+            "text_search_config": "spanish",
+        },
+        embedder_client=None,
+    )
+
+    assert client is not None
+    assert built["text_search_config"] == "spanish"
 
 
 @pytest.mark.asyncio

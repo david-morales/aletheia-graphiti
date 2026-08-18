@@ -266,6 +266,13 @@ class AgeProviderConfig(BaseModel):
     dsn: str = 'postgresql://age:age@localhost:5433/age_test'
     graph_name: str = 'graphiti'
     embedding_dim: int = 1024
+    # PostgreSQL text-search configuration for the keyword leg. `simple` folds
+    # case and nothing else — no stemming, no stopwords — and is the only safe
+    # default for a language-agnostic connector. Naming the corpus language
+    # (`spanish`, `english`, …) buys stemming + stopword removal, i.e. parity
+    # with the FalkorDB flavour, but it also changes the `tsv` generated columns:
+    # an EXISTING graph must be rebuilt and re-ingested for it to take effect.
+    text_search_config: str = 'simple'
 
 
 class DatabaseProvidersConfig(BaseModel):

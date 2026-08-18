@@ -30,6 +30,7 @@ from graphiti_core.driver.driver import (
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import (
     DEFAULT_ENTITY_EDGE_TYPE,
+    entity_edge_pattern_type,
     get_entity_edge_types_query,
     get_nodes_query,
     get_relationships_query,
@@ -203,8 +204,24 @@ async def resolve_entity_edge_types(driver: GraphDriver) -> list[str]:
     if driver.provider != GraphProvider.FALKORDB:
         return [DEFAULT_ENTITY_EDGE_TYPE]
 
+    return await resolve_entity_edge_types_via(driver)
+
+
+async def resolve_entity_edge_types_via(executor: Any) -> list[str]:
+    """``resolve_entity_edge_types`` for a caller holding only a QueryExecutor.
+
+    The per-driver operations modules (``driver/falkordb/operations/``) never see
+    a ``GraphDriver`` — they take the slim ``QueryExecutor``. They still have to
+    ask the graph which types its entity edges are stored under, and they must
+    get the SAME answer as the live leg, so the query and its parsing live here
+    once rather than being reimplemented per module (which is how BUG-62 came to
+    have siblings in the first place).
+
+    Unconditional: a caller reaching this has already decided the enumeration
+    applies to it.
+    """
     try:
-        records, _, _ = await driver.execute_query(get_entity_edge_types_query(), routing_='r')
+        records, _, _ = await executor.execute_query(get_entity_edge_types_query(), routing_='r')
     except Exception as e:
         # A driver that cannot answer still searches the default type rather than
         # failing the whole query.
@@ -1763,7 +1780,9 @@ async def get_relevant_edges(
             query = (
                 """
                                                                                                                                         UNWIND $edges AS edge
-                                                                                                                                        MATCH (n:Entity {uuid: edge.source_node_uuid})-[e:RELATES_TO {group_id: edge.group_id}]-(m:Entity {uuid: edge.target_node_uuid})
+                                                                                                                                        MATCH (n:Entity {uuid: edge.source_node_uuid})-[e"""
+                + entity_edge_pattern_type(driver.provider)
+                + """ {group_id: edge.group_id}]-(m:Entity {uuid: edge.target_node_uuid})
                                                                                                                                         """
                 + filter_query
                 + """
@@ -1950,7 +1969,9 @@ async def get_edge_invalidation_candidates(
             query = (
                 """
                                                                                                                                         UNWIND $edges AS edge
-                                                                                                                                        MATCH (n:Entity)-[e:RELATES_TO {group_id: edge.group_id}]->(m:Entity)
+                                                                                                                                        MATCH (n:Entity)-[e"""
+                + entity_edge_pattern_type(driver.provider)
+                + """ {group_id: edge.group_id}]->(m:Entity)
                                                                                                                                         WHERE n.uuid IN [edge.source_node_uuid, edge.target_node_uuid] OR m.uuid IN [edge.target_node_uuid, edge.source_node_uuid]
                                                                                                                                         """
                 + filter_query
@@ -2040,9 +2061,14 @@ async def node_distance_reranker(
     filtered_uuids = list(filter(lambda node_uuid: node_uuid != center_node_uuid, node_uuids))
     scores: dict[str, float] = {center_node_uuid: 0.0}
 
-    query = """
+    # BUG-87. FalkorDB sets no `search_interface`, so this generic leg IS the
+    # live reranker there — and pinning `:RELATES_TO` scored every candidate on a
+    # bulk-ingested graph as unconnected, which made "ranked by proximity to the
+    # center node" a no-op and then let truncation drop arbitrary results. Same
+    # symptom the AGE flavour had before it grew its own reranker override.
+    query = f"""
     UNWIND $node_uuids AS node_uuid
-    MATCH (center:Entity {uuid: $center_uuid})-[:RELATES_TO]-(n:Entity {uuid: node_uuid})
+    MATCH (center:Entity {{uuid: $center_uuid}})-[e{entity_edge_pattern_type(driver.provider)}]-(n:Entity {{uuid: node_uuid}})
     RETURN 1 AS score, node_uuid AS uuid
     """
     if driver.provider == GraphProvider.KUZU:
@@ -2258,8 +2284,11 @@ async def get_embeddings_for_edges(
             split(e.fact_embedding, ",") AS fact_embedding
         """
     else:
-        match_query = """
-            MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity)
+        # BUG-87. On FalkorDB this returned {} for every bulk-written edge, so
+        # `add_episode_bulk` re-embedded facts it had already embedded and
+        # dedup compared against nothing. Endpoint-scoped, like every other leg.
+        match_query = f"""
+            MATCH (n:Entity)-[e{entity_edge_pattern_type(driver.provider)}]-(m:Entity)
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """

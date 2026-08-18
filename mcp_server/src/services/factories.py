@@ -519,6 +519,9 @@ class DatabaseDriverFactory:
                     'embedding_dim': int(
                         os.environ.get('AGE_EMBEDDING_DIM', age_config.embedding_dim)
                     ),
+                    'text_search_config': os.environ.get(
+                        'AGE_TEXT_SEARCH_CONFIG', age_config.text_search_config
+                    ),
                 }
 
             case _:

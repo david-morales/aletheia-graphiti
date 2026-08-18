@@ -28,6 +28,51 @@ INDEX_TO_LABEL_KUZU_MAPPING = {
 # FalkorDB bulk path, which MERGEs each edge under its own `name` instead.
 DEFAULT_ENTITY_EDGE_TYPE = 'RELATES_TO'
 
+# The providers on which an entity edge's relationship type is OPEN — an
+# ontology name, not `RELATES_TO` (BUG-62, BUG-87).
+#
+#   * FALKORDB — `bulk_utils`' edge writer MERGEs each edge under the extracted
+#     edge's own `name` (`DETIENE`, `INTERVIENE_AGENTE`, …). The single-edge
+#     writer still uses `RELATES_TO`, so one graph holds an open-ended MIX.
+#   * AGE — `age_graph_operations._edge_label()` stores every entity edge under
+#     its typed relationship name; `RELATES_TO` never appears at all.
+#
+# On Neo4j, Kuzu and Neptune the type genuinely is the constant, so a pattern
+# that names it stays both correct and index-served there.
+#
+# How a pinned `:RELATES_TO` fails is NOT the same on the two providers listed
+# here, and the difference is worth stating because only one half is dangerous:
+#   * FALKORDB — the pattern parses and matches ZERO rows. Matching nothing is
+#     not an error, so the failure is SILENT. This is the dangerous half, and
+#     the reason every instance of this bug survived so long.
+#   * AGE — the alternation form is not silent at all: `MENTIONS|RELATES_TO
+#     |HAS_MEMBER` is a hard `ERROR: syntax error at or near "|"` (measured).
+#     A loud failure cannot have quietly corrupted anything.
+TYPED_EDGE_LABEL_PROVIDERS = frozenset({GraphProvider.FALKORDB, GraphProvider.AGE})
+
+
+def entity_edge_pattern_type(provider: GraphProvider) -> str:
+    """The relationship-type part of an `(:Entity)-[e…]-(:Entity)` pattern.
+
+    `':RELATES_TO'` where that constant is the truth, and the EMPTY string —
+    an untyped relationship — where it is not (`TYPED_EDGE_LABEL_PROVIDERS`).
+
+    Dropping the type does not widen the match set in any way that matters,
+    because the ENDPOINTS are what separate entity edges from Graphiti's
+    structural ones: MENTIONS runs Episodic->Entity, HAS_MEMBER
+    Community->Entity, HAS_EPISODE Saga->Episodic and NEXT_EPISODE
+    Episodic->Episodic, so none of them can match Entity->Entity. That is an
+    invariant of the structural WRITERS rather than of the names — the bulk
+    writer takes an edge's type from extraction, so a genuine fact edge may well
+    be called `HAS_MEMBER` and belongs in the results. This is the same argument
+    `get_entity_edge_types_query` and the BUG-62 similarity-leg cure rest on, and
+    using one helper is what keeps the legs from drifting apart again.
+
+    Callers must place this immediately after the `e` variable:
+    ``f'MATCH (n:Entity)-[e{entity_edge_pattern_type(p)} {{…}}]->(m:Entity)'``.
+    """
+    return '' if provider in TYPED_EDGE_LABEL_PROVIDERS else f':{DEFAULT_ENTITY_EDGE_TYPE}'
+
 
 def sanitize_edge_type(edge_type: str) -> str:
     """Reduce a relationship type to what can be interpolated into Cypher.
@@ -187,12 +232,31 @@ def get_nodes_query(name: str, query: str, limit: int, provider: GraphProvider) 
 
 
 def get_vector_cosine_func_query(vec1, vec2, provider: GraphProvider) -> str:
+    """A cosine similarity on the NORMALIZED [0, 1] scale, in the provider's dialect.
+
+    Every caller gates the result on `DEFAULT_MIN_SCORE` (0.6, `search_utils`),
+    which is calibrated on the normalized `(1 + cos) / 2` scale — the scale
+    Neo4j's `vector.similarity.cosine` produces by definition. A provider whose
+    native function returns the RAW cosine must therefore be rescaled here, or it
+    silently runs a different floor than the rest: raw 0.6 is normalized 0.8.
+
+    That is exactly what BUG-98 was on the AGE flavour — nine phrasings of one
+    question returned 5 nodes each on FalkorDB and 0 on AGE, because the legs
+    agreed on the ranking and disagreed only on the scale a shared threshold was
+    applied to. Kuzu carried the SAME defect: `array_cosine_similarity` is the
+    raw cosine (measured on kuzu 0.11.3 — identical +1.0, orthogonal 0.0,
+    opposite -1.0), so a Kuzu graph ran an effective ~0.8 floor too.
+
+    Rescaling changes the SCORE only, never the ORDER: `(1 + c) / 2` is monotone
+    in `c`, and both callers only gate and `ORDER BY` it.
+    """
     if provider == GraphProvider.FALKORDB:
-        # FalkorDB uses a different syntax for regular cosine similarity and Neo4j uses normalized cosine similarity
+        # `vec.cosineDistance` is `1 - cos`, so this is `(1 + cos) / 2`.
         return f'(2 - vec.cosineDistance({vec1}, vecf32({vec2})))/2'
 
     if provider == GraphProvider.KUZU:
-        return f'array_cosine_similarity({vec1}, {vec2})'
+        # `array_cosine_similarity` is the raw cosine, [-1, 1].
+        return f'(1 + array_cosine_similarity({vec1}, {vec2})) / 2'
 
     return f'vector.similarity.cosine({vec1}, {vec2})'
 
