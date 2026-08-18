@@ -2,23 +2,43 @@
 
 The bug
 -------
-BUG-62 fixed the search legs, but the "an entity edge is a ``RELATES_TO``"
-assumption survived in every sibling path:
+BUG-62 fixed the hybrid SEARCH legs. The "an entity edge is a ``RELATES_TO``"
+assumption survived everywhere else. The paths fixed here, and what each one
+cost on a bulk-ingested graph:
+
+LIVE on FalkorDB — ``FalkorDriver`` sets neither ``search_interface`` nor
+``graph_operations_interface``, so nothing intercepts any of these:
 
 * ``edges.py`` — ``Edge.delete`` / ``Edge.delete_by_uuids`` matched
-  ``MENTIONS|RELATES_TO|HAS_MEMBER``, so a bulk-written ``DETIENE`` edge could
-  not be deleted through the model API at all;
+  ``MENTIONS|RELATES_TO|HAS_MEMBER``: a bulk-written ``DETIENE`` edge could not
+  be deleted through the model API at all;
 * ``search_utils.get_relevant_edges`` / ``get_edge_invalidation_candidates`` —
-  the dedup and temporal-invalidation candidate queries pinned
-  ``-[e:RELATES_TO]-``, so a typed edge was never OFFERED as a candidate:
-  duplicates never merged and a superseded fact was never invalidated;
-* ``driver/falkordb/operations/search_ops.py`` — all three edge methods carried
-  the same constant, plus a fulltext leg that asked only the ``RELATES_TO``
-  index.
+  a typed edge was never OFFERED as a dedup or temporal-invalidation candidate:
+  duplicates never merged, superseded facts never expired;
+* ``search_utils.node_distance_reranker`` — every candidate scored as
+  unconnected, so ``explore_node``'s "ranked by proximity to the center node"
+  was a no-op and truncation then dropped arbitrary results;
+* ``search_utils.get_embeddings_for_edges`` — returned ``{}``, so the bulk path
+  re-embedded facts it had already embedded and compared dedup against nothing;
+* ``utils/maintenance/community_operations.py`` — the neighbour projection came
+  back empty, so ``build_communities`` ran label propagation over a graph of
+  isolated nodes.
 
-Every one of these fails by matching zero rows, which is not an error. The
-consequence class is therefore silent: maintenance and temporal invalidation
-no-op on every bulk-ingested graph.
+NOT live — staged for an upstream refactor, zero consumers repo-wide today:
+
+* ``driver/falkordb/operations/search_ops.py`` — all three edge methods carried
+  the constant, plus a fulltext leg that asked only the ``RELATES_TO`` index.
+  Fixed so the refactor does not land BUG-62 again; see
+  ``TestTheFalkorOpsModuleEdgeMethods``, which says so in place. **Nothing in
+  this module was a live falkor fulltext/similarity/BFS leg** — those live in
+  ``search_utils`` and were already untyped from the BUG-62 wave.
+
+How it fails is not uniform, and the difference matters:
+
+* on **FalkorDB** the typed pattern parses and matches ZERO rows. Silent.
+* on **AGE** the alternation form is not silent at all — ``MENTIONS|RELATES_TO
+  |HAS_MEMBER`` is a hard ``ERROR: syntax error at or near "|"`` (measured in
+  review). Loud, and in the branch's favour: it cannot have corrupted anything.
 
 Who has typed edges
 -------------------
@@ -48,11 +68,15 @@ from graphiti_core.graph_queries import (
     TYPED_EDGE_LABEL_PROVIDERS,
     entity_edge_pattern_type,
 )
+from graphiti_core.nodes import EntityNode
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search_utils import (
     get_edge_invalidation_candidates,
+    get_embeddings_for_edges,
     get_relevant_edges,
+    node_distance_reranker,
 )
+from graphiti_core.utils.maintenance.community_operations import get_community_clusters
 
 # A relationship pattern: `-[e:A|B {…}]->` / `-[e {…}]-` / `-[e]-`.
 _REL_PATTERN_RE = re.compile(
@@ -238,6 +262,127 @@ class TestInvalidationCandidatesReachATypedEdge:
         driver = _FakeDriver(GraphProvider.NEO4J)
         await get_edge_invalidation_candidates(driver, [_edge()], SearchFilters())
         assert 'e:RELATES_TO {group_id: edge.group_id}' in driver.queries[0]
+
+
+# ------------------------------- the three pins the first round missed (M2)
+
+
+class TestTheRerankerReachesATypedEdge:
+    """`node_distance_reranker` — the LIVE falkor reranker (no search_interface).
+
+    Scoring every candidate as unconnected made `explore_node`'s documented
+    "ranked by proximity to the center node" a no-op, and the truncation that
+    follows then dropped arbitrary results rather than the furthest ones.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
+    async def test_a_typed_edge_makes_a_node_adjacent(self, provider):
+        driver = _FakeDriver(provider)
+        await node_distance_reranker(driver, ['a', 'b'], 'center')
+        # The pattern is anonymous here — `-[…]-`, no variable.
+        assert pattern_selects(driver.queries[0], TYPED_LABEL, var='')
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
+    async def test_the_endpoints_still_scope_it(self, provider):
+        driver = _FakeDriver(provider)
+        await node_distance_reranker(driver, ['a'], 'center')
+        assert '(center:Entity {uuid: $center_uuid})' in driver.queries[0]
+        assert '(n:Entity {uuid: node_uuid})' in driver.queries[0]
+
+    @pytest.mark.asyncio
+    async def test_neo4j_keeps_its_typed_pattern(self):
+        driver = _FakeDriver(GraphProvider.NEO4J)
+        await node_distance_reranker(driver, ['a'], 'center')
+        assert ')-[:RELATES_TO]-(' in driver.queries[0]
+        assert not pattern_selects(driver.queries[0], TYPED_LABEL, var='')
+
+
+class TestBulkEmbeddingLoadReachesATypedEdge:
+    """`get_embeddings_for_edges` returned {} for every bulk-written edge."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
+    async def test_a_typed_edge_is_loadable(self, provider):
+        driver = _FakeDriver(provider)
+        await get_embeddings_for_edges(driver, [_edge()])
+        assert pattern_selects(driver.queries[0], TYPED_LABEL)
+        assert 'e.uuid IN $edge_uuids' in driver.queries[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
+    async def test_the_endpoints_still_scope_it(self, provider):
+        driver = _FakeDriver(provider)
+        await get_embeddings_for_edges(driver, [_edge()])
+        assert '(n:Entity)-[e' in driver.queries[0]
+        assert '(m:Entity)' in driver.queries[0]
+
+    @pytest.mark.asyncio
+    async def test_neo4j_keeps_its_typed_pattern(self):
+        driver = _FakeDriver(GraphProvider.NEO4J)
+        await get_embeddings_for_edges(driver, [_edge()])
+        assert '(n:Entity)-[e:RELATES_TO]-(m:Entity)' in driver.queries[0]
+
+
+@pytest.fixture
+def _group_has_nodes(monkeypatch):
+    """`get_community_clusters` skips a group with no nodes before it projects.
+
+    The projection query is what is under test, so the node fetch is stubbed
+    rather than modelled — the fake driver answers every query with no rows.
+    """
+    import graphiti_core.utils.maintenance.community_operations as mod
+
+    async def _nodes(driver, group_ids):
+        return [
+            EntityNode(
+                uuid='n1',
+                name='X',
+                group_id=group_ids[0],
+                labels=['Entity'],
+                created_at=datetime.now(timezone.utc),
+            )
+        ]
+
+    monkeypatch.setattr(mod.EntityNode, 'get_by_group_ids', _nodes)
+
+
+def _projection(driver) -> str:
+    matches = [q for q in driver.queries if 'neighbor_uuid' in q]
+    assert matches, f'the neighbour projection was never issued:\n{driver.queries}'
+    return matches[0]
+
+
+@pytest.mark.usefixtures('_group_has_nodes')
+class TestCommunityProjectionReachesATypedEdge:
+    """`community_operations` — a RAW execute_query, intercepted by nothing.
+
+    An empty neighbour projection is not an error either: label propagation
+    just runs over isolated nodes and `build_communities` produces nothing.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
+    async def test_a_typed_edge_counts_as_a_neighbour(self, provider):
+        driver = _FakeDriver(provider)
+        await get_community_clusters(driver, ['g'])
+        assert pattern_selects(_projection(driver), TYPED_LABEL)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provider', sorted(TYPED_EDGE_LABEL_PROVIDERS, key=str))
+    async def test_the_endpoints_and_the_group_still_scope_it(self, provider):
+        driver = _FakeDriver(provider)
+        await get_community_clusters(driver, ['g'])
+        projection = _projection(driver)
+        assert '(n:Entity {group_id: $group_id})' in projection
+        assert '(m:Entity {group_id: $group_id})' in projection
+
+    @pytest.mark.asyncio
+    async def test_neo4j_keeps_its_typed_pattern(self):
+        driver = _FakeDriver(GraphProvider.NEO4J)
+        await get_community_clusters(driver, ['g'])
+        assert '-[e:RELATES_TO]-' in _projection(driver)
 
 
 # ------------------------------------------- the staged per-driver ops module

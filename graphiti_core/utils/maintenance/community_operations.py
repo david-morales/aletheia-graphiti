@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
 from graphiti_core.edges import CommunityEdge
 from graphiti_core.embedder import EmbedderClient
+from graphiti_core.graph_queries import entity_edge_pattern_type
 from graphiti_core.helpers import semaphore_gather
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.models.nodes.node_db_queries import COMMUNITY_NODE_RETURN
@@ -60,8 +61,15 @@ async def get_community_clusters(
             continue
 
         # Batch query: get all neighbors for all nodes in this group at once
-        batch_query = """
-            MATCH (n:Entity {group_id: $group_id})-[e:RELATES_TO]-(m:Entity {group_id: $group_id})
+        #
+        # BUG-87. This is a RAW `driver.execute_query` — FalkorDB sets no
+        # `graph_operations_interface`, so nothing intercepts it — and pinning
+        # `:RELATES_TO` returned zero neighbours on a bulk-ingested graph. The
+        # projection then fed the label-propagation loop a graph of isolated
+        # nodes, so `build_communities` produced one community per node, or
+        # none. Endpoint-scoped like every other leg (`entity_edge_pattern_type`).
+        batch_query = f"""
+            MATCH (n:Entity {{group_id: $group_id}})-[e{entity_edge_pattern_type(driver.provider)}]-(m:Entity {{group_id: $group_id}})
             WITH n.uuid AS source_uuid, count(e) AS edge_count, m.uuid AS neighbor_uuid
             RETURN source_uuid, neighbor_uuid, edge_count
         """

@@ -2061,9 +2061,14 @@ async def node_distance_reranker(
     filtered_uuids = list(filter(lambda node_uuid: node_uuid != center_node_uuid, node_uuids))
     scores: dict[str, float] = {center_node_uuid: 0.0}
 
-    query = """
+    # BUG-87. FalkorDB sets no `search_interface`, so this generic leg IS the
+    # live reranker there — and pinning `:RELATES_TO` scored every candidate on a
+    # bulk-ingested graph as unconnected, which made "ranked by proximity to the
+    # center node" a no-op and then let truncation drop arbitrary results. Same
+    # symptom the AGE flavour had before it grew its own reranker override.
+    query = f"""
     UNWIND $node_uuids AS node_uuid
-    MATCH (center:Entity {uuid: $center_uuid})-[:RELATES_TO]-(n:Entity {uuid: node_uuid})
+    MATCH (center:Entity {{uuid: $center_uuid}})-[{entity_edge_pattern_type(driver.provider)}]-(n:Entity {{uuid: node_uuid}})
     RETURN 1 AS score, node_uuid AS uuid
     """
     if driver.provider == GraphProvider.KUZU:
@@ -2279,8 +2284,11 @@ async def get_embeddings_for_edges(
             split(e.fact_embedding, ",") AS fact_embedding
         """
     else:
-        match_query = """
-            MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity)
+        # BUG-87. On FalkorDB this returned {} for every bulk-written edge, so
+        # `add_episode_bulk` re-embedded facts it had already embedded and
+        # dedup compared against nothing. Endpoint-scoped, like every other leg.
+        match_query = f"""
+            MATCH (n:Entity)-[e{entity_edge_pattern_type(driver.provider)}]-(m:Entity)
         """
         if driver.provider == GraphProvider.KUZU:
             match_query = """
