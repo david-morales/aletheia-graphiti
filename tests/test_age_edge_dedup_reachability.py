@@ -208,9 +208,7 @@ class TestTheSeamIsConsulted:
         assert got_limit == 3
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'fn', [get_relevant_edges, get_edge_invalidation_candidates]
-    )
+    @pytest.mark.parametrize('fn', [get_relevant_edges, get_edge_invalidation_candidates])
     async def test_an_abstaining_interface_falls_through_to_the_generic_cypher(self, fn):
         """`NotImplementedError` is the seam's documented "not mine" answer."""
         driver = _FakeDriver(GraphProvider.NEO4J, search_interface=_AbstainingInterface())
@@ -218,9 +216,7 @@ class TestTheSeamIsConsulted:
         assert len(driver.queries) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'fn', [get_relevant_edges, get_edge_invalidation_candidates]
-    )
+    @pytest.mark.parametrize('fn', [get_relevant_edges, get_edge_invalidation_candidates])
     async def test_an_empty_edge_list_never_touches_the_driver(self, fn):
         interface = _RecordingInterface()
         driver = _FakeDriver(GraphProvider.AGE, search_interface=interface)
@@ -271,9 +267,7 @@ class TestTheProvidersThatNeverHadThisBugAreUntouched:
         assert '(m:Entity)' in cypher
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'fn', [get_relevant_edges, get_edge_invalidation_candidates]
-    )
+    @pytest.mark.parametrize('fn', [get_relevant_edges, get_edge_invalidation_candidates])
     async def test_a_driver_without_a_search_interface_issues_exactly_one_query(self, fn):
         driver = _FakeDriver(GraphProvider.FALKORDB)
         await fn(driver, [_edge()], SearchFilters())
@@ -401,9 +395,7 @@ class TestTheAGEDedupLegAsksTheShadowTable:
     """No vertex label can appear, because no vertex is matched at all."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_sql_never_names_a_vertex_label(self, age_search, method):
         driver = _FakeAGEDriver()
         await getattr(age_search, method)(driver, [_edge()], SearchFilters())
@@ -412,9 +404,7 @@ class TestTheAGEDedupLegAsksTheShadowTable:
         assert not re.search(r'\bMATCH\b', sql), 'this must be SQL over the shadow table'
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_sql_never_calls_the_neo4j_cosine_function(self, age_search, method):
         """`vector.similarity.cosine` is a hard parse error on AGE (measured)."""
         driver = _FakeAGEDriver()
@@ -422,27 +412,21 @@ class TestTheAGEDedupLegAsksTheShadowTable:
         assert 'vector.similarity.cosine' not in driver.sql[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_sql_targets_the_edge_shadow_table(self, age_search, method):
         driver = _FakeAGEDriver()
         await getattr(age_search, method)(driver, [_edge()], SearchFilters())
         assert driver._edge_tbl in driver.sql[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_an_empty_edge_list_issues_no_sql(self, age_search, method):
         driver = _FakeAGEDriver()
         assert await getattr(age_search, method)(driver, [], SearchFilters()) == []
         assert driver.sql == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_score_is_the_normalized_cosine_every_provider_agrees_on(
         self, age_search, method
     ):
@@ -459,9 +443,7 @@ class TestTheAGECandidateSets:
     def test_dedup_admits_the_same_pair_in_either_direction(self):
         from graphiti_core.driver.search_interface.age_search import _SAME_PAIR_PREDICATE
 
-        assert _predicate_selects(
-            _SAME_PAIR_PREDICATE, e_src='A', e_tgt='B', q_src='A', q_tgt='B'
-        )
+        assert _predicate_selects(_SAME_PAIR_PREDICATE, e_src='A', e_tgt='B', q_src='A', q_tgt='B')
         assert _predicate_selects(
             _SAME_PAIR_PREDICATE, e_src='B', e_tgt='A', q_src='A', q_tgt='B'
         ), 'the generic pattern is undirected — `-[e]-` — so this one must be too'
@@ -509,9 +491,7 @@ class TestTheAGECandidateSets:
         assert getattr(mod, constant) in driver.sql[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_candidate_set_is_scoped_to_the_edges_group(self, age_search, method):
         """The exact join term, not the word `group_id` somewhere in the SQL.
 
@@ -531,9 +511,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
     """The Python half: one list per input edge, in input order."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_one_result_list_per_input_edge_in_input_order(self, age_search, method):
         driver = _FakeAGEDriver(
             rows=[
@@ -547,12 +525,8 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert [[e.uuid for e in lst] for lst in result] == [['a1'], ['b1'], []]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
-    async def test_the_sql_orders_by_input_index_then_score_descending(
-        self, age_search, method
-    ):
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
+    async def test_the_sql_orders_by_input_index_then_score_descending(self, age_search, method):
         """The ORDER BY is the WHOLE ranking contract — nothing else sorts.
 
         Gating and truncation happen in Python over the rows AS DELIVERED, so if
@@ -565,12 +539,8 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert 'ORDER BY q.idx, score DESC' in driver.sql[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
-    async def test_candidates_come_back_ranked_from_an_unordered_table(
-        self, age_search, method
-    ):
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
+    async def test_candidates_come_back_ranked_from_an_unordered_table(self, age_search, method):
         """Rows are handed over SHUFFLED — the query's own ORDER BY must rank them.
 
         Feeding pre-sorted rows would only prove that Python preserves what it
@@ -588,9 +558,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert [e.uuid for e in result[0]] == ['best', 'mid', 'low']
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_a_limit_of_one_keeps_the_BEST_candidate_not_an_arbitrary_one(
         self, age_search, method
     ):
@@ -607,18 +575,12 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
                 {'idx': 0, 'uuid': 'middling', 'score': 0.80},
             ]
         )
-        result = await getattr(age_search, method)(
-            driver, [_edge()], SearchFilters(), limit=1
-        )
+        result = await getattr(age_search, method)(driver, [_edge()], SearchFilters(), limit=1)
         assert [e.uuid for e in result[0]] == ['the-real-duplicate']
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
-    async def test_the_shuffled_rows_are_also_regrouped_by_input_edge(
-        self, age_search, method
-    ):
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
+    async def test_the_shuffled_rows_are_also_regrouped_by_input_edge(self, age_search, method):
         """`q.idx` leading the ORDER BY is what keeps each input edge's rows together."""
         driver = _FakeAGEDriver(
             rows=[
@@ -637,9 +599,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         ]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_min_score_gate_is_strict(self, age_search, method):
         """Every other provider writes `WHERE score > $min_score` (BUG-98)."""
         driver = _FakeAGEDriver(
@@ -653,9 +613,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert [e.uuid for e in result[0]] == ['above']
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_the_limit_truncates_per_input_edge_after_ranking(self, age_search, method):
         driver = _FakeAGEDriver(
             rows=[
@@ -672,9 +630,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert [[e.uuid for e in lst] for lst in result] == [['a', 'b'], ['d', 'e']]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_a_null_score_row_is_dropped_not_crashed_on(self, age_search, method):
         driver = _FakeAGEDriver(
             rows=[
@@ -686,9 +642,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert [e.uuid for e in result[0]] == ['ok']
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_an_edge_without_an_embedding_yields_no_candidates_but_keeps_its_slot(
         self, age_search, method
     ):
@@ -716,12 +670,8 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert [e.uuid for e in result[1]] == ['a']
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
-    async def test_every_bound_column_is_aligned_to_the_same_input_edges(
-        self, age_search, method
-    ):
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
+    async def test_every_bound_column_is_aligned_to_the_same_input_edges(self, age_search, method):
         """idx / group / source / target / embedding must describe the same rows."""
         driver = _FakeAGEDriver()
         await getattr(age_search, method)(
@@ -742,12 +692,8 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert len(embs) == 2
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
-    async def test_a_candidate_shared_by_two_input_edges_is_one_object(
-        self, age_search, method
-    ):
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
+    async def test_a_candidate_shared_by_two_input_edges_is_one_object(self, age_search, method):
         """Pins the documented divergence from the generic path.
 
         Hydration runs once over the de-duplicated union, so a stored edge that
@@ -772,9 +718,7 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
         assert result[0][0] is result[1][0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
-    )
+    @pytest.mark.parametrize('method', ['get_relevant_edges', 'get_edge_invalidation_candidates'])
     async def test_no_edge_has_an_embedding_so_no_sql_runs(self, age_search, method):
         driver = _FakeAGEDriver()
         result = await getattr(age_search, method)(
