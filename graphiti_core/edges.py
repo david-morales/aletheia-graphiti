@@ -28,6 +28,7 @@ from typing_extensions import LiteralString
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError
+from graphiti_core.graph_queries import TYPED_EDGE_LABEL_PROVIDERS
 from graphiti_core.helpers import parse_db_date
 from graphiti_core.models.edges.edge_db_queries import (
     COMMUNITY_EDGE_RETURN,
@@ -78,6 +79,26 @@ class Edge(BaseModel, ABC):
                 """,
                 uuid=self.uuid,
             )
+        elif driver.provider in TYPED_EDGE_LABEL_PROVIDERS:
+            # BUG-87. On these providers an entity edge does NOT live under
+            # `RELATES_TO`: FalkorDB's bulk writer MERGEs each edge under the
+            # extracted edge's own `name` (`DETIENE`, `INTERVIENE_AGENTE`, …) and
+            # the AGE writer stores every edge under its typed relationship name.
+            # Naming three types therefore made `delete` a silent no-op for every
+            # bulk-ingested edge — i.e. for every production graph.
+            #
+            # The uuid is the key, and it is unique across edges, so dropping the
+            # type constraint cannot delete anything other than the edge asked
+            # for. Enumerating the present types instead (the BUG-62 cure) would
+            # buy nothing here: it costs a round trip to end up matching the same
+            # single edge that `{uuid: $uuid}` already identifies.
+            await driver.execute_query(
+                """
+                MATCH (n)-[e {uuid: $uuid}]->(m)
+                DELETE e
+                """,
+                uuid=self.uuid,
+            )
         else:
             await driver.execute_query(
                 """
@@ -113,6 +134,17 @@ class Edge(BaseModel, ABC):
                 MATCH (e:RelatesToNode_)
                 WHERE e.uuid IN $uuids
                 DETACH DELETE e
+                """,
+                uuids=uuids,
+            )
+        elif driver.provider in TYPED_EDGE_LABEL_PROVIDERS:
+            # Same as `delete` above (BUG-87): the type list could not see a
+            # typed edge, and the uuid list is what identifies these edges.
+            await driver.execute_query(
+                """
+                MATCH (n)-[e]->(m)
+                WHERE e.uuid IN $uuids
+                DELETE e
                 """,
                 uuids=uuids,
             )

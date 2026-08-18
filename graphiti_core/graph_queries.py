@@ -28,6 +28,45 @@ INDEX_TO_LABEL_KUZU_MAPPING = {
 # FalkorDB bulk path, which MERGEs each edge under its own `name` instead.
 DEFAULT_ENTITY_EDGE_TYPE = 'RELATES_TO'
 
+# The providers on which an entity edge's relationship type is OPEN — an
+# ontology name, not `RELATES_TO` (BUG-62, BUG-87).
+#
+#   * FALKORDB — `bulk_utils`' edge writer MERGEs each edge under the extracted
+#     edge's own `name` (`DETIENE`, `INTERVIENE_AGENTE`, …). The single-edge
+#     writer still uses `RELATES_TO`, so one graph holds an open-ended MIX.
+#   * AGE — `age_graph_operations._edge_label()` stores every entity edge under
+#     its typed relationship name; `RELATES_TO` never appears at all.
+#
+# On Neo4j, Kuzu and Neptune the type genuinely is the constant, so a pattern
+# that names it stays both correct and index-served there. Any query that pins
+# `:RELATES_TO` matches ZERO rows on the providers listed here, and matching
+# nothing is not an error — which is why every instance of this bug has been
+# silent.
+TYPED_EDGE_LABEL_PROVIDERS = frozenset({GraphProvider.FALKORDB, GraphProvider.AGE})
+
+
+def entity_edge_pattern_type(provider: GraphProvider) -> str:
+    """The relationship-type part of an `(:Entity)-[e…]-(:Entity)` pattern.
+
+    `':RELATES_TO'` where that constant is the truth, and the EMPTY string —
+    an untyped relationship — where it is not (`TYPED_EDGE_LABEL_PROVIDERS`).
+
+    Dropping the type does not widen the match set in any way that matters,
+    because the ENDPOINTS are what separate entity edges from Graphiti's
+    structural ones: MENTIONS runs Episodic->Entity, HAS_MEMBER
+    Community->Entity, HAS_EPISODE Saga->Episodic and NEXT_EPISODE
+    Episodic->Episodic, so none of them can match Entity->Entity. That is an
+    invariant of the structural WRITERS rather than of the names — the bulk
+    writer takes an edge's type from extraction, so a genuine fact edge may well
+    be called `HAS_MEMBER` and belongs in the results. This is the same argument
+    `get_entity_edge_types_query` and the BUG-62 similarity-leg cure rest on, and
+    using one helper is what keeps the legs from drifting apart again.
+
+    Callers must place this immediately after the `e` variable:
+    ``f'MATCH (n:Entity)-[e{entity_edge_pattern_type(p)} {{…}}]->(m:Entity)'``.
+    """
+    return '' if provider in TYPED_EDGE_LABEL_PROVIDERS else f':{DEFAULT_ENTITY_EDGE_TYPE}'
+
 
 def sanitize_edge_type(edge_type: str) -> str:
     """Reduce a relationship type to what can be interpolated into Cypher.

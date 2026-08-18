@@ -30,6 +30,7 @@ from graphiti_core.driver.driver import (
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import (
     DEFAULT_ENTITY_EDGE_TYPE,
+    entity_edge_pattern_type,
     get_entity_edge_types_query,
     get_nodes_query,
     get_relationships_query,
@@ -203,8 +204,24 @@ async def resolve_entity_edge_types(driver: GraphDriver) -> list[str]:
     if driver.provider != GraphProvider.FALKORDB:
         return [DEFAULT_ENTITY_EDGE_TYPE]
 
+    return await resolve_entity_edge_types_via(driver)
+
+
+async def resolve_entity_edge_types_via(executor: Any) -> list[str]:
+    """``resolve_entity_edge_types`` for a caller holding only a QueryExecutor.
+
+    The per-driver operations modules (``driver/falkordb/operations/``) never see
+    a ``GraphDriver`` — they take the slim ``QueryExecutor``. They still have to
+    ask the graph which types its entity edges are stored under, and they must
+    get the SAME answer as the live leg, so the query and its parsing live here
+    once rather than being reimplemented per module (which is how BUG-62 came to
+    have siblings in the first place).
+
+    Unconditional: a caller reaching this has already decided the enumeration
+    applies to it.
+    """
     try:
-        records, _, _ = await driver.execute_query(get_entity_edge_types_query(), routing_='r')
+        records, _, _ = await executor.execute_query(get_entity_edge_types_query(), routing_='r')
     except Exception as e:
         # A driver that cannot answer still searches the default type rather than
         # failing the whole query.
@@ -1763,7 +1780,9 @@ async def get_relevant_edges(
             query = (
                 """
                                                                                                                                         UNWIND $edges AS edge
-                                                                                                                                        MATCH (n:Entity {uuid: edge.source_node_uuid})-[e:RELATES_TO {group_id: edge.group_id}]-(m:Entity {uuid: edge.target_node_uuid})
+                                                                                                                                        MATCH (n:Entity {uuid: edge.source_node_uuid})-[e"""
+                + entity_edge_pattern_type(driver.provider)
+                + """ {group_id: edge.group_id}]-(m:Entity {uuid: edge.target_node_uuid})
                                                                                                                                         """
                 + filter_query
                 + """
@@ -1950,7 +1969,9 @@ async def get_edge_invalidation_candidates(
             query = (
                 """
                                                                                                                                         UNWIND $edges AS edge
-                                                                                                                                        MATCH (n:Entity)-[e:RELATES_TO {group_id: edge.group_id}]->(m:Entity)
+                                                                                                                                        MATCH (n:Entity)-[e"""
+                + entity_edge_pattern_type(driver.provider)
+                + """ {group_id: edge.group_id}]->(m:Entity)
                                                                                                                                         WHERE n.uuid IN [edge.source_node_uuid, edge.target_node_uuid] OR m.uuid IN [edge.target_node_uuid, edge.source_node_uuid]
                                                                                                                                         """
                 + filter_query

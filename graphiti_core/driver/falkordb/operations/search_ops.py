@@ -33,6 +33,7 @@ from graphiti_core.graph_queries import (
     get_nodes_query,
     get_relationships_query,
     get_vector_cosine_func_query,
+    sanitize_edge_type,
 )
 from graphiti_core.models.edges.edge_db_queries import get_entity_edge_return_query
 from graphiti_core.models.nodes.node_db_queries import (
@@ -46,6 +47,7 @@ from graphiti_core.search.search_filters import (
     edge_search_filter_query_constructor,
     node_search_filter_query_constructor,
 )
+from graphiti_core.search.search_utils import resolve_entity_edge_types_via
 
 logger = logging.getLogger(__name__)
 
@@ -309,34 +311,63 @@ class FalkorSearchOperations(SearchOperations):
         if filter_queries:
             filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
-        cypher = (
-            get_relationships_query(
-                'edge_name_and_fact', limit=limit, provider=GraphProvider.FALKORDB
-            )
-            + """
+        # BUG-62 / BUG-87. FalkorDB stores each bulk-written entity edge under its
+        # OWN relationship type, and a fulltext index exists PER type — so asking
+        # only the `RELATES_TO` index returns nothing for a typed edge, and the
+        # `[e:RELATES_TO {uuid: rel.uuid}]` hydration would drop it even if the
+        # index had answered. Both halves are derived from the graph instead,
+        # exactly as the live `search_utils.edge_fulltext_search` leg does.
+        all_records: list[Any] = []
+        for requested_type in await resolve_entity_edge_types_via(executor):
+            # Relationship types cannot be parameterised, so they are inlined —
+            # through the same sanitiser the writer used.
+            edge_type = sanitize_edge_type(requested_type)
+            cypher = (
+                get_relationships_query(
+                    'edge_name_and_fact',
+                    limit=limit,
+                    provider=GraphProvider.FALKORDB,
+                    edge_type=edge_type,
+                )
+                + f"""
             YIELD relationship AS rel, score
-            MATCH (n:Entity)-[e:RELATES_TO {uuid: rel.uuid}]->(m:Entity)
+            MATCH (n:Entity)-[e:{edge_type} {{uuid: rel.uuid}}]->(m:Entity)
             """
-            + filter_query
-            + """
+                + filter_query
+                + """
             WITH e, score, n, m
             RETURN
             """
-            + get_entity_edge_return_query(GraphProvider.FALKORDB)
-            + """
+                + get_entity_edge_return_query(GraphProvider.FALKORDB)
+                + """
             ORDER BY score DESC
             LIMIT $limit
             """
-        )
+            )
 
-        records, _, _ = await executor.execute_query(
-            cypher,
-            query=fuzzy_query,
-            limit=limit,
-            **filter_params,
-        )
+            try:
+                records, _, _ = await executor.execute_query(
+                    cypher,
+                    query=fuzzy_query,
+                    limit=limit,
+                    **filter_params,
+                )
+            except Exception as e:
+                # No fulltext index for this type: the edges exist but are
+                # unreachable by bm25, so the cosine leg carries them alone.
+                logger.info(f'Fulltext search skipped for edge type {edge_type}: {e}')
+                continue
+            all_records.extend(records)
 
-        return [entity_edge_from_record(r) for r in records]
+        seen_uuids: set[str] = set()
+        unique_records = []
+        for record in all_records:
+            uuid = record.get('uuid') if isinstance(record, dict) else record[0]
+            if uuid not in seen_uuids:
+                seen_uuids.add(uuid)
+                unique_records.append(record)
+
+        return [entity_edge_from_record(r) for r in unique_records[:limit]]
 
     async def edge_similarity_search(
         self,
@@ -365,12 +396,19 @@ class FalkorSearchOperations(SearchOperations):
                 filter_params['target_uuid'] = target_node_uuid
                 filter_queries.append('m.uuid = $target_uuid')
 
+        # Keeps the cosine call off an edge with no fact embedding, which the
+        # untyped pattern below can now reach. Mirrors the live leg
+        # (`search_utils.edge_similarity_search`).
+        filter_queries.append('e.fact_embedding IS NOT NULL')
+
         filter_query = ''
         if filter_queries:
             filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
+        # BUG-62 / BUG-87: untyped, endpoint-scoped. See `edge_fulltext_search`
+        # above and `graph_queries.entity_edge_pattern_type`.
         cypher = (
-            'MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)'
+            'MATCH (n:Entity)-[e]->(m:Entity)'
             + filter_query
             + """
             WITH DISTINCT e, n, m, """
@@ -422,12 +460,18 @@ class FalkorSearchOperations(SearchOperations):
         if filter_queries:
             filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
+        # BUG-62 / BUG-87. Both halves pinned `RELATES_TO`: the TRAVERSAL could
+        # not walk a typed edge at all, and the hydration could not re-find one it
+        # had walked. The traversal is left untyped and the entity-ness of the
+        # result is asserted where it belongs — on the ENDPOINTS of the hydrating
+        # match, which no structural edge (Episodic->Entity, Community->Entity,
+        # Saga->Episodic, Episodic->Episodic) can satisfy.
         cypher = (
             f"""
             UNWIND $bfs_origin_node_uuids AS origin_uuid
-            MATCH path = (origin {{uuid: origin_uuid}})-[:RELATES_TO|MENTIONS*1..{max_depth}]->(:Entity)
+            MATCH path = (origin {{uuid: origin_uuid}})-[*1..{max_depth}]->(:Entity)
             UNWIND relationships(path) AS rel
-            MATCH (n:Entity)-[e:RELATES_TO {{uuid: rel.uuid}}]-(m:Entity)
+            MATCH (n:Entity)-[e {{uuid: rel.uuid}}]-(m:Entity)
             """
             + filter_query
             + """
