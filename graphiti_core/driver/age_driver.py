@@ -617,7 +617,7 @@ class AGEDriver(GraphDriver):
             )
             await self._warn_on_text_search_config_drift(conn)
 
-    async def _warn_on_text_search_config_drift(self, conn: asyncpg.Connection) -> None:
+    async def _warn_on_text_search_config_drift(self, conn: Any) -> None:
         """Say so when the tables on disk were lexized differently than we query.
 
         `CREATE TABLE IF NOT EXISTS` does not alter a table that already exists,

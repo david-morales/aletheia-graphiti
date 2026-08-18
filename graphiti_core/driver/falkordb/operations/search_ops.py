@@ -363,6 +363,11 @@ class FalkorSearchOperations(SearchOperations):
         unique_records = []
         for record in all_records:
             uuid = record.get('uuid') if isinstance(record, dict) else record[0]
+            if not isinstance(uuid, str):
+                # A row this cannot key on cannot be deduped either; keeping it
+                # is the safe half of the trade (a duplicate beats a lost fact).
+                unique_records.append(record)
+                continue
             if uuid not in seen_uuids:
                 seen_uuids.add(uuid)
                 unique_records.append(record)
