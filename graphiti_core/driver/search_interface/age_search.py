@@ -53,6 +53,40 @@ _ENTITY_BASE_LABEL = 'Entity'
 # structural edge types — the two that are not entity-to-entity facts.
 _NON_ENTITY_EDGE_LABELS = ('MENTIONS', 'HAS_MEMBER')
 
+# The similarity score, on the scale `min_score` is calibrated for (BUG-98).
+#
+# `DEFAULT_MIN_SCORE = 0.6` (search_utils) is a NORMALIZED [0, 1] cosine, because
+# that is what every other provider produces: Neo4j's `vector.similarity.cosine`
+# is normalized by definition, and FalkorDB rescales explicitly —
+# `graph_queries.get_vector_cosine_func_query` emits
+# `(2 - vec.cosineDistance(a, b)) / 2`, i.e. `(1 + cos) / 2`.
+#
+# pgvector's `<=>` is cosine DISTANCE (`1 - cos`), so the obvious `1 - (a <=> b)`
+# is the RAW cosine in [-1, 1]. Gating that on 0.6 ran an effective ~0.8 floor on
+# AGE while every other arm ran 0.6, and the AGE `search` tool answered only
+# near-literal corpus strings: nine phrasings of the same question returned 5
+# nodes each on falkor and 0 on AGE for every abstract paraphrase. The legs had
+# agreed on the ranking all along — 'tipo de hecho' put
+# OTROS HECHOS DE INTERES POLICIAL first on both arms — and disagreed only on the
+# scale the shared floor was applied to (642/1336 nodes cleared it on falkor,
+# 0/1361 on AGE).
+#
+# `(2 - dist) / 2` is the same algebra as the FalkorDB branch, so the two arms are
+# now comparable by construction rather than by coincidence. Note this changes the
+# SCORE only, never the ORDER: `ORDER BY <=>` is a monotone transform of it, and
+# is kept as the bare distance so the hnsw `vector_cosine_ops` index still serves
+# the sort.
+#
+# The gate against `min_score` is STRICT (`>`), matching every other provider —
+# each of them writes `WHERE score > $min_score` in-query (see
+# `falkordb/operations/search_ops.py` and the generic Cypher in `search_utils`).
+# On the normalized scale the boundary is reachable in practice rather than
+# theoretical: an ORTHOGONAL vector scores exactly `(1 + 0) / 2 = 0.5`, so a `>=`
+# gate at `min_score=0.5` would admit a node with nothing in common with the
+# query. Under the old raw scale that same node scored 0.0 and was excluded by
+# arithmetic, which is why the looser comparison never showed.
+_NORMALIZED_COSINE = '(2 - ({col} <=> $1::vector)) / 2'
+
 
 def _cy_list(values: list[str]) -> str:
     """A Cypher list literal, for inlining into AGE Cypher.
@@ -107,7 +141,7 @@ class AGESearch(SearchInterface):
             group_clause = 'AND group_id = ANY($2::text[])'
             args.append(group_ids)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, 1 - (name_embedding <=> $1::vector) AS score
+            f"""SELECT uuid, {_NORMALIZED_COSINE.format(col='name_embedding')} AS score
                 FROM {driver._node_tbl}
                 WHERE name_embedding IS NOT NULL {group_clause}
                 ORDER BY name_embedding <=> $1::vector
@@ -115,7 +149,7 @@ class AGESearch(SearchInterface):
             *args,
         )
         ranked = [
-            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) >= min_score
+            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) > min_score
         ]
         return await self._hydrate_nodes_in_order(driver, ranked)
 
@@ -162,7 +196,7 @@ class AGESearch(SearchInterface):
             idx += 1
         where = ' AND '.join(conds)
         rows = await driver.execute_sql(
-            f"""SELECT uuid, 1 - (fact_embedding <=> $1::vector) AS score
+            f"""SELECT uuid, {_NORMALIZED_COSINE.format(col='fact_embedding')} AS score
                 FROM {driver._edge_tbl}
                 WHERE {where}
                 ORDER BY fact_embedding <=> $1::vector
@@ -170,7 +204,7 @@ class AGESearch(SearchInterface):
             *args,
         )
         ranked = [
-            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) >= min_score
+            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) > min_score
         ]
         return await self._hydrate_edges_in_order(driver, ranked)
 
