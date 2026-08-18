@@ -12,6 +12,7 @@ import math
 import os
 import sys
 import time
+import unicodedata
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -627,10 +628,23 @@ def format_node_result(node: EntityNode) -> dict[str, Any]:
 
 
 def _normalize_name(value: str | None) -> str:
-    """Fold a name to its comparison form: casefolded, whitespace-collapsed."""
+    """Fold a name to its comparison form: NFC, casefolded, whitespace-collapsed.
+
+    The NFC pass is load-bearing, not decoration. 'JOSÉ' composed (U+00C9) and
+    'JOSÉ' decomposed (E + U+0301) are the same name and different bytes, and
+    casefold does not reconcile them — so without this an accent-carrying exact
+    name silently loses its match and falls back to the ranking, which is the
+    very failure BUG-100 is about. Clients and graph writers do not agree on a
+    form: macOS filesystems and some IME paths emit NFD while most databases
+    hold NFC, so both reach this comparison in a Spanish corpus.
+
+    Composition only — accents are NOT stripped. 'JOSE' must keep failing to
+    match 'JOSÉ': they are different names, and folding them together would
+    re-introduce exactly the wrong-person answer this function exists to stop.
+    """
     if not value:
         return ''
-    return ' '.join(value.split()).casefold()
+    return unicodedata.normalize('NFC', ' '.join(value.split())).casefold()
 
 
 def _pick_named_node(nodes: Sequence[EntityNode], name: str) -> EntityNode:

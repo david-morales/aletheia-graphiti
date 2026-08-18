@@ -6,6 +6,7 @@ build_communities, and add_memory.
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -823,6 +824,45 @@ class TestExploreCentreResolution:
         # nodes whose names merely CONTAIN the query string.
         assert result['center_node']['name'] == 'KHADIJA DAOUD'
         assert result['center_node']['uuid'] == 'c08eb5e2-bc36-451e-91ef-c657b1e61f7f'
+
+    @pytest.mark.asyncio
+    async def test_exact_match_survives_nfc_nfd_disagreement(self):
+        """Same letters, different Unicode form, still the same name.
+
+        The graph holds 'JOSÉ MARÍA' composed (U+00C9 / U+00CD); the caller
+        sends it decomposed (E + U+0301, I + U+0301). Byte-unequal, casefold
+        does not reconcile them, so without NFC folding the exact match is lost
+        and resolution drops back to the ranking — the wrong person, which is
+        BUG-100 all over again on the accent-carrying half of a Spanish corpus.
+        """
+        # Built with unicodedata rather than written as two source literals: a
+        # formatter or editor that normalizes this file would quietly collapse
+        # the literals into one form and leave the test asserting nothing.
+        name = 'JOSÉ MARÍA GARCIA'
+        composed = unicodedata.normalize('NFC', name)
+        decomposed = unicodedata.normalize('NFD', name)
+        assert composed != decomposed  # different bytes...
+        # ...which casefold alone does NOT reconcile - the reason NFC is needed.
+        assert composed.casefold() != decomposed.casefold()
+
+        svc, queue, cfg, client = make_mock_services()
+        fuzzy = make_mock_node(uuid='wrong-uuid', name='JOSE MARIA GARRIDO')
+        exact = make_mock_node(uuid='right-uuid', name=composed)
+        client.search_ = AsyncMock(
+            side_effect=[
+                make_mock_search_results(nodes=[fuzzy, exact]),
+                make_mock_search_results(),
+            ]
+        )
+
+        with (
+            patch('graphiti_mcp_server.graphiti_service', svc),
+            patch('graphiti_mcp_server.queue_service', queue),
+            patch('graphiti_mcp_server.config', cfg, create=True),
+        ):
+            result = await explore_entity(node_name=decomposed)
+
+        assert result['center_node']['uuid'] == 'right-uuid'
 
     @pytest.mark.asyncio
     async def test_nameless_node_in_results_does_not_break_matching(self):
