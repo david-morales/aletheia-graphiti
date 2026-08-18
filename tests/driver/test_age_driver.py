@@ -226,7 +226,10 @@ async def test_node_similarity_search_orders_by_cosine(age_driver):
     )
     assert results, 'expected at least the near node'
     assert results[0].uuid == near.uuid
-    assert far.uuid not in [r.uuid for r in results]  # cosine 0 < min_score 0.5
+    # `far` is ORTHOGONAL to the search vector: raw cosine 0, which on the
+    # normalized [0, 1] scale the score uses (BUG-98) is exactly 0.5 — not
+    # STRICTLY greater than min_score 0.5, so the gate excludes it.
+    assert far.uuid not in [r.uuid for r in results]
 
 
 @pytest.mark.asyncio

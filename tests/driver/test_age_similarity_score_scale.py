@@ -158,6 +158,41 @@ class TestTheMinScoreGateKeepsTheMeasuredHit:
             'raw-vs-normalized scale bug on the edge leg'
         )
 
+    @pytest.mark.parametrize(
+        'leg, hydrator, call',
+        [
+            ('node', '_hydrate_nodes_in_order', 'node'),
+            ('edge', '_hydrate_edges_in_order', 'edge'),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_score_exactly_at_the_floor_is_excluded(
+        self, search, monkeypatch, leg, hydrator, call
+    ):
+        """The gate is STRICT, as it is for every other provider.
+
+        Reachable in practice, not theoretical: an ORTHOGONAL vector (raw cosine
+        0) scores exactly 0.5 on the normalized scale, so a `>=` gate at
+        min_score=0.5 would admit a node sharing nothing with the query. Under
+        the old raw scale that node scored 0.0 and was excluded by arithmetic,
+        which is why the loose comparison never showed.
+        """
+        driver = _FakeAGEDriver(0.0)  # orthogonal -> normalized exactly 0.5
+        monkeypatch.setattr(AGESearch, hydrator, _capture_uuids, raising=True)
+        if call == 'node':
+            kept = await search.node_similarity_search(
+                driver, [0.1] * 4, None, group_ids=['g'], limit=10, min_score=0.5
+            )
+        else:
+            kept = await search.edge_similarity_search(
+                driver, [0.1] * 4, None, None, None,
+                group_ids=['g'], limit=10, min_score=0.5,
+            )
+        assert kept == [], (
+            f'{leg} leg admitted a score exactly equal to min_score; every other '
+            f'provider gates `WHERE score > $min_score`'
+        )
+
     @pytest.mark.asyncio
     async def test_a_genuinely_unrelated_node_is_still_rejected(self, search, monkeypatch):
         """The fix must not degenerate into "keep everything".

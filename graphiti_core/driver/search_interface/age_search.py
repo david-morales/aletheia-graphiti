@@ -76,6 +76,15 @@ _NON_ENTITY_EDGE_LABELS = ('MENTIONS', 'HAS_MEMBER')
 # SCORE only, never the ORDER: `ORDER BY <=>` is a monotone transform of it, and
 # is kept as the bare distance so the hnsw `vector_cosine_ops` index still serves
 # the sort.
+#
+# The gate against `min_score` is STRICT (`>`), matching every other provider —
+# each of them writes `WHERE score > $min_score` in-query (see
+# `falkordb/operations/search_ops.py` and the generic Cypher in `search_utils`).
+# On the normalized scale the boundary is reachable in practice rather than
+# theoretical: an ORTHOGONAL vector scores exactly `(1 + 0) / 2 = 0.5`, so a `>=`
+# gate at `min_score=0.5` would admit a node with nothing in common with the
+# query. Under the old raw scale that same node scored 0.0 and was excluded by
+# arithmetic, which is why the looser comparison never showed.
 _NORMALIZED_COSINE = '(2 - ({col} <=> $1::vector)) / 2'
 
 
@@ -140,7 +149,7 @@ class AGESearch(SearchInterface):
             *args,
         )
         ranked = [
-            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) >= min_score
+            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) > min_score
         ]
         return await self._hydrate_nodes_in_order(driver, ranked)
 
@@ -195,7 +204,7 @@ class AGESearch(SearchInterface):
             *args,
         )
         ranked = [
-            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) >= min_score
+            r['uuid'] for r in rows if r['score'] is not None and float(r['score']) > min_score
         ]
         return await self._hydrate_edges_in_order(driver, ranked)
 
