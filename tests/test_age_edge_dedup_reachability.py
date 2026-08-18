@@ -745,6 +745,36 @@ class TestTheAGEResultsAreGroupedGatedAndRanked:
     @pytest.mark.parametrize(
         'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
     )
+    async def test_a_candidate_shared_by_two_input_edges_is_one_object(
+        self, age_search, method
+    ):
+        """Pins the documented divergence from the generic path.
+
+        Hydration runs once over the de-duplicated union, so a stored edge that
+        is a candidate for two input edges is the SAME object in both lists —
+        the generic Cypher path builds a fresh object per occurrence. A caller
+        that stamps `expired_at`/`invalid_at` on an invalidation candidate would
+        therefore write through to every list holding it. Asserted so the
+        contract is enforced rather than merely described.
+        """
+        driver = _FakeAGEDriver(
+            rows=[
+                {'idx': 0, 'uuid': 'shared', 'score': 0.9},
+                {'idx': 1, 'uuid': 'shared', 'score': 0.9},
+            ]
+        )
+        result = await getattr(age_search, method)(
+            driver, [_edge(uuid='in-0'), _edge(uuid='in-1')], SearchFilters()
+        )
+        assert driver.graph_operations_interface.requested == [['shared']], (
+            'the union must be de-duplicated — one hydration round trip'
+        )
+        assert result[0][0] is result[1][0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'method', ['get_relevant_edges', 'get_edge_invalidation_candidates']
+    )
     async def test_no_edge_has_an_embedding_so_no_sql_runs(self, age_search, method):
         driver = _FakeAGEDriver()
         result = await getattr(age_search, method)(
