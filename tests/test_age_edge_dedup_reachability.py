@@ -65,9 +65,21 @@ ingest does. The LIVE AGE dedup path is:
     which is already label-free (``MATCH (a)-[r]->(b) WHERE a.uuid = … AND
     b.uuid = …``) and does NOT have this bug; and
   * ``search(..., EDGE_HYBRID_SEARCH_RRF, SearchFilters(edge_uuids=[…]))`` —
-    where ``edge_uuids`` is one of the SearchFilters the AGE legs drop, so the
-    "edges between these two nodes" restriction is not applied on that arm at
-    all. That is a separate defect in a different layer and is NOT fixed here.
+    where ``edge_uuids`` USED TO BE one of the SearchFilters the AGE legs drop,
+    so the "edges between these two nodes" restriction was not applied on that
+    arm at all. That was a separate defect in a different layer — BUG-107 — and
+    it is now FIXED, on the three AGE edge legs: ``edge_similarity_search`` and
+    ``edge_fulltext_search`` bind ``uuid = ANY($n)`` against the uuid-keyed
+    shadow table, ``edge_bfs_search`` emits ``rel.uuid IN […]`` in its Cypher.
+    See ``tests/test_age_edge_uuid_filter.py``.
+
+It is still not fixed HERE, and that is the one thing left to read before
+quoting this module: the two functions covered below take their OWN
+``search_filter``, and ``AGESearch._edge_candidates`` drops it whole —
+``edge_uuids`` included, where the generic path would have narrowed by it. That
+divergence is latent rather than live (neither function has an in-tree caller),
+and it is recorded precisely in that method's docstring. Anyone who re-wires
+these into an ingest path has to honour ``edge_uuids`` there first.
 
 How these tests prove it
 ------------------------
