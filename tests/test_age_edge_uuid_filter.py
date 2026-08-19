@@ -139,14 +139,15 @@ class _FakeEdgeShadowTable:
         conjuncts = [c.strip() for c in where.group('where').split(' AND ') if c.strip()]
 
         kept = [
-            row
-            for row in self.rows
-            if all(_row_matches(c, row, list(args)) for c in conjuncts)
+            row for row in self.rows if all(_row_matches(c, row, list(args)) for c in conjuncts)
         ]
 
         if 'AS rank' in sql:
             out = [
-                {'uuid': r['uuid'], 'rank': float(len(_lexemes(str(args[0])) & _lexemes(r['text'])))}
+                {
+                    'uuid': r['uuid'],
+                    'rank': float(len(_lexemes(str(args[0])) & _lexemes(r['text']))),
+                }
                 for r in kept
             ]
             out.sort(key=lambda r: -r['rank'])
@@ -220,8 +221,7 @@ class _FakeAGEGraph:
         kept = [
             rel
             for rel in self.rels
-            if (set(rel['from']) & reachable_from)
-            and all(_rel_matches(c, rel) for c in conjuncts)
+            if (set(rel['from']) & reachable_from) and all(_rel_matches(c, rel) for c in conjuncts)
         ]
 
         limit = _LIMIT_RE.search(cypher)
@@ -319,9 +319,7 @@ class TestTheShadowTableLegsHonourEdgeUuids:
         )
 
     @pytest.mark.asyncio
-    async def test_the_real_candidate_survives_a_limit_the_others_would_fill(
-        self, search, leg
-    ):
+    async def test_the_real_candidate_survives_a_limit_the_others_would_fill(self, search, leg):
         """Why the filter has to be IN the query, not applied to its output.
 
         With `limit=2` the two unrelated edges fill the whole result and the one
