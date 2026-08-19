@@ -16,12 +16,18 @@ SearchFilters support, in full:
                      syntax AGE cannot parse, and AGE vertices carry only their
                      leaf label anyway; a correct version has to read the
                      `labels` property. Not implemented.
-  * `edge_uuids`   — DROPPED.
+  * `edge_uuids`   — HONOURED by all three edge legs: `edge_similarity_search`
+                     and `edge_fulltext_search` (a bound `uuid = ANY($n)` on the
+                     uuid-keyed shadow table) and `edge_bfs_search`
+                     (`rel.uuid IN [...]` in the AGE Cypher). See
+                     `_edge_uuid_filter` for why it must be honoured rather than
+                     left to the caller (BUG-107).
   * temporal filters (`valid_at` / `invalid_at` / `created_at` / `expired_at`)
                    — DROPPED.
-  * The shadow-table legs (fulltext / similarity) ignore SearchFilters entirely.
+  * Apart from `edge_uuids`, the shadow-table legs (fulltext / similarity)
+    ignore SearchFilters.
 Dropped filters BROADEN results; they never narrow them wrongly. Callers that
-need real filtering must post-filter.
+need any OTHER filter must post-filter.
 
 The traversal methods MUST live here rather than fall through to the
 provider-generic Cypher in `search_utils`: that Cypher filters on the `:Entity`
@@ -222,6 +228,43 @@ def _cy_list(values: list[str]) -> str:
     return _cy(list(values))
 
 
+def _edge_uuid_filter(search_filter: Any) -> list[str] | None:
+    """`SearchFilters.edge_uuids`, or None when the caller set no filter (BUG-107).
+
+    This is the ONE SearchFilter the edge legs must narrow by, because it is the
+    one whose caller ACTS on the result instead of ranking it. The ingest dedup
+    path passes it and never post-filters:
+
+        # utils/maintenance/edge_operations.py:565, graphiti.py:1807
+        valid_edges = await EntityEdge.get_between_nodes(driver, src, tgt)
+        search(..., EDGE_HYBRID_SEARCH_RRF,
+               SearchFilters(edge_uuids=[e.uuid for e in valid_edges]))
+
+    `EDGE_HYBRID_SEARCH_RRF` fans bm25 + cosine out over edges and `edge_search`
+    hands the filter straight to these legs, so with it dropped the question
+    "which stored edge is this extracted fact a duplicate of?" was asked of the
+    graph-wide top-K, spanning OTHER node pairs. That is the wrong-merge
+    mechanism class, and it is silent and write-side.
+
+    Dropping it was not merely broadening, for a second reason: `LIMIT` runs in
+    the query. An unrelated pair's edges can fill the whole top-K and the ONE
+    stored edge that is between this node pair never leaves the database, so a
+    post-filter cannot recover it. The filter has to be in the query.
+
+    `is not None`, NOT truthiness. An empty list is a real filter meaning "none
+    of these", and it is the common case rather than a corner: `get_between_nodes`
+    returns `[]` on the first ingest of any node pair. Every other provider
+    renders it as `e.uuid in []` — see the `is not None` branch in
+    `edge_search_filter_query_constructor` — and offers zero candidates. Reading
+    `[]` as "no filter" would be the widest form of this bug.
+
+    Read with `getattr` because callers in this repo legitimately pass
+    `search_filter=None` (see the offline combined-search guards).
+    """
+    edge_uuids = getattr(search_filter, 'edge_uuids', None)
+    return None if edge_uuids is None else list(edge_uuids)
+
+
 class AGESearch(SearchInterface):
     """Native-SQL search over pgvector + tsvector shadow tables."""
 
@@ -318,6 +361,14 @@ class AGESearch(SearchInterface):
         if target_node_uuid:
             conds.append(f'target_node_uuid = ${idx}')
             args.append(target_node_uuid)
+            idx += 1
+        edge_uuids = _edge_uuid_filter(search_filter)
+        if edge_uuids is not None:
+            # The shadow table is uuid-keyed, so the one filter whose caller acts
+            # on the answer is a plain column comparison here (BUG-107). Bound,
+            # never inlined: these uuids arrive from stored data.
+            conds.append(f'uuid = ANY(${idx}::text[])')
+            args.append(edge_uuids)
             idx += 1
         where = ' AND '.join(conds)
         rows = await driver.execute_sql(
@@ -517,14 +568,26 @@ class AGESearch(SearchInterface):
             return []
         tsquery = _OR_TSQUERY.format(cfg=_validated_text_search_config(driver))
         args: list[Any] = [query]
-        group_clause = ''
+        # Built as a conjunct list rather than the node leg's fixed `$2` slot,
+        # because this leg now has a second optional parameter and the `$n`
+        # numbering has to follow whichever ones are actually present.
+        conds = [f'tsv @@ {tsquery}']
+        idx = 2
         if group_ids:
-            group_clause = 'AND group_id = ANY($2::text[])'
+            conds.append(f'group_id = ANY(${idx}::text[])')
             args.append(group_ids)
+            idx += 1
+        edge_uuids = _edge_uuid_filter(search_filter)
+        if edge_uuids is not None:
+            # Same clause, same reason, same table as the similarity leg — the
+            # two legs of EDGE_HYBRID_SEARCH_RRF have to agree (BUG-107).
+            conds.append(f'uuid = ANY(${idx}::text[])')
+            args.append(edge_uuids)
+            idx += 1
         rows = await driver.execute_sql(
             f"""SELECT uuid, ts_rank_cd(tsv, {tsquery}) AS rank
                 FROM {driver._edge_tbl}
-                WHERE tsv @@ {tsquery} {group_clause}
+                WHERE {' AND '.join(conds)}
                 ORDER BY rank DESC
                 LIMIT {int(limit)}""",
             *args,
@@ -651,6 +714,9 @@ class AGESearch(SearchInterface):
         structural edges are excluded (`_NON_ENTITY_EDGE_LABELS`) because they
         are not entity-to-entity facts — the generic leg says the same thing as
         `(n:Entity)-[e]-(m:Entity)`.
+
+        Honours `SearchFilters.edge_types` and `SearchFilters.edge_uuids`; the
+        rest are dropped, per the module docstring.
         """
         if not bfs_origin_node_uuids or bfs_max_depth < 1:
             return []
@@ -663,6 +729,29 @@ class AGESearch(SearchInterface):
             # `explore_node(edge_types=[...])` reaches us here; the generic leg
             # filters the same property (`e.name in $edge_types`).
             rel_where.append(f'rel.name IN {_cy_list(edge_types)}')
+        edge_uuids = _edge_uuid_filter(search_filter)
+        if edge_uuids is not None:
+            # In the CYPHER, not a post-filter over the hydrated results, for two
+            # reasons. (1) `LIMIT` is applied by the database: filtering after it
+            # cannot recover a wanted edge that unfiltered rows pushed out of the
+            # top-N, which is half of what BUG-107 is. (2) It is the same shape
+            # as the `edge_types` conjunct one line up and mirrors the generic
+            # leg's `e.uuid in $edge_uuids`, so both flavours read alike.
+            # Inlined like every other literal on this driver — AGE's `cypher()`
+            # takes no `$name` parameters (see `AGEDriver.execute_query`) — and
+            # escaped by `_cy`, the write path's own serializer, so this adds no
+            # new escaping implementation.
+            #
+            # The empty list is answered here rather than as `IN []`. The two SQL
+            # legs hand their empty array to `= ANY($n)`, which is defined
+            # Postgres and needs no special case; AGE's Cypher parser is a
+            # different engine and nothing OFFLINE can prove it accepts an empty
+            # list literal. An empty allow-list selects nothing whichever way it
+            # is written, so the branch costs no behaviour and removes the one
+            # construct this lane cannot verify (no live AGE bed here by design).
+            if not edge_uuids:
+                return []
+            rel_where.append(f'rel.uuid IN {_cy_list(edge_uuids)}')
 
         records, _, _ = await driver.execute_query(
             f'MATCH p = (origin)-[*1..{int(bfs_max_depth)}]-(m) '

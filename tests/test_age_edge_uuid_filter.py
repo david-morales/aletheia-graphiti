@@ -346,6 +346,10 @@ class TestTheShadowTableLegsHonourEdgeUuids:
         driver = _FakeEdgeShadowTable(ALL_EDGES)
 
         assert await leg(search, driver, SearchFilters(edge_uuids=[])) == []
+        # Answered BY THE QUERY (`= ANY('{}')` is defined Postgres), not by a
+        # Python short-circuit that a later refactor could drop.
+        assert 'uuid = ANY(' in driver.sql[0]
+        assert [] in driver.args[0]
 
     @pytest.mark.asyncio
     async def test_no_filter_still_searches_the_whole_table(self, search, leg):
@@ -465,12 +469,19 @@ class TestTheBfsLegHonoursEdgeUuids:
 
     @pytest.mark.asyncio
     async def test_an_empty_filter_returns_nothing(self, search):
+        """Answered without a round trip, and so without emitting `IN []`.
+
+        The SQL legs hand an empty array to `= ANY($n)`, which is defined
+        Postgres; AGE's Cypher parser is a different engine and no offline test
+        can prove it accepts an empty list literal. Same result either way.
+        """
         driver = _FakeAGEGraph(ALL_RELS)
 
         assert (
             await search.edge_bfs_search(driver, ['A'], 2, SearchFilters(edge_uuids=[]), ['g'], 10)
             == []
         )
+        assert driver.cypher == [], 'an empty allow-list needs no query at all'
 
     @pytest.mark.asyncio
     async def test_no_filter_still_traverses_everything(self, search):
