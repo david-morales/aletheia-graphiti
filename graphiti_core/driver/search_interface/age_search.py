@@ -214,8 +214,12 @@ def _validated_text_search_config(driver: Any) -> str:
 # inlined it. One rule now covers both sites: validated at construction, inlined
 # at both, and the USER TEXT is the thing that stays a bind parameter.
 #
-# Parameter layout for both legs: $1 = query text, $2 = group_ids (only when
-# filtering by group).
+# Parameter layout: $1 is ALWAYS the query text; the rest are positional and
+# depend on which optional filters are present. The node leg has one, so its $2
+# is group_ids when filtering by group. The EDGE leg has two — group_ids and
+# `edge_uuids` (BUG-107) — so its $2 is group_ids when present and `edge_uuids`
+# otherwise. `edge_fulltext_search` builds the conjunct list and its `$n`
+# numbering together for exactly that reason; read the numbering there, not here.
 _OR_TSQUERY = "replace(plainto_tsquery('{cfg}', $1)::text, ' & ', ' | ')::tsquery"
 
 
@@ -258,8 +262,14 @@ def _edge_uuid_filter(search_filter: Any) -> list[str] | None:
     `edge_search_filter_query_constructor` — and offers zero candidates. Reading
     `[]` as "no filter" would be the widest form of this bug.
 
-    Read with `getattr` because callers in this repo legitimately pass
-    `search_filter=None` (see the offline combined-search guards).
+    Read with `getattr` as a DEFENSIVE read, not because a live caller needs it.
+    Both production entry points normalize the argument before any leg is
+    reached — `search_filter if search_filter is not None else SearchFilters()`,
+    graphiti.py:1660 and :1705 — and the one `search_filter=None` in the tree
+    goes to `episode_fulltext_search`, not to an edge leg. `getattr` costs
+    nothing and keeps this helper total over whatever object a future caller or
+    test hands it, which is worth more than an attribute access that asserts a
+    normalization performed two layers away.
     """
     edge_uuids = getattr(search_filter, 'edge_uuids', None)
     return None if edge_uuids is None else list(edge_uuids)
@@ -432,10 +442,26 @@ class AGESearch(SearchInterface):
     ) -> list[list[Any]]:
         """One candidate list per input edge, in input order.
 
-        SearchFilters are DROPPED, as on every other shadow-table leg (see the
-        module docstring): the edge shadow table carries no relationship name and
-        no temporal columns, so `edge_types` and the `valid_at`/`invalid_at`
-        filters have nothing to read.
+        SearchFilters are DROPPED WHOLE here — `edge_uuids` included, and that
+        one is now a REAL divergence rather than a shared convention: the three
+        search legs honour it (BUG-107) and the generic path this method replaces
+        honours it too. `search_utils.get_relevant_edges` builds its WHERE
+        through `edge_search_filter_query_constructor` (search_utils.py:1678),
+        which emits `e.uuid in $edge_uuids` for every other provider. On AGE that
+        conjunct is simply absent.
+
+        The other filters have a mechanical excuse — the edge shadow table
+        carries no relationship name and no temporal columns, so `edge_types` and
+        the `valid_at`/`invalid_at` filters have nothing to read. `edge_uuids`
+        has NO such excuse: this table is uuid-keyed.
+
+        It is LATENT, not live. Neither function has an in-tree caller (upstream
+        3efe085 replaced them inside `resolve_extracted_edges`), so nothing can
+        pass a filter here today. It is deliberately NOT fixed in this change:
+        the defect is the same candidate-BROADENING class as BUG-107, and the fix
+        belongs with the caller that makes it reachable again. RESTORING A CALLER
+        MEANS HONOURING `edge_uuids` HERE FIRST — otherwise BUG-107 re-opens
+        through this door instead of the search legs.
 
         Dropped filters BROADEN, and broadening is safe for a SEARCH — an extra
         row is offered and the caller ranks it. It is NOT automatically safe
@@ -716,7 +742,12 @@ class AGESearch(SearchInterface):
         `(n:Entity)-[e]-(m:Entity)`.
 
         Honours `SearchFilters.edge_types` and `SearchFilters.edge_uuids`; the
-        rest are dropped, per the module docstring.
+        rest are dropped, per the module docstring. The two do NOT agree on the
+        empty list: `edge_uuids` is read with `is not None`, so `[]` means "none
+        of these" and returns nothing, as on every other provider; `edge_types`
+        is read for truthiness, so `[]` BROADENS to every type here while the
+        generic constructor would narrow to none (pre-existing, out of scope for
+        BUG-107, deliberately left alone).
         """
         if not bfs_origin_node_uuids or bfs_max_depth < 1:
             return []
