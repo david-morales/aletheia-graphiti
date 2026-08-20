@@ -47,6 +47,15 @@ DRIVER_DISABLE_VARS: tuple[str, ...] = (
 CLOSED_ENDPOINT_HOST = '127.0.0.1'
 CLOSED_ENDPOINT_PORT = '1'
 
+# The AGE suite reaches a SECOND store, and not through the driver list at all:
+# `tests/driver/conftest.py` and `tests/driver/test_age_driver.py` each read
+# `AGE_TEST_DSN` at module scope, defaulting to a live Postgres+AGE bed on 5433.
+# Emptying the driver list does nothing for those, so the endpoint is neutralized
+# directly. Same loopback host and closed port as above: the AGE fixtures skip on
+# connectivity-class errors, so a refused connection turns them into clean skips
+# rather than failures.
+CLOSED_AGE_DSN = 'postgresql://age:age@127.0.0.1:1/age_test'
+
 # FalkorDB/Redis's default port. On a developer machine this is a real, populated
 # store — here the RESERVED production instance the project forbids touching.
 RESERVED_PORT = '6379'
@@ -151,9 +160,11 @@ def disable_live_drivers(environ: dict[str, str] | None = None) -> list[str]:
     """Make the live driver params impossible to generate. Returns names changed.
 
     MUST be called before `tests.helpers_test` is imported — it reads these at
-    module scope. Also points the FalkorDB endpoint at a closed port, so that
-    code paths reading the host/port directly (rather than through the fixture)
-    get ECONNREFUSED instead of the reserved store.
+    module scope. Also points the FalkorDB endpoint and the AGE DSN at a closed
+    port, so that code paths reading an endpoint directly (rather than through
+    the fixture) get ECONNREFUSED instead of a real store. The AGE arm is not
+    covered by the driver list at all — its tests read `AGE_TEST_DSN` themselves
+    — so without this it would stay live while the rest of the suite was closed.
     """
     env = os.environ if environ is None else environ
     changed = []
@@ -164,6 +175,7 @@ def disable_live_drivers(environ: dict[str, str] | None = None) -> list[str]:
     for name, value in (
         ('FALKORDB_HOST', CLOSED_ENDPOINT_HOST),
         ('FALKORDB_PORT', CLOSED_ENDPOINT_PORT),
+        ('AGE_TEST_DSN', CLOSED_AGE_DSN),
     ):
         if env.get(name) != value:
             env[name] = value

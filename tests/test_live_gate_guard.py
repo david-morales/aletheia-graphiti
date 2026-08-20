@@ -46,9 +46,11 @@ from pathlib import Path
 import pytest
 
 from tests._env_guard import (
+    CLOSED_AGE_DSN,
     DRIVER_DISABLE_VARS,
     DUMMY_KEY,
     LIVE_GATE_ENV,
+    disable_live_drivers,
     live_gate_is_open,
     marker_expression_from_argv,
     stamp_dummy_api_keys,
@@ -221,6 +223,22 @@ def test_the_gate_governs_the_driver_disable_vars():
     }
 
 
+def test_the_disable_neutralizes_the_AGE_endpoint_too():
+    """The AGE suite reaches a SECOND store, and not via the driver list.
+
+    `tests/driver/conftest.py` and `test_age_driver.py` each read `AGE_TEST_DSN`
+    at module scope, defaulting to a live Postgres+AGE bed on 5433 — so
+    emptying the driver list left 143 AGE tests pointed at a real endpoint while
+    the rest of the suite was closed. Overwritten, not filled in: a DSN already
+    aimed at the bed is the case this exists for.
+    """
+    env = {'AGE_TEST_DSN': 'postgresql://age:age@localhost:5433/age_test'}
+    changed = disable_live_drivers(env)
+    assert 'AGE_TEST_DSN' in changed
+    assert env['AGE_TEST_DSN'] == CLOSED_AGE_DSN
+    assert ':1/' in env['AGE_TEST_DSN'], 'the DSN must point at a closed port'
+
+
 def test_the_stamp_overwrites_a_real_looking_key():
     """OVERWRITE, not fill-gaps: a real key in the developer's shell is
     precisely what un-skips this fork's live suites."""
@@ -365,6 +383,25 @@ def test_the_opt_in_brings_the_live_params_back():
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'GraphProvider.FALKORDB' in result.stdout, result.stdout
     assert 'GraphProvider.NEO4J' in result.stdout, result.stdout
+
+
+def test_the_AGE_suite_skips_rather_than_dials_or_errors():
+    """The AGE arm end to end, under the poisoned environment.
+
+    A neutralized endpoint is only useful if the tests SKIP on it rather than
+    erroring: `tests/driver/conftest.py` skips on connectivity-class failures
+    only, deliberately, so a refused connection must land in that class.
+    Executed (not collect-only) because a skip is a runtime outcome — but the
+    endpoint it would dial is a closed loopback port by then.
+    """
+    result = _run_pytest(
+        'tests/driver/test_age_bfs_search.py',
+        '-q',
+        env_overrides={'AGE_TEST_DSN': 'postgresql://age:age@localhost:5433/age_test'},
+    )
+    assert ' skipped' in result.stdout, result.stdout
+    assert ' failed' not in result.stdout, result.stdout
+    assert ' error' not in result.stdout, result.stdout
 
 
 def test_a_closed_gate_stamps_over_a_real_key_in_the_child():

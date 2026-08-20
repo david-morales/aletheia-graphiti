@@ -1,8 +1,15 @@
 """Root pytest configuration.
 
 Adds the project root to `sys.path` so `tests.*` imports resolve, and carries the
-session guard that makes this suite structurally unable to reach a real graph
-store (BUG-109).
+session guard that keeps this suite off a real graph store by default (BUG-109).
+
+Concretely, with the gate closed the guard covers three things: the `graph_driver`
+fixture's provider params (NEO4J, FALKORDB, KUZU, NEPTUNE — emptied at the source,
+so there is nothing to dial), the FalkorDB host/port, and the AGE DSN that
+`tests/driver/` reads on its own. It is not a claim about anything a test
+constructs from a hardcoded endpoint of its own making; `integration`-marked items
+are deselected to cover that class, but the guarantee is the params and the
+endpoints named above, not a promise about code this file has never seen.
 
 ORDER MATTERS HERE, and it is the reason the guard is wired in this file rather
 than in `tests/conftest.py`. `tests/helpers_test.py` decides which providers the
