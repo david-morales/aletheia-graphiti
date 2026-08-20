@@ -221,11 +221,26 @@ def test_the_stamp_overwrites_a_real_looking_key():
     assert env['OPENAI_API_KEY'] == DUMMY_KEY
 
 
+# The two probes below assert on the AMBIENT session, so they are only true
+# statements when the gate is closed for it. Opting in is a legitimate way to run
+# this suite (`GRAPHITI_LIVE_TESTS=1`), and under it the guard deliberately
+# touches nothing — no stamp, no disable — so an unguarded pair here turns the
+# live arm red for doing exactly what it was told. They are driven as
+# subprocesses by the wiring tests further down, which is where they measure.
+gate_closed_only = pytest.mark.skipif(
+    live_gate_is_open({}),
+    reason=f'{LIVE_GATE_ENV} is set: the guard leaves an opted-in session alone, '
+    f'so these ambient-session probes have nothing to assert',
+)
+
+
+@gate_closed_only
 def test_this_sessions_own_key_is_a_dummy():
     """Driven by a subprocess arm below; proves the stamp reached this process."""
     assert os.environ.get('OPENAI_API_KEY') == DUMMY_KEY
 
 
+@gate_closed_only
 def test_this_sessions_driver_list_is_empty():
     """Driven by a subprocess arm below; proves the disable reached `helpers_test`
     before it built its list. Passes trivially under the sanitized recipe too —
