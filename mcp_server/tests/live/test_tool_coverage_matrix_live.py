@@ -40,11 +40,17 @@ FLAVOUR_URLS = {
 # identifier, discovered per-graph at run time (see _discover). search is checked
 # in its default (combined) mode AND explicitly, because combined is the mode that
 # fans out the episode + community sub-searches that broke on AGE.
+#
+# search_mode='episodes' is here for the arm where it CANNOT match: on AGE
+# `episode_fulltext_search` returns [] by construction, and this row asserts the
+# mode still answers in band rather than erroring — an empty result is the honest
+# answer, a failure is not. On FalkorDB the same row exercises the real leg.
 NOARG_TOOLS = [
     ('get_schema', {}),
     ('graph_query', {'query': 'MATCH (n) RETURN count(n) AS c'}),
     ('search', {'query': 'test', 'limit': 3}),
     ('search', {'query': 'test', 'search_mode': 'combined', 'limit': 3}),
+    ('search', {'query': 'test', 'search_mode': 'episodes', 'limit': 3}),
     ('search_ontology', {'query': 'test', 'limit': 3}),
     ('get_ontology_structure', {}),
     ('get_ontology_documentation', {}),

@@ -95,6 +95,7 @@ class ExploreResponse(TypedDict):
 
 class EpisodeContextResponse(TypedDict):
     message: str
+    episodes: list[dict[str, Any]]
     nodes: list[NodeResult]
     edges: list[EdgeResult]
 
@@ -264,8 +265,16 @@ class AddMemoryResult(TypedDict, total=False):
 
 
 class EpisodeContextResult(TypedDict, total=False):
-    """get_episode_context — what the given episodes extracted."""
+    """get_episode_context — the requested episodes, and what they extracted.
+
+    `episodes` carries each requested episode's own `content` IN FULL — no cap,
+    no truncation flag. That is the point of it: `search` serves episode content
+    only up to `EPISODE_CONTENT_CAP` and tells the caller to come here for the
+    rest, so a capped answer at this end would make the announced remedy a dead
+    end. The caller has already named the uuids, so the size is its own choice.
+    """
     message: str | None
+    episodes: list[dict[str, Any]] | None
     nodes: list[NodeResult] | None
     edges: list[EdgeResult] | None
     error: str | None
@@ -286,11 +295,50 @@ class EpisodeListResult(TypedDict, total=False):
     error: str | None
 
 
+class EpisodeSearchResult(TypedDict, total=False):
+    """One episode hit from `search` — a matching SOURCE NARRATIVE.
+
+    Distinct from `EpisodeListResult`'s untyped dicts, which answer "what was
+    ingested" rather than "what matched". The episode full-text leg has always
+    run inside every `combined` recipe; this type is what putting its answer on
+    the wire required.
+
+    `content` IS the payload here — an episode matches on its free text, so
+    handing back a stub would defeat the leg. It is served in full up to
+    `EPISODE_CONTENT_CAP` characters. `content_truncated` is ALWAYS present and
+    always a bool, never inferred from the length: a consumer holding a prefix
+    must be able to tell, so it knows to follow up with `get_episode_context`.
+
+    Same nullability rule as the rest of this module — every field `X | None`.
+    """
+    uuid: str | None
+    name: str | None
+    content: str | None
+    content_truncated: bool | None
+    source: str | None
+    source_description: str | None
+    group_id: str | None
+    created_at: str | None
+    valid_at: str | None
+
+
 class SearchResult(TypedDict, total=False):
-    """search / search_ontology."""
+    """search / search_ontology.
+
+    ONE type for two tools, so not every key is populated by both. `episodes`
+    carries the source narratives that matched and is populated by `search`
+    alone: `search_ontology` searches a schema graph, which has no ingested
+    documents behind it, and never sets the key. Splitting the two into separate
+    types would say this in the type system rather than in prose; that is a
+    wider change than this one.
+
+    `search` populates `episodes` only on backends that index episode content —
+    `get_schema.tool_capabilities.search` announces whether this one does.
+    """
     message: str | None
     nodes: list[NodeResult] | None
     edges: list[EdgeResult] | None
+    episodes: list[EpisodeSearchResult] | None
     communities: list[CommunityResult] | None
     execution_ms: float | None
     error: str | None

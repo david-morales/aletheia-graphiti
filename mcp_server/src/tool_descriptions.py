@@ -5,13 +5,62 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from domain_profile import DomainProfile
+from utils.formatting import COMBINED_EPISODE_LIMIT, EPISODE_CONTENT_CAP
 from version import CONNECTOR_BUILD
 
 if TYPE_CHECKING:
     from flavours.base import Flavour
 
 
-def _key_tools_lines() -> list[str]:
+def _episode_leg_is_live(flavour: Flavour | None) -> bool:
+    """Whether THIS backend can actually answer an episode search.
+
+    Announcement is a promise, so it is gated on the capability rather than on
+    the recipe existing. The recipes exist everywhere — core asks every backend
+    for an episode leg — but a driver with no episode full-text index answers
+    with an empty list forever. Telling an agent to fall back to `episodes` when
+    nodes and edges look thin is worse than silence where `episodes` cannot ever
+    be non-empty: it spends a call and manufactures a false negative.
+
+    An unknown flavour (None) is treated as cannot — under-promising costs a
+    capability, over-promising costs a wrong answer.
+    """
+    return bool(flavour is not None and flavour.searches_episode_content())
+
+
+def _search_catalog_entry(flavour: Flavour | None) -> list[str]:
+    """The catalog's `search` entry, with the episode half only where it is real."""
+    if not _episode_leg_is_live(flavour):
+        return [
+            '1. search -- Find entities, facts, or communities by natural language query.',
+            '   Use when: the user asks a question or wants to find something.',
+            '   Use explore_entity instead when: you already know which entity to examine.',
+            '',
+        ]
+    return [
+        '1. search -- Find entities, facts, source narratives or communities by',
+        '   natural language query.',
+        '   Use when: the user asks a question or wants to find something.',
+        '   Use explore_entity instead when: you already know which entity to examine.',
+        '   ALSO SEARCHES THE SOURCE TEXT. Alongside nodes and edges the result',
+        '   carries `episodes` -- the ingested documents themselves, matched on',
+        '   their full text. Extraction lifts only part of a document into',
+        '   entities and relationships, so a detail absent from every node and',
+        '   edge can still be present in an episode narrative: when nodes and',
+        '   edges come back thin, READ `episodes` BEFORE CONCLUDING THE GRAPH',
+        '   DOES NOT HOLD THE ANSWER.',
+        f'   Other modes return at most {COMBINED_EPISODE_LIMIT} episodes; '
+        'intent="narrative"',
+        '   (or search_mode="episodes") searches ONLY that text and returns the',
+        '   full limit, for when the question is about what a document says.',
+        f'   Content is cut at {EPISODE_CONTENT_CAP} characters with',
+        '   `content_truncated: true`; get_episode_context(episode_uuids=[uuid])',
+        '   returns that episode\'s content in full.',
+        '',
+    ]
+
+
+def _key_tools_lines(flavour: Flavour | None = None) -> list[str]:
     """The capability catalog (ADR-019 R1) — ALL 18 served tools.
 
     Profile-independent on purpose: the tools a connector serves do not depend on
@@ -28,10 +77,7 @@ def _key_tools_lines() -> list[str]:
         '',
         'Key tools:',
         '',
-        '1. search -- Find entities, facts, or communities by natural language query.',
-        '   Use when: the user asks a question or wants to find something.',
-        '   Use explore_entity instead when: you already know which entity to examine.',
-        '',
+        *_search_catalog_entry(flavour),
         "2. explore_entity -- Expand a known entity's neighborhood.",
         '   Use when: you have a specific entity name and want its connections.',
         "   Use search instead when: you don't know which entity to start from.",
@@ -223,7 +269,7 @@ def build_degraded_instructions(
         '`domain_summary`, `entity_catalog` and `relationship_types` resources are',
         'rendered from the domain profile and cannot be built without one.',
     ]
-    parts += _key_tools_lines()
+    parts += _key_tools_lines(flavour)
     parts += _analytical_queries_lines()
     parts += _census_caveat_lines(flavour)
     parts += _dialect_lines(flavour)
@@ -276,7 +322,7 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
             parts.append(f'- {info.name} ({info.count}){desc}')
 
     # Tool guidance (shared with the degraded announcement — one catalog)
-    parts += _key_tools_lines()
+    parts += _key_tools_lines(flavour)
 
     # Tips
     if profile.entity_types or profile.edge_types:
@@ -305,8 +351,13 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
     return '\n'.join(parts)
 
 
-def build_search_description(profile: DomainProfile) -> str:
-    """Build the search tool description from a DomainProfile."""
+def build_search_description(
+    profile: DomainProfile, flavour: Flavour | None = None
+) -> str:
+    """Build the search tool description from a DomainProfile (and the backend flavour).
+
+    The flavour gates the episode half: see `_episode_leg_is_live`.
+    """
     parts = [
         'Search this knowledge graph for entities, facts, and communities.',
         '',
@@ -321,6 +372,30 @@ def build_search_description(profile: DomainProfile) -> str:
         'Returns: matching nodes (entities with name, summary, labels), '
         'edges (facts linking two entities), and community summaries.',
     ]
+
+    if _episode_leg_is_live(flavour):
+        parts[-1] = (
+            'Returns: matching nodes (entities with name, summary, labels), '
+            'edges (facts linking two entities), episodes (the ingested source '
+            'documents, matched on their full text) and community summaries.'
+        )
+        parts += [
+            '',
+            'The episode leg matters: extraction lifts only part of a source document '
+            'into entities and relationships, so a detail that no node or edge carries '
+            'may still be in the document text. If nodes and edges look thin, read '
+            '`episodes` before concluding the graph does not hold the answer.',
+            '',
+            f'Other search modes return at most {COMBINED_EPISODE_LIMIT} episodes. Use '
+            'intent="narrative" (or search_mode="episodes") to search ONLY that source '
+            'text and get the full limit back -- when the question is about what a '
+            'document says rather than about an entity.',
+            '',
+            f'Episode content is served up to {EPISODE_CONTENT_CAP} characters; past '
+            'that `content_truncated` is true and '
+            'get_episode_context(episode_uuids=[uuid]) returns that episode\'s content '
+            'in full.',
+        ]
 
     if profile.entity_types:
         names = ', '.join(profile.entity_type_names())

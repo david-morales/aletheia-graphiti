@@ -3,7 +3,7 @@
 from typing import Any
 
 from graphiti_core.edges import EntityEdge
-from graphiti_core.nodes import CommunityNode, EntityNode
+from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 
 from models.response_types import EdgeResult, NodeResult
 
@@ -106,3 +106,65 @@ def format_community_result(community: CommunityNode, member_count: int = 0) -> 
         'member_count': member_count,
         'group_id': community.group_id,
     }
+
+
+COMBINED_EPISODE_LIMIT = 3
+"""How many episode hits a NON-episode search mode returns.
+
+`combined` fans out over four legs and every episode hit carries a narrative,
+so an uncapped episode list would dominate a result an agent asked for entities
+and facts — worst case `limit` full documents where it expected `limit` names.
+Three is enough to show that the source text has something to say and to hand
+over the uuids for a follow-up; an agent that wants the narratives asks for them
+with `search_mode="episodes"` (or `intent="narrative"`), which keeps the full
+`limit`.
+"""
+
+EPISODE_CONTENT_CAP = 6000
+"""How much episode text `search` serves per hit before it truncates.
+
+Deliberately generous. For nodes and edges the wire payload is a NAME or a
+distilled fact and the body lives elsewhere; for an episode the free text IS
+what matched, so a stub would defeat the leg that found it. The bound that
+matters is the search `limit` — episode count is capped by it — not the length
+of any one narrative.
+"""
+
+
+def format_episode_result(
+    episode: EpisodicNode, *, content_cap: int | None = EPISODE_CONTENT_CAP
+) -> dict[str, Any]:
+    """An episode as a wire dict, with `content` capped at `content_cap`.
+
+    `content_cap=None` serves the content in full. That is the `get_episode_context`
+    path: `search` caps, and announces this tool as the way to get the rest, so
+    capping at both ends would make the announced remedy a dead end.
+
+    Companion to `format_node_result` / `format_edge_result` /
+    `format_community_result`, and the same embedding rule: any key containing
+    'embedding' is dropped. Nothing here produces one today — the fields are
+    named explicitly rather than dumped from the model — and the filter stays so
+    that adding a field cannot quietly ship thousands of floats into a context
+    window.
+
+    `content_truncated` is ALWAYS emitted and always a bool. A consumer must not
+    have to infer from a length whether it is holding the whole narrative or a
+    prefix: when it is a prefix, the follow-up is
+    `get_episode_context(episode_uuids=[uuid])`, which serves `content` in full.
+    """
+    content = episode.content or ''
+    truncated = content_cap is not None and len(content) > content_cap
+    result = {
+        'uuid': episode.uuid,
+        'name': episode.name,
+        'content': content[:content_cap] if truncated else content,
+        'content_truncated': truncated,
+        'source': episode.source.value
+        if hasattr(episode.source, 'value')
+        else str(episode.source),
+        'source_description': episode.source_description,
+        'group_id': episode.group_id,
+        'created_at': episode.created_at.isoformat() if episode.created_at else None,
+        'valid_at': episode.valid_at.isoformat() if episode.valid_at else None,
+    }
+    return {k: v for k, v in result.items() if 'embedding' not in k.lower()}

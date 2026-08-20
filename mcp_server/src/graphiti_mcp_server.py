@@ -29,6 +29,9 @@ from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
     EdgeSearchMethod,
+    EpisodeReranker,
+    EpisodeSearchConfig,
+    EpisodeSearchMethod,
     NodeReranker,
     NodeSearchConfig,
     NodeSearchMethod,
@@ -109,7 +112,12 @@ from utils.cypher import (
     validate_and_sanitize,
 )
 from flavours import build_flavour
-from utils.formatting import format_community_result, format_edge_result
+from utils.formatting import (
+    COMBINED_EPISODE_LIMIT,
+    format_community_result,
+    format_edge_result,
+    format_episode_result,
+)
 
 # Load .env file from mcp_server directory
 mcp_server_dir = Path(__file__).parent.parent
@@ -577,6 +585,30 @@ class GraphitiService:
         return self.client
 
 
+# The episode-only recipes, built here rather than imported: graphiti-core ships
+# no EPISODE_HYBRID_* pair. Core DOES run the leg — every `combined` recipe
+# carries an `episode_config` — it just never offers it alone, so asking for the
+# source narratives on purpose (rather than as a side effect of `combined`) needs
+# these two.
+#
+# `bm25` is the only member of `EpisodeSearchMethod`: episodes are matched on
+# their full text, not on an embedding. Whether a given backend HAS that index
+# is a flavour capability (`Flavour.searches_episode_content`) — the mode stays
+# callable everywhere and honestly returns nothing where the index is absent.
+#
+# RRF ONLY, deliberately. `EpisodeReranker` also offers cross_encoder, and it is
+# left unregistered until someone measures it: reranking episodes means one
+# completion per FULL passage rather than per one-line fact, the reranker keys
+# its map by content so duplicate passages collapse, and it zips scores against
+# passages strictly. None of that is known-good at episode size, and shipping an
+# option nobody has run is a promise with no evidence behind it.
+EPISODE_SEARCH_RRF = SearchConfig(
+    episode_config=EpisodeSearchConfig(
+        search_methods=[EpisodeSearchMethod.bm25],
+        reranker=EpisodeReranker.rrf,
+    ),
+)
+
 # Recipe lookup: (search_mode, reranker) -> SearchConfig
 SEARCH_RECIPES: dict[tuple[str, str], SearchConfig] = {
     ('combined', 'rrf'): COMBINED_HYBRID_SEARCH_RRF,
@@ -595,6 +627,11 @@ SEARCH_RECIPES: dict[tuple[str, str], SearchConfig] = {
     ('communities', 'rrf'): COMMUNITY_HYBRID_SEARCH_RRF,
     ('communities', 'mmr'): COMMUNITY_HYBRID_SEARCH_MMR,
     ('communities', 'cross_encoder'): COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
+    # One pair. `EpisodeReranker` has only rrf and cross_encoder to begin with —
+    # mmr / node_distance / episode_mentions are not expressible — and
+    # cross_encoder is withheld pending measurement (see above). Everything else
+    # falls through to the standard ValueError.
+    ('episodes', 'rrf'): EPISODE_SEARCH_RRF,
 }
 
 INTENT_STRATEGIES: dict[str, dict] = {
@@ -605,6 +642,10 @@ INTENT_STRATEGIES: dict[str, dict] = {
     'temporal':     {'search_mode': 'combined', 'reranker': 'rrf',              'limit': 10},
     'path':         {'search_mode': 'edges',    'reranker': 'rrf',              'limit': 10},
     'importance':   {'search_mode': 'nodes',    'reranker': 'episode_mentions', 'limit': 10},
+    # The only intent that searches the ingested SOURCE TEXT rather than what
+    # extraction lifted out of it. Limit 5 because each hit carries a narrative,
+    # not a one-line fact.
+    'narrative':    {'search_mode': 'episodes', 'reranker': 'rrf',              'limit': 5},
 }
 
 
@@ -849,9 +890,9 @@ async def add_memory(
 
 async def search(
     query: str,
-    intent: Literal['exhaustive', 'precise', 'neighborhood', 'diverse', 'temporal', 'path', 'importance'] | None = None,
+    intent: Literal['exhaustive', 'precise', 'neighborhood', 'diverse', 'temporal', 'path', 'importance', 'narrative'] | None = None,
     group_ids: list[str] | None = None,
-    search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
+    search_mode: Literal['nodes', 'edges', 'episodes', 'communities', 'combined'] = 'combined',
     reranker: Literal['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'] = 'rrf',
     center_node_uuid: str | None = None,
     bfs_origin_node_uuids: list[str] | None = None,
@@ -865,15 +906,27 @@ async def search(
     Prefer passing `intent` to let the server choose the best strategy.
     Pass `search_mode`/`reranker` directly only when you need explicit control.
 
+    What comes back depends on the mode: `combined` returns entities (nodes),
+    facts (edges) and community summaries, and on backends that index episode
+    content also a short sample of matching source documents (`episodes`).
+    Whether this graph's backend indexes episode content is announced per-graph
+    — this tool's served description says so, and get_schema reports it under
+    `tool_capabilities.search`. Read that rather than assuming either way.
+
     Args:
         query: Natural language search query.
         intent: Search intent — the server maps this to the best search_mode + reranker.
-                One of: exhaustive, precise, neighborhood, diverse, temporal, path, importance.
+                One of: exhaustive, precise, neighborhood, diverse, temporal, path,
+                importance, narrative. "narrative" searches the ingested source text
+                itself rather than what was extracted from it.
                 When provided, overrides search_mode and reranker defaults.
         group_ids: Search across these graph partitions. Omit to use the default.
-        search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
+        search_mode: What to search — "nodes", "edges", "episodes" (the ingested
+                     source documents, returned at the full limit), "communities",
+                     or "combined" (default; its episode sample is capped).
         reranker: Reranking strategy — "rrf" (default), "mmr", "cross_encoder",
                   "node_distance" (requires center_node_uuid), or "episode_mentions".
+                  search_mode="episodes" accepts only "rrf".
         center_node_uuid: Rerank results by proximity to this node.
         bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
         entity_types: Only return nodes carrying these labels. This graph's labels are
@@ -977,12 +1030,38 @@ async def search(
         ]
 
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
+        # The episode leg has always RUN — every `combined` recipe carries an
+        # `episode_config` — and its answer was discarded here. Facts that
+        # extraction never lifted into a node or an edge live only in this text,
+        # so dropping it made the connector answer empty-handed on questions it
+        # had already found.
+        #
+        # Whether the leg finds anything is a BACKEND question, not this
+        # function's: a driver without an episode full-text index answers the
+        # sub-search with [] and this list is empty. That is honest in-band
+        # behaviour and stays uncaught here — the announcement layer is what
+        # gates on `Flavour.searches_episode_content`.
+        # M3: a non-episode mode gets a SAMPLE, not the full list. `combined` fans
+        # out over four legs and each episode hit carries a narrative, so an
+        # uncapped list would drown a result the caller asked for entities in.
+        # The explicit episodes mode is the caller saying that IS what they want,
+        # and keeps the full limit.
+        episode_cap = (
+            None if effective_search_mode.lower() == 'episodes' else COMBINED_EPISODE_LIMIT
+        )
+        episode_results = [
+            format_episode_result(ep) for ep in (results.episodes or [])[:episode_cap]
+        ]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
         return SearchResult(
-            message=f'Found {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
+            message=(
+                f'Found {len(node_results)} nodes, {len(edge_results)} edges, '
+                f'{len(episode_results)} episodes, {len(community_results)} communities'
+            ),
             nodes=node_results,
             edges=edge_results,
+            episodes=episode_results,
             communities=community_results,
             execution_ms=round((time.time() - start_time) * 1000, 1),
         )
@@ -1151,13 +1230,15 @@ async def explore_entity(
 async def get_episode_context(
     episode_uuids: list[str],
 ) -> EpisodeContextResult:
-    """Get all entities and relationships extracted from specific episodes.
+    """Get the requested episodes IN FULL, plus everything extracted from them.
 
     Use when:
+    - A `search` result gave you an episode with `content_truncated: true` and you
+      need the whole narrative — `episodes[].content` here is never capped
     - You want to see what nodes and edges were created from a specific document
     - Inspecting extraction quality for a particular episode
 
-    Pair with get_episodes to first list episodes, then inspect what was extracted.
+    Pair with get_episodes or search to first find episodes, then inspect them.
 
     Args:
         episode_uuids: List of episode UUIDs to inspect.
@@ -1172,6 +1253,15 @@ async def get_episode_context(
 
     try:
         client = await graphiti_service.get_client()
+
+        # The episodes themselves, not only their extraction. `search` caps
+        # episode content and announces THIS tool as where the rest lives, so
+        # returning only the derived nodes and edges would leave that promise
+        # unkeepable — content_cap=None is what makes the remedy real.
+        episodes = await EpisodicNode.get_by_uuids(client.driver, episode_uuids)
+        episode_results = [
+            format_episode_result(ep, content_cap=None) for ep in (episodes or [])
+        ]
 
         results = await client.get_nodes_and_edges_by_episode(episode_uuids)
 
@@ -1195,7 +1285,12 @@ async def get_episode_context(
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
 
         return EpisodeContextResult(
-            message=f'Found {len(node_results)} nodes and {len(edge_results)} edges from {len(episode_uuids)} episodes',
+            message=(
+                f'Found {len(episode_results)} of {len(episode_uuids)} requested '
+                f'episodes, with {len(node_results)} nodes and {len(edge_results)} '
+                f'edges extracted from them'
+            ),
+            episodes=episode_results,
             nodes=node_results,
             edges=edge_results,
         )
@@ -2128,26 +2223,45 @@ async def get_schema() -> SchemaResponse:
         if analysis_notes:
             schema['analysis_notes'] = analysis_notes
 
-        # Tool capability metadata for reasoning engine discovery
+        # Tool capability metadata for reasoning engine discovery.
+        #
+        # This block is what a planner READS to decide what it is worth asking
+        # for, so the episode leg is listed here only where the backend can
+        # actually answer it (see Flavour.searches_episode_content). Announcing
+        # a leg that returns [] by construction would make a planner spend a call
+        # and read a false negative — see `_episode_leg_is_live`.
+        episode_leg = flavour.searches_episode_content()
+
+        search_methods = [
+            {'index': 'name_embedding', 'type': 'cosine_similarity',
+             'matches': 'entity names'},
+            {'index': 'summary_embedding', 'type': 'cosine_similarity',
+             'matches': 'entity summaries — contextual descriptions including event details and roles'},
+            {'index': 'summary', 'type': 'bm25_fulltext',
+             'matches': 'exact keyword matches in entity names and summaries'},
+            {'index': 'fact_embedding', 'type': 'cosine_similarity',
+             'matches': 'relationship facts'},
+        ]
+        search_covers: dict[str, Any] = {
+            'entity_fields': ['name', 'summary'],
+            'edge_fields': ['fact'],
+            'communities': True,
+        }
+        if episode_leg:
+            search_methods.append(
+                {'index': 'episode_content', 'type': 'bm25_fulltext',
+                 'matches': 'the full text of the ingested source documents — content '
+                            'extraction did not lift into an entity or a fact is '
+                            'still findable here'},
+            )
+            search_covers['episodes'] = True
+
         schema['tool_capabilities'] = {
             'search': {
-                'search_methods': [
-                    {'index': 'name_embedding', 'type': 'cosine_similarity',
-                     'matches': 'entity names'},
-                    {'index': 'summary_embedding', 'type': 'cosine_similarity',
-                     'matches': 'entity summaries — contextual descriptions including event details and roles'},
-                    {'index': 'summary', 'type': 'bm25_fulltext',
-                     'matches': 'exact keyword matches in entity names and summaries'},
-                    {'index': 'fact_embedding', 'type': 'cosine_similarity',
-                     'matches': 'relationship facts'},
-                ],
+                'search_methods': search_methods,
                 'strategies': INTENT_STRATEGIES,
                 'rerankers': ['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'],
-                'covers': {
-                    'entity_fields': ['name', 'summary'],
-                    'edge_fields': ['fact'],
-                    'communities': True,
-                },
+                'covers': search_covers,
                 'does_not_cover': {
                     'entity_fields': ['domain_attribute_properties'],
                 },
@@ -2581,14 +2695,15 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
             del mcp._tool_manager._tools[fn.__name__]
 
     # Backend flavour drives the per-backend Cypher dialect surfaced in the graph_query
-    # description + server instructions (ADR-019 R1/R6).
+    # description + server instructions (ADR-019 R1/R6), and gates the capability
+    # claims that are only true on some backends — see Flavour.searches_episode_content.
     flavour = graphiti_service.flavour if graphiti_service is not None else None
 
     # Annotations (ADR-019 R3) come from the one table in tool_annotations.py, the same
     # source the static @mcp.tool() decorators read — the two paths cannot drift.
     mcp.add_tool(
         search,
-        description=build_search_description(profile),
+        description=build_search_description(profile, flavour),
         annotations=annotations_for('search'),
     )
     mcp.add_tool(
