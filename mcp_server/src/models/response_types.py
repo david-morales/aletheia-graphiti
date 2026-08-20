@@ -95,6 +95,7 @@ class ExploreResponse(TypedDict):
 
 class EpisodeContextResponse(TypedDict):
     message: str
+    episodes: list[dict[str, Any]]
     nodes: list[NodeResult]
     edges: list[EdgeResult]
 
@@ -264,8 +265,16 @@ class AddMemoryResult(TypedDict, total=False):
 
 
 class EpisodeContextResult(TypedDict, total=False):
-    """get_episode_context — what the given episodes extracted."""
+    """get_episode_context — the requested episodes, and what they extracted.
+
+    `episodes` carries each requested episode's own `content` IN FULL — no cap,
+    no truncation flag. That is the point of it: `search` serves episode content
+    only up to `EPISODE_CONTENT_CAP` and tells the caller to come here for the
+    rest, so a capped answer at this end would make the announced remedy a dead
+    end. The caller has already named the uuids, so the size is its own choice.
+    """
     message: str | None
+    episodes: list[dict[str, Any]] | None
     nodes: list[NodeResult] | None
     edges: list[EdgeResult] | None
     error: str | None
@@ -316,8 +325,15 @@ class EpisodeSearchResult(TypedDict, total=False):
 class SearchResult(TypedDict, total=False):
     """search / search_ontology.
 
-    `episodes` carries the source narratives that matched. It is absent from
-    `search_ontology` results, which search a schema graph that has none.
+    ONE type for two tools, so not every key is populated by both. `episodes`
+    carries the source narratives that matched and is populated by `search`
+    alone: `search_ontology` searches a schema graph, which has no ingested
+    documents behind it, and never sets the key. Splitting the two into separate
+    types would say this in the type system rather than in prose; that is a
+    wider change than this one.
+
+    `search` populates `episodes` only on backends that index episode content —
+    `get_schema.tool_capabilities.search` announces whether this one does.
     """
     message: str | None
     nodes: list[NodeResult] | None
