@@ -28,9 +28,20 @@ def _key_tools_lines() -> list[str]:
         '',
         'Key tools:',
         '',
-        '1. search -- Find entities, facts, or communities by natural language query.',
+        '1. search -- Find entities, facts, source narratives or communities by',
+        '   natural language query.',
         '   Use when: the user asks a question or wants to find something.',
         '   Use explore_entity instead when: you already know which entity to examine.',
+        '   ALSO SEARCHES THE SOURCE TEXT. Alongside nodes and edges the result',
+        '   carries `episodes` -- the ingested documents themselves, matched on',
+        '   their full text. Extraction lifts only part of a document into',
+        '   entities and relationships, so a detail absent from every node and',
+        '   edge can still be present in an episode narrative: when nodes and',
+        '   edges come back thin, READ `episodes` BEFORE CONCLUDING THE GRAPH',
+        '   DOES NOT HOLD THE ANSWER. Long content is cut at 6000 characters',
+        '   with `content_truncated: true` -- get_episode_context has the rest.',
+        '   intent="narrative" (or search_mode="episodes") searches ONLY that',
+        '   text, for when the question is about what a document says.',
         '',
         "2. explore_entity -- Expand a known entity's neighborhood.",
         '   Use when: you have a specific entity name and want its connections.',
@@ -319,7 +330,19 @@ def build_search_description(profile: DomainProfile) -> str:
         '- You need schema or ontology definitions -- use search_ontology instead',
         '',
         'Returns: matching nodes (entities with name, summary, labels), '
-        'edges (facts linking two entities), and community summaries.',
+        'edges (facts linking two entities), episodes (the ingested source '
+        'documents, matched on their full text) and community summaries.',
+        '',
+        'The episode leg matters: extraction lifts only part of a source document '
+        'into entities and relationships, so a detail that no node or edge carries '
+        'may still be in the document text. If nodes and edges look thin, read '
+        '`episodes` before concluding the graph does not hold the answer. Episode '
+        'content is served up to 6000 characters; past that `content_truncated` is '
+        'true and get_episode_context(uuid) has the rest.',
+        '',
+        'Use intent="narrative" (or search_mode="episodes") to search ONLY that '
+        'source text -- when the question is about what a document says rather '
+        'than about an entity.',
     ]
 
     if profile.entity_types:
