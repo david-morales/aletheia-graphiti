@@ -3,7 +3,7 @@
 from typing import Any
 
 from graphiti_core.edges import EntityEdge
-from graphiti_core.nodes import CommunityNode, EntityNode
+from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 
 from models.response_types import EdgeResult, NodeResult
 
@@ -106,3 +106,46 @@ def format_community_result(community: CommunityNode, member_count: int = 0) -> 
         'member_count': member_count,
         'group_id': community.group_id,
     }
+
+
+EPISODE_CONTENT_CAP = 6000
+"""How much episode text `search` serves per hit before it truncates.
+
+Deliberately generous. For nodes and edges the wire payload is a NAME or a
+distilled fact and the body lives elsewhere; for an episode the free text IS
+what matched, so a stub would defeat the leg that found it. The bound that
+matters is the search `limit` — episode count is capped by it — not the length
+of any one narrative.
+"""
+
+
+def format_episode_result(episode: EpisodicNode) -> dict[str, Any]:
+    """An episode search hit as a wire dict.
+
+    Companion to `format_node_result` / `format_edge_result` /
+    `format_community_result`, and the same embedding rule: any key containing
+    'embedding' is dropped. Nothing here produces one today — the fields are
+    named explicitly rather than dumped from the model — and the filter stays so
+    that adding a field cannot quietly ship thousands of floats into a context
+    window.
+
+    `content_truncated` is ALWAYS emitted and always a bool. A consumer must not
+    have to infer from a length whether it is holding the whole narrative or a
+    prefix: when it is a prefix, the follow-up is `get_episode_context(uuid)`.
+    """
+    content = episode.content or ''
+    truncated = len(content) > EPISODE_CONTENT_CAP
+    result = {
+        'uuid': episode.uuid,
+        'name': episode.name,
+        'content': content[:EPISODE_CONTENT_CAP] if truncated else content,
+        'content_truncated': truncated,
+        'source': episode.source.value
+        if hasattr(episode.source, 'value')
+        else str(episode.source),
+        'source_description': episode.source_description,
+        'group_id': episode.group_id,
+        'created_at': episode.created_at.isoformat() if episode.created_at else None,
+        'valid_at': episode.valid_at.isoformat() if episode.valid_at else None,
+    }
+    return {k: v for k, v in result.items() if 'embedding' not in k.lower()}

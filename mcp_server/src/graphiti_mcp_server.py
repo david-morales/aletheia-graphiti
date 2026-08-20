@@ -29,6 +29,9 @@ from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
     EdgeSearchMethod,
+    EpisodeReranker,
+    EpisodeSearchConfig,
+    EpisodeSearchMethod,
     NodeReranker,
     NodeSearchConfig,
     NodeSearchMethod,
@@ -109,7 +112,12 @@ from utils.cypher import (
     validate_and_sanitize,
 )
 from flavours import build_flavour
-from utils.formatting import format_community_result, format_edge_result
+from utils.formatting import (
+    EPISODE_CONTENT_CAP,
+    format_community_result,
+    format_edge_result,
+    format_episode_result,
+)
 
 # Load .env file from mcp_server directory
 mcp_server_dir = Path(__file__).parent.parent
@@ -577,6 +585,30 @@ class GraphitiService:
         return self.client
 
 
+# The episode-only recipes, built here rather than imported: graphiti-core ships
+# no EPISODE_HYBRID_* pair. Core DOES run the leg — every `combined` recipe
+# carries an `episode_config` — it just never offers it alone, so asking for the
+# source narratives on purpose (rather than as a side effect of `combined`) needs
+# these two.
+#
+# `bm25` is the only member of `EpisodeSearchMethod`: episodes are matched on
+# their full text, not on an embedding, on both flavours. And `EpisodeReranker`
+# has exactly two members, which is why this pair is a pair — see the mode's
+# entry in SEARCH_RECIPES below.
+EPISODE_SEARCH_RRF = SearchConfig(
+    episode_config=EpisodeSearchConfig(
+        search_methods=[EpisodeSearchMethod.bm25],
+        reranker=EpisodeReranker.rrf,
+    ),
+)
+
+EPISODE_SEARCH_CROSS_ENCODER = SearchConfig(
+    episode_config=EpisodeSearchConfig(
+        search_methods=[EpisodeSearchMethod.bm25],
+        reranker=EpisodeReranker.cross_encoder,
+    ),
+)
+
 # Recipe lookup: (search_mode, reranker) -> SearchConfig
 SEARCH_RECIPES: dict[tuple[str, str], SearchConfig] = {
     ('combined', 'rrf'): COMBINED_HYBRID_SEARCH_RRF,
@@ -595,6 +627,11 @@ SEARCH_RECIPES: dict[tuple[str, str], SearchConfig] = {
     ('communities', 'rrf'): COMMUNITY_HYBRID_SEARCH_RRF,
     ('communities', 'mmr'): COMMUNITY_HYBRID_SEARCH_MMR,
     ('communities', 'cross_encoder'): COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
+    # Two pairs, not five: `EpisodeReranker` has only rrf and cross_encoder, so
+    # mmr / node_distance / episode_mentions would be promises the config cannot
+    # keep. They fall through to the standard ValueError.
+    ('episodes', 'rrf'): EPISODE_SEARCH_RRF,
+    ('episodes', 'cross_encoder'): EPISODE_SEARCH_CROSS_ENCODER,
 }
 
 INTENT_STRATEGIES: dict[str, dict] = {
@@ -605,6 +642,10 @@ INTENT_STRATEGIES: dict[str, dict] = {
     'temporal':     {'search_mode': 'combined', 'reranker': 'rrf',              'limit': 10},
     'path':         {'search_mode': 'edges',    'reranker': 'rrf',              'limit': 10},
     'importance':   {'search_mode': 'nodes',    'reranker': 'episode_mentions', 'limit': 10},
+    # The only intent that searches the ingested SOURCE TEXT rather than what
+    # extraction lifted out of it. Limit 5 because each hit carries a narrative,
+    # not a one-line fact.
+    'narrative':    {'search_mode': 'episodes', 'reranker': 'rrf',              'limit': 5},
 }
 
 
@@ -849,9 +890,9 @@ async def add_memory(
 
 async def search(
     query: str,
-    intent: Literal['exhaustive', 'precise', 'neighborhood', 'diverse', 'temporal', 'path', 'importance'] | None = None,
+    intent: Literal['exhaustive', 'precise', 'neighborhood', 'diverse', 'temporal', 'path', 'importance', 'narrative'] | None = None,
     group_ids: list[str] | None = None,
-    search_mode: Literal['nodes', 'edges', 'communities', 'combined'] = 'combined',
+    search_mode: Literal['nodes', 'edges', 'episodes', 'communities', 'combined'] = 'combined',
     reranker: Literal['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'] = 'rrf',
     center_node_uuid: str | None = None,
     bfs_origin_node_uuids: list[str] | None = None,
@@ -865,15 +906,29 @@ async def search(
     Prefer passing `intent` to let the server choose the best strategy.
     Pass `search_mode`/`reranker` directly only when you need explicit control.
 
+    Searches FOUR things, and returns all four: entities (nodes), facts (edges),
+    the ingested source documents themselves (episodes) and community summaries.
+    The episode leg matches the full text of what was ingested, so a detail that
+    extraction never lifted into an entity or a fact is still findable here —
+    when nodes and edges come back thin, the answer may be in `episodes`.
+    Episode `content` is served up to 6000 characters; past that it is truncated
+    and `content_truncated` is true, so call get_episode_context(uuid) for the
+    rest and for what that episode produced.
+
     Args:
         query: Natural language search query.
         intent: Search intent — the server maps this to the best search_mode + reranker.
-                One of: exhaustive, precise, neighborhood, diverse, temporal, path, importance.
+                One of: exhaustive, precise, neighborhood, diverse, temporal, path,
+                importance, narrative. Use "narrative" to search the source text
+                itself rather than what was extracted from it.
                 When provided, overrides search_mode and reranker defaults.
         group_ids: Search across these graph partitions. Omit to use the default.
-        search_mode: What to search — "nodes", "edges", "communities", or "combined" (default).
+        search_mode: What to search — "nodes", "edges", "episodes" (the ingested
+                     source documents), "communities", or "combined" (default,
+                     which already includes the episode leg).
         reranker: Reranking strategy — "rrf" (default), "mmr", "cross_encoder",
                   "node_distance" (requires center_node_uuid), or "episode_mentions".
+                  search_mode="episodes" accepts only "rrf" and "cross_encoder".
         center_node_uuid: Rerank results by proximity to this node.
         bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
         entity_types: Only return nodes carrying these labels. This graph's labels are
@@ -977,12 +1032,22 @@ async def search(
         ]
 
         edge_results = [format_edge_result(e) for e in (results.edges or [])]
+        # The episode leg has always RUN — every `combined` recipe carries an
+        # `episode_config`, and both flavours implement it — and its answer was
+        # discarded here. Facts that extraction never lifted into a node or an
+        # edge live only in this text, so dropping it made the connector answer
+        # empty-handed on questions it had already found.
+        episode_results = [format_episode_result(ep) for ep in (results.episodes or [])]
         community_results = [format_community_result(c) for c in (results.communities or [])]
 
         return SearchResult(
-            message=f'Found {len(node_results)} nodes, {len(edge_results)} edges, {len(community_results)} communities',
+            message=(
+                f'Found {len(node_results)} nodes, {len(edge_results)} edges, '
+                f'{len(episode_results)} episodes, {len(community_results)} communities'
+            ),
             nodes=node_results,
             edges=edge_results,
+            episodes=episode_results,
             communities=community_results,
             execution_ms=round((time.time() - start_time) * 1000, 1),
         )

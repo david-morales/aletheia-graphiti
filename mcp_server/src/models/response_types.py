@@ -286,11 +286,43 @@ class EpisodeListResult(TypedDict, total=False):
     error: str | None
 
 
+class EpisodeSearchResult(TypedDict, total=False):
+    """One episode hit from `search` — a matching SOURCE NARRATIVE.
+
+    Distinct from `EpisodeListResult`'s untyped dicts, which answer "what was
+    ingested" rather than "what matched". The episode full-text leg has always
+    run inside every `combined` recipe; this type is what putting its answer on
+    the wire required.
+
+    `content` IS the payload here — an episode matches on its free text, so
+    handing back a stub would defeat the leg. It is served in full up to
+    `EPISODE_CONTENT_CAP` characters. `content_truncated` is ALWAYS present and
+    always a bool, never inferred from the length: a consumer holding a prefix
+    must be able to tell, so it knows to follow up with `get_episode_context`.
+
+    Same nullability rule as the rest of this module — every field `X | None`.
+    """
+    uuid: str | None
+    name: str | None
+    content: str | None
+    content_truncated: bool | None
+    source: str | None
+    source_description: str | None
+    group_id: str | None
+    created_at: str | None
+    valid_at: str | None
+
+
 class SearchResult(TypedDict, total=False):
-    """search / search_ontology."""
+    """search / search_ontology.
+
+    `episodes` carries the source narratives that matched. It is absent from
+    `search_ontology` results, which search a schema graph that has none.
+    """
     message: str | None
     nodes: list[NodeResult] | None
     edges: list[EdgeResult] | None
+    episodes: list[EpisodeSearchResult] | None
     communities: list[CommunityResult] | None
     execution_ms: float | None
     error: str | None
