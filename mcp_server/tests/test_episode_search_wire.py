@@ -23,10 +23,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from graphiti_core.search.search_config import EpisodeReranker, EpisodeSearchMethod
-
-from version import CONNECTOR_VERSION
 
 from graphiti_mcp_server import (
     EPISODE_CONTENT_CAP,
@@ -35,7 +32,7 @@ from graphiti_mcp_server import (
     resolve_search_config,
     search,
 )
-
+from version import CONNECTOR_VERSION
 
 # ---------------------------------------------------------------------------
 # Mock factories — same idiom as test_tools.py
