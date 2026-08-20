@@ -23,8 +23,17 @@ uses for the other suite:
 The unit tests below cover the DECISION. The subprocess tests cover the WIRING,
 which is the half a unit test cannot see: the guard has to actually be installed
 in the real conftest, ahead of the `helpers_test` import, for any of it to
-matter. Every subprocess arm is `--collect-only`, so this module never opens a
-connection to anything even when the guard it is testing is broken.
+matter.
+
+Every subprocess arm that collects a module of the live surface passes
+`--collect-only`, so no fixture is ever set up under the poisoned environment
+these arms use. Two arms DO execute, and only because the claim they measure is
+about the running process rather than about collection: they run exactly
+`test_this_sessions_own_key_is_a_dummy` and
+`test_this_sessions_driver_list_is_empty`, one named test each, both pure
+assertions about `os.environ` and an already-imported list. Neither constructs a
+driver, so this module opens no connection to anything even when the guard it is
+testing is broken.
 """
 
 from __future__ import annotations
@@ -260,8 +269,16 @@ def _run_pytest(*args, env_overrides=None):
 
     This is the environment the guard exists for: the reserved endpoint spelled
     out, a real-looking key present, and none of the `DISABLE_*` flags the
-    hand-written recipe relied on. Nothing here is ever executed — every caller
-    passes `--collect-only` — so a guard that fails still cannot dial.
+    hand-written recipe relied on.
+
+    Callers that name a module of the live surface pass `--collect-only`, so a
+    guard that fails still cannot dial: collection imports modules, it does not
+    set up fixtures, and the fixture is where every connection in this suite is
+    opened. The two callers that omit it name a single test apiece
+    (`test_this_sessions_own_key_is_a_dummy`,
+    `test_this_sessions_driver_list_is_empty`), neither of which touches a
+    driver — the claim being measured is about this process's environment, which
+    collection alone cannot show.
     """
     env = {
         **os.environ,
@@ -328,7 +345,10 @@ def test_no_live_surface_module_generates_a_live_param():
 def test_integration_marked_items_are_deselected_without_the_opt_in():
     """The marker arm, mirroring the sibling suite: an `integration` module
     named directly still collects nothing. Exit 5 is pytest's "no tests
-    collected", the shape a full deselect takes."""
+    collected", the shape a full deselect takes.
+
+    `--collect-only` even though a deselect would prevent execution anyway:
+    proving the deselect must not depend on the deselect working."""
     result = _run_pytest('tests/test_entity_exclusion_int.py', '-q', '--collect-only')
     assert 'deselected' in result.stdout or result.returncode == 5, result.stdout
 
