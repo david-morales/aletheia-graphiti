@@ -722,6 +722,19 @@ class AgeFlavour(BaseFlavour):
     # is; before it did, every correct nested query came back schema_mismatch.
     attribute_container: str | None = "attributes"
 
+    def searches_episode_content(self) -> bool:
+        """No — and inherited False would have been an accident, so it is stated.
+
+        Episodic nodes are not mirrored into a tsvector shadow table on this
+        backend; only Entity nodes and edges are. `age_search`'s
+        `episode_fulltext_search` therefore returns an empty list by
+        construction — deliberately, so a combined recipe still returns its node
+        and edge legs instead of failing the whole call. That makes the episode
+        leg a permanent no-op here until an episode shadow table exists, which is
+        a graphiti_core change and not this connector's to make.
+        """
+        return False
+
     def check_dialect(self, query: str) -> CypherError | None:
         return check_age_dialect(query)
 

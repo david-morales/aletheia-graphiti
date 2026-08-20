@@ -505,6 +505,11 @@ class FalkorDbFlavour(BaseFlavour):
         "use toLower()/toUpper() not lower()/upper()."
     )
 
+    def searches_episode_content(self) -> bool:
+        """Yes — ingestion builds the `episode_content` fulltext index, and
+        `episode_fulltext_search` in graphiti_core ranks against it."""
+        return True
+
     def check_dialect(self, query: str) -> CypherError | None:
         return check_falkordb_dialect(query)
 

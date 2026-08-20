@@ -79,6 +79,7 @@ class Flavour(Protocol):
     def check_dialect(self, query: str) -> CypherError | None: ...
     def auto_fix(self, query: str) -> tuple[str, list[str]]: ...
     def classify_execution_error(self, message: str, query: str | None = None) -> CypherError: ...
+    def searches_episode_content(self) -> bool: ...
     def profile_queries(self) -> dict[str, str]: ...
     def census_queries(self) -> dict[str, str]: ...
     def census_notes(self) -> list[str]: ...
@@ -121,6 +122,23 @@ class BaseFlavour:
             explanation=message,
             suggestion="Check the query against the schema (get_schema) and retry.",
         )
+
+    def searches_episode_content(self) -> bool:
+        """Whether this backend's driver actually full-text searches episode content.
+
+        A CAPABILITY, announced as data — the same rule the dialect follows. The
+        `search` recipes ask every backend for an episode leg, but asking is not
+        implementing: a driver that has no episode full-text index answers the
+        sub-search with an empty list, which is correct behaviour and a silent
+        zero to anyone reading the announcement.
+
+        False here, because the generic openCypher path builds no such index. A
+        backend that does must say so, and the announcement layer must not claim
+        the leg on a backend that does not: telling an agent to fall back to
+        `episodes` when nodes and edges look thin is actively harmful advice
+        where `episodes` can only ever be empty.
+        """
+        return False
 
     def profile_queries(self) -> dict[str, str]:
         """Cypher for the four startup domain-profile probes, keyed by probe name."""
