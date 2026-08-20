@@ -110,6 +110,65 @@ def test_naming_the_marker_opts_in_without_the_env_gate(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    'expression',
+    [
+        'not (slow or integration)',
+        'not(slow or integration)',
+        '(not integration)',
+        'not integration',
+        'integration or slow',
+        'slow and integration',
+        'contract',
+        '',
+        '   ',
+    ],
+)
+def test_only_the_bare_marker_opens_the_gate(monkeypatch, expression):
+    """The gate opens on EXACTLY `integration` and nothing else.
+
+    `not (slow or integration)` is the case that made this strict. The previous
+    parser stripped parentheses before splitting on whitespace, which turned a
+    negation applied to a GROUP into a bare, unnegated `integration` token —
+    so the most emphatic way of saying "not live" opened the live gate.
+
+    The compound POSITIVE forms (`integration or slow`) are here to pin the
+    trade deliberately: they stay closed. Failing closed on a positive costs a
+    skipped test; failing open on a negative reaches the reserved store.
+    """
+    monkeypatch.delenv(LIVE_GATE_ENV, raising=False)
+    assert live_gate_is_open({'-m': expression}) is False, expression
+
+
+@pytest.mark.parametrize('expression', ['integration', ' integration', 'integration '])
+def test_the_bare_marker_opens_regardless_of_surrounding_whitespace(monkeypatch, expression):
+    monkeypatch.delenv(LIVE_GATE_ENV, raising=False)
+    assert live_gate_is_open({'-m': expression}) is True, expression
+
+
+@pytest.mark.parametrize(
+    'argv,opens',
+    [
+        (['pytest', '-m', 'integration'], True),
+        (['pytest', '-m', 'not (slow or integration)'], False),
+        # argparse keeps the LAST occurrence; the gate must agree with the run.
+        (['pytest', '-m', 'integration', '-m', 'not integration'], False),
+        (['pytest', '-m', 'not integration', '-m', 'integration'], True),
+    ],
+)
+def test_the_gate_agrees_with_the_run_argparse_will_actually_do(monkeypatch, argv, opens):
+    """End to end over argv: the two halves (parse, then decide) must compose.
+
+    A first-wins reader disagreed with pytest itself — `-m integration
+    -m "not integration"` RUNS as `not integration`, but the gate read the
+    first token and opened. The dangerous direction, for a session that had
+    just asked for the opposite.
+    """
+    monkeypatch.delenv(LIVE_GATE_ENV, raising=False)
+    expression = marker_expression_from_argv(argv)
+    assert live_gate_is_open({'-m': expression}) is opens, (argv, expression)
+
+
+@pytest.mark.parametrize(
     'argv,expected',
     [
         (['pytest', 'tests/'], ''),
@@ -119,6 +178,13 @@ def test_naming_the_marker_opts_in_without_the_env_gate(monkeypatch):
         (['pytest', '-m=integration'], 'integration'),
         (['pytest', '--markers'], ''),
         (['pytest', '-m'], ''),
+        # LAST wins, matching argparse — across all three spellings.
+        (['pytest', '-m', 'integration', '-m', 'not integration'], 'not integration'),
+        (['pytest', '-m', 'not integration', '-m', 'integration'], 'integration'),
+        (['pytest', '-mnot integration', '-m=integration'], 'integration'),
+        (['pytest', '-m=integration', '-m', 'contract'], 'contract'),
+        # A trailing bare `-m` has no value; it must not resurrect an earlier one.
+        (['pytest', '-m', 'integration', '-m'], ''),
     ],
 )
 def test_the_marker_expression_is_read_off_argv(argv, expected):
@@ -128,6 +194,8 @@ def test_the_marker_expression_is_read_off_argv(argv, expected):
     read off `sys.argv` here rather than from `config.getoption`.
 
     `--markers` is in the list because a prefix match on `-m` would swallow it.
+    Repeated `-m` resolves to the LAST occurrence, which is what argparse hands
+    pytest — reading the first disagrees with the run being described.
     """
     assert marker_expression_from_argv(argv) == expected
 

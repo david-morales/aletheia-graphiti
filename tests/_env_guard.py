@@ -77,7 +77,7 @@ _FALSY_GATE_VALUES = frozenset({'', '0', 'false', 'no', 'off'})
 
 
 def marker_expression_from_argv(argv: list[str]) -> str:
-    """The `-m` expression, read straight off the command line.
+    """The EFFECTIVE `-m` expression, read straight off the command line.
 
     `mcp_server`'s guard gets this from `config.getoption` in `pytest_configure`.
     This suite cannot wait that long: `helpers_test` builds its driver list in
@@ -85,18 +85,30 @@ def marker_expression_from_argv(argv: list[str]) -> str:
     module body — before pytest has parsed anything. By the time
     `pytest_configure` runs, the list is already built.
 
+    Returns the LAST `-m`, not the first, because that is what argparse gives
+    pytest: `-m integration -m "not integration"` runs as `not integration`. A
+    first-wins reader disagrees with the run it is supposed to describe, and it
+    disagrees in the dangerous direction — it would open the gate for a session
+    that had just asked for the opposite.
+
     Handles the three spellings pytest accepts (`-m X`, `-mX`, `-m=X`) and
     deliberately does NOT prefix-match, which would read `--markers` as `-m`
     with a value of `arkers`.
     """
-    for index, token in enumerate(argv):
+    expression = ''
+    index = 0
+    while index < len(argv):
+        token = argv[index]
         if token == '-m':
-            return argv[index + 1] if index + 1 < len(argv) else ''
+            expression = argv[index + 1] if index + 1 < len(argv) else ''
+            index += 2
+            continue
         if token.startswith('-m=') and len(token) > 3:
-            return token[3:]
-        if token.startswith('-m') and not token.startswith('--') and len(token) > 2:
-            return token[2:]
-    return ''
+            expression = token[3:]
+        elif token.startswith('-m') and not token.startswith('--') and len(token) > 2:
+            expression = token[2:]
+        index += 1
+    return expression
 
 
 def live_gate_is_open(known_args: dict[str, str] | None = None) -> bool:
@@ -106,25 +118,33 @@ def live_gate_is_open(known_args: dict[str, str] | None = None) -> bool:
 
     * the `GRAPHITI_LIVE_TESTS` env var — the gate a human (or a CI job that
       talks to a real database) sets deliberately;
-    * naming the marker in `-m`, which is an explicit request by definition.
-      The accident this guards against is the run that never mentions it.
+    * naming the marker in `-m` and nothing else, which is an explicit request
+      by definition. The accident this guards against is the run that never
+      mentions it.
 
-    `-m "not integration"` is the OPPOSITE request and must not open the gate,
-    so the expression is inspected rather than searched for a substring. That
-    matters more here than next door: this repo's own offline CI job passes
-    exactly that string.
+    The marker arm is deliberately STRICT and deliberately stupid: the
+    expression opens the gate only when it is exactly `integration` after
+    stripping whitespace. Nothing else — not `integration or slow`, not
+    `not (slow or integration)`.
+
+    That is a real limitation, stated rather than papered over (the sibling
+    guard makes the same admission about its own parser). The alternative is
+    parsing marker expressions, and the first attempt here did try: it split on
+    whitespace after DISCARDING parentheses, so `not (slow or integration)` —
+    a negation applied to a group — read as an unnegated `integration` and
+    FALSE-OPENED the gate. A guard that fails open on an expression a human
+    would call obviously negative is worse than one that fails closed on an
+    expression a human would call obviously positive: the closed direction
+    costs a skipped test, the open direction reaches the reserved store.
+
+    Anything more elaborate than the exact string should set the env var, which
+    is unambiguous by construction.
     """
     value = os.environ.get(LIVE_GATE_ENV)
     if value is not None and value.strip().lower() not in _FALSY_GATE_VALUES:
         return True
     expression = (known_args or {}).get('-m') or ''
-    if not expression:
-        return False
-    tokens = expression.replace('(', ' ').replace(')', ' ').split()
-    for index, token in enumerate(tokens):
-        if token == 'integration' and (index == 0 or tokens[index - 1] != 'not'):
-            return True
-    return False
+    return expression.strip() == 'integration'
 
 
 def disable_live_drivers(environ: dict[str, str] | None = None) -> list[str]:
