@@ -7,10 +7,34 @@ Graphiti's core library lives under `graphiti_core/`, split into domain modules 
 - `make install`: install the dev environment (`uv sync --extra dev`).
 - `make format`: run `ruff` to sort imports and apply the canonical formatter.
 - `make lint`: execute `ruff` plus `pyright` type checks against `graphiti_core`.
-- `make test`: run unit tests only, excluding integration tests and disabling non-Neo4j drivers (`DISABLE_FALKORDB=1 DISABLE_KUZU=1 DISABLE_NEPTUNE=1 uv run pytest -m "not integration"`).
+- `make test`: run unit tests only, excluding integration tests and disabling non-Neo4j drivers (`GRAPHITI_LIVE_TESTS=1 DISABLE_FALKORDB=1 DISABLE_KUZU=1 DISABLE_NEPTUNE=1 uv run pytest -m "not integration"`). It needs a reachable Neo4j; see "Live database tests" below for what `GRAPHITI_LIVE_TESTS` does.
 - `make check`: run format, lint, and test in sequence.
 - `uv run pytest tests/path/test_file.py`: target a specific module or test selection.
 - `docker-compose -f docker-compose.test.yml up`: provision local graph/search dependencies for integration flows.
+
+## Live database tests
+
+The root test suite is **default-closed**: unless a run explicitly opts in, the
+`graph_driver` fixture is parametrized over an EMPTY driver list and every test
+that would touch a real graph store collects as a skipped placeholder. Provider
+API keys are stamped to a dummy in the same window.
+
+This is deliberate. `tests/helpers_test.py` defaults the FalkorDB endpoint to
+`localhost:6379`, which on a developer machine is a real, populated database —
+and a plain `pytest tests/` used to dial it.
+
+- **Default run** (`uv run pytest tests/`): no live params, no real keys, nothing
+  dialled. Nothing to remember and no flags to pass.
+- **Opt in**: set `GRAPHITI_LIVE_TESTS=1`, or select the marker by name with
+  `-m integration`. Either one restores the real driver params and leaves your
+  environment (endpoints and credentials) untouched.
+- `make test` sets `GRAPHITI_LIVE_TESTS=1` for you and disables every driver
+  except Neo4j, so it needs a reachable Neo4j.
+
+The marker opt-in is strict: only the exact expression `integration` opens the
+gate. `-m "not integration"`, `-m "not (slow or integration)"` and compound
+forms such as `-m "integration or slow"` all leave it closed — use the env var
+for anything more elaborate.
 
 ## Coding Style & Naming Conventions
 Python code uses 4-space indentation, 100-character lines, and prefers single quotes as configured in `pyproject.toml`. Modules, files, and functions stay snake_case; Pydantic models in `graphiti_core/models` use PascalCase with explicit type hints. Keep side-effectful code inside drivers or adapters (`graphiti_core/driver`, `graphiti_core/cross_encoder`, `graphiti_core/utils`) and rely on pure helpers elsewhere. Run `make format` before committing to normalize imports and docstring formatting.
