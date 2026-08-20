@@ -919,6 +919,14 @@ class TestGetEpisodeContext:
 
     @pytest.mark.asyncio
     async def test_returns_formatted_nodes_and_edges(self):
+        """The extraction half, which this tool has always served.
+
+        The message wording moved when the tool started returning the episodes
+        THEMSELVES as well (`search` caps episode content and names this tool as
+        where the rest lives, so it now reports found-of-requested rather than
+        only the request size). The episode half is covered in
+        test_episode_search_wire.py::TestTheTruncationRemedyIsReal.
+        """
         svc, queue, cfg, client = make_mock_services()
         node = make_mock_node(uuid='ep-node-1', name='EpNode')
         edge = make_mock_edge(uuid='ep-edge-1', fact='EpNode is related to X')
@@ -930,6 +938,10 @@ class TestGetEpisodeContext:
             patch('graphiti_mcp_server.graphiti_service', svc),
             patch('graphiti_mcp_server.queue_service', queue),
             patch('graphiti_mcp_server.config', cfg, create=True),
+            patch(
+                'graphiti_mcp_server.EpisodicNode.get_by_uuids',
+                AsyncMock(return_value=[]),
+            ),
         ):
             result = await get_episode_context(episode_uuids=['ep-uuid-1', 'ep-uuid-2'])
 
@@ -938,7 +950,7 @@ class TestGetEpisodeContext:
         assert result['nodes'][0]['uuid'] == 'ep-node-1'
         assert len(result['edges']) == 1
         assert result['edges'][0]['uuid'] == 'ep-edge-1'
-        assert '2 episodes' in result['message']
+        assert '2 requested episodes' in result['message']
 
         # Verify it was called with the right UUIDs
         client.get_nodes_and_edges_by_episode.assert_awaited_once_with(
