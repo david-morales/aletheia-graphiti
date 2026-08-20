@@ -1,6 +1,7 @@
 services:
   falkordb:
-    image: falkordb/falkordb:latest
+    # Pinned rather than `:latest` — see mcp_server/docker/Dockerfile (BUG-101).
+    image: falkordb/falkordb:v4.18.0
     ports:
       - "6379:6379" # Redis/FalkorDB port
       - "3000:3000" # FalkorDB web UI

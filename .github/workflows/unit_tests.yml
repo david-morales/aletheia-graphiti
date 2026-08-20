@@ -65,7 +65,7 @@ jobs:
         # be overridden, so we use `docker run --network host` instead. Readiness is
         # checked via `docker exec`, which doesn't depend on host->container networking.
         run: |
-          docker run -d --name falkordb --network host falkordb/falkordb:latest
+          docker run -d --name falkordb --network host falkordb/falkordb:v4.18.0
           docker run -d --name neo4j --network host \
             -e NEO4J_AUTH=neo4j/testpass \
             -e NEO4J_PLUGINS='["apoc"]' \
