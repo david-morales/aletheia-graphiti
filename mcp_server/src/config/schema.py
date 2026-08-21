@@ -131,7 +131,13 @@ class ServerConfig(BaseModel):
     )
 
 
-# BUG-96 layer 1 — the bound on every outbound provider HTTP call.
+# BUG-96 layer 1 — the bound on outbound provider HTTP calls.
+#
+# Applied on the openai, azure_openai and anthropic paths (LLM, embedder,
+# reranker). NOT applied on bedrock/gemini/groq (LLM) or gemini/voyage/bedrock
+# (embedder): those construct their transport internally with no seam this
+# server can reach, so they keep their own SDK default. See the per-field
+# descriptions below, and `services/factories.py` for the seam each path uses.
 #
 # Nothing here was literally unbounded: the `openai` SDK supplies
 # `Timeout(connect=5.0, read=600, write=600, pool=600)` to any client built
@@ -240,9 +246,13 @@ class LLMConfig(BaseModel):
         gt=0,
         description=(
             'Read/write/pool timeout in seconds for outbound LLM (and reranker) HTTP '
-            'calls. Bounds a dead socket so it raises instead of hanging (BUG-96). '
-            'Override with LLM__REQUEST_TIMEOUT_SECONDS or `llm:` in the config file. '
-            'Must be positive — 0 would disable the deadline, which is the bug.'
+            'calls, on the openai, azure_openai and anthropic provider paths only. '
+            'Bounds a dead socket so it raises instead of hanging (BUG-96). The '
+            'bedrock, gemini and groq LLM paths are NOT bounded — they expose no '
+            'timeout seam this server can reach, so they keep their own SDK default '
+            'and this setting is silently inert for them. Override with '
+            'LLM__REQUEST_TIMEOUT_SECONDS or `llm:` in the config file. Must be '
+            'positive — 0 would disable the deadline, which is the bug.'
         ),
     )
     providers: LLMProvidersConfig = Field(default_factory=LLMProvidersConfig)
@@ -268,10 +278,14 @@ class EmbedderConfig(BaseModel):
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
         gt=0,
         description=(
-            'Read/write/pool timeout in seconds for outbound embedding HTTP calls. '
-            'Bounds a dead socket so it raises instead of hanging (BUG-96). Override '
-            'with EMBEDDER__REQUEST_TIMEOUT_SECONDS or `embedder:` in the config file. '
-            'Must be positive — 0 would disable the deadline, which is the bug.'
+            'Read/write/pool timeout in seconds for outbound embedding HTTP calls, '
+            'on the openai and azure_openai provider paths only. Bounds a dead socket '
+            'so it raises instead of hanging (BUG-96). The gemini, voyage and bedrock '
+            'embedder paths are NOT bounded — they expose no timeout seam this server '
+            'can reach, so they keep their own SDK default and this setting is '
+            'silently inert for them. Override with EMBEDDER__REQUEST_TIMEOUT_SECONDS '
+            'or `embedder:` in the config file. Must be positive — 0 would disable '
+            'the deadline, which is the bug.'
         ),
     )
     providers: EmbedderProvidersConfig = Field(default_factory=EmbedderProvidersConfig)

@@ -190,8 +190,19 @@ has no "unlimited" sentinel and rejects anything `<= 0`.
 
 #### Provider request timeout
 
-Every outbound provider call the server makes — LLM, embeddings, reranker — is
-bounded at **300 seconds** (read/write/pool; the connect leg stays at 5 s).
+Outbound calls on the **OpenAI, Azure OpenAI and Anthropic** provider paths — LLM,
+embeddings, and the reranker — are bounded at **300 seconds** (read/write/pool;
+the connect leg stays at 5 s).
+
+Six shipped provider branches are **not yet bounded** and still run on whatever
+their own SDK defaults to: `bedrock`, `gemini` and `groq` on the LLM side, and
+`gemini`, `voyage` and `bedrock` on the embedder side. These are live paths, not
+dead code — the Docker image installs the providers extra — so a dead socket on
+one of them can still hang the way described below. They are unbounded because
+none of them exposes a timeout seam this server can reach: `GroqClient` builds its
+`AsyncGroq` internally with no `client=` parameter, and the Bedrock LLM and
+embedder build `ChatBedrockConverse` / `BedrockEmbeddings` internally, where the
+knob is a botocore `Config`. Closing them requires a change in `graphiti_core`.
 
 This is not a timeout where there was none. The `openai` SDK supplies its own
 `Timeout(connect=5.0, read=600, write=600, pool=600)` to any client built without
@@ -205,7 +216,8 @@ was restarted.
 Override with `llm.request_timeout_seconds` / `embedder.request_timeout_seconds`
 in the config file, or `LLM__REQUEST_TIMEOUT_SECONDS` /
 `EMBEDDER__REQUEST_TIMEOUT_SECONDS` in the environment. The reranker follows the
-LLM knob, since it is an LLM call. The value must be positive: `0` is not a
+LLM knob, since it is an LLM call. On an unbounded provider the setting is
+accepted and silently has no effect. The value must be positive: `0` is not a
 sentinel for "no bound", it is the setting that reproduces the outage.
 
 Raise it if a single extraction legitimately runs longer than five minutes — but
@@ -289,8 +301,8 @@ The `config.yaml` file supports environment variable expansion using `${VAR_NAME
 - `AZURE_OPENAI_API_VERSION`: Optional Azure OpenAI API version
 - `USE_AZURE_AD`: Optional use Azure Managed Identities for authentication
 - `SEMAPHORE_LIMIT`: Episode processing concurrency. See [Concurrency and LLM Provider 429 Rate Limit Errors](#concurrency-and-llm-provider-429-rate-limit-errors)
-- `LLM__REQUEST_TIMEOUT_SECONDS`: Bound on outbound LLM and reranker HTTP calls (default `300`). See [Provider request timeout](#provider-request-timeout)
-- `EMBEDDER__REQUEST_TIMEOUT_SECONDS`: Bound on outbound embedding HTTP calls (default `300`). See [Provider request timeout](#provider-request-timeout)
+- `LLM__REQUEST_TIMEOUT_SECONDS`: Bound on outbound LLM and reranker HTTP calls (default `300`). OpenAI / Azure OpenAI / Anthropic only. See [Provider request timeout](#provider-request-timeout)
+- `EMBEDDER__REQUEST_TIMEOUT_SECONDS`: Bound on outbound embedding HTTP calls (default `300`). OpenAI / Azure OpenAI only. See [Provider request timeout](#provider-request-timeout)
 
 You can set these variables in a `.env` file in the project directory.
 

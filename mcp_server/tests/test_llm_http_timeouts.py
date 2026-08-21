@@ -89,6 +89,19 @@ def _assert_bounded(timeout, expected_seconds: float) -> None:
     assert timeout.connect == DEFAULT_CONNECT_TIMEOUT_SECONDS
 
 
+def _is_literal_none(value) -> bool:
+    """True for a written-out `None`, false for any name or attribute reference.
+
+    `cross_encoder=None` and omitting `cross_encoder` are the same instruction to
+    graphiti_core, so the guard has to reject both. It must NOT reject a name or
+    attribute — the ontology call site legitimately passes
+    `self._cached_cross_encoder_client`, whose runtime value the AST cannot know.
+    """
+    import ast
+
+    return isinstance(value, ast.Constant) and value.value is None
+
+
 class TestTheDefault:
     """300 s, chosen to match the consumer's own `ALETHEIA_MCP_CALL_TIMEOUT_SECONDS`."""
 
@@ -204,16 +217,23 @@ class TestTheEnvironmentOverride:
         assert config.embedder.request_timeout_seconds == DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     def test_the_environment_value_reaches_the_constructed_client(self, monkeypatch):
-        """The knob is worthless if it stops at the config object."""
+        """The whole seam, end to end: environment -> GraphitiConfig -> factory -> socket.
+
+        Deliberately does NOT hand-build an LLMConfig from the parsed value. That
+        shortcut would keep passing even if `GraphitiConfig` stopped feeding
+        `config.llm` to the factory at all — it exercises the test's own plumbing
+        rather than the server's. The object handed to the factory here is the
+        same one `graphiti_mcp_server.initialize()` hands it.
+        """
         monkeypatch.setenv('LLM__REQUEST_TIMEOUT_SECONDS', '42')
+        monkeypatch.setenv('LLM__PROVIDERS__OPENAI__API_KEY', 'dummy')
         monkeypatch.setenv('EMBEDDER__REQUEST_TIMEOUT_SECONDS', '43')
+        monkeypatch.setenv('EMBEDDER__PROVIDERS__OPENAI__API_KEY', 'dummy')
+
         config = GraphitiConfig()
 
-        llm = _llm_config(request_timeout_seconds=config.llm.request_timeout_seconds)
-        embedder = _embedder_config(request_timeout_seconds=config.embedder.request_timeout_seconds)
-
-        _assert_bounded(LLMClientFactory.create(llm).client.timeout, 42.0)
-        _assert_bounded(EmbedderFactory.create(embedder).client.timeout, 43.0)
+        _assert_bounded(LLMClientFactory.create(config.llm).client.timeout, 42.0)
+        _assert_bounded(EmbedderFactory.create(config.embedder).client.timeout, 43.0)
 
 
 class TestTheAnthropicPath:
@@ -295,20 +315,42 @@ class TestEveryGraphitiConstructionPassesTheReranker:
         source_path = Path(__file__).parent.parent / 'src' / 'graphiti_mcp_server.py'
         tree = ast.parse(source_path.read_text())
 
-        offenders = [
-            node.lineno
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == 'Graphiti'
-            and 'cross_encoder' not in {kw.arg for kw in node.keywords}
-        ]
+        offenders = []
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == 'Graphiti'
+            ):
+                continue
+            passed = {kw.arg: kw.value for kw in node.keywords}
+            if 'cross_encoder' not in passed:
+                offenders.append((node.lineno, 'omitted'))
+            elif _is_literal_none(passed['cross_encoder']):
+                offenders.append((node.lineno, 'literal None'))
 
         assert not offenders, (
-            f'{source_path.name} constructs Graphiti without cross_encoder= at '
-            f'line(s) {offenders} — graphiti_core will substitute an unbounded '
-            'OpenAIRerankerClient() there (BUG-96).'
+            f'{source_path.name} constructs Graphiti with no usable cross_encoder at '
+            f'{offenders} — graphiti_core will substitute an unbounded '
+            'OpenAIRerankerClient() there (BUG-96). Passing a literal None is the '
+            'same as omitting the argument.'
         )
+
+    def test_the_guard_rejects_a_literal_none(self):
+        """The guard's own regression test.
+
+        Its first form only checked that the keyword NAME was present, which a
+        mutation to `cross_encoder=None` passed while restoring the exact bug —
+        graphiti_core treats None and omitted identically. This drives the same
+        mutation through the guard's own predicate.
+        """
+        import ast
+
+        assert _is_literal_none(ast.parse('None', mode='eval').body)
+        assert not _is_literal_none(
+            ast.parse('self._cached_cross_encoder_client', mode='eval').body
+        )
+        assert not _is_literal_none(ast.parse('cross_encoder_client', mode='eval').body)
 
     def test_the_guard_can_actually_see_the_call_sites(self):
         """A guard that matches nothing passes for the wrong reason."""
@@ -324,3 +366,87 @@ class TestEveryGraphitiConstructionPassesTheReranker:
             and node.func.id == 'Graphiti'
         ]
         assert len(calls) >= 4, f'expected the four known call sites, found {len(calls)}'
+
+
+class TestTheRerankerReachesTheGraphitiClients:
+    """The behavioural half of the reranker guard — what the AST cannot see.
+
+    The structural guard reads the source and can only prove that a non-None
+    expression was written at each call site. It cannot prove that the expression
+    evaluates to the bounded client the factory built, and it cannot prove that
+    the ontology client's cached read (`self._cached_cross_encoder_client`) is
+    populated by the time that call site runs — which is an ordering property,
+    not a syntactic one. Both are checked here, by driving the real
+    `GraphitiService.initialize()` with the database driver and Graphiti class
+    stubbed out. No network, no database.
+    """
+
+    @pytest.mark.asyncio
+    async def test_both_clients_receive_the_factory_instance(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from graphiti_mcp_server import GraphitiService
+
+        monkeypatch.setenv('OPENAI_API_KEY', 'dummy')
+
+        cfg = GraphitiConfig()
+        cfg.database.provider = 'falkordb'
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        service = GraphitiService(cfg)
+
+        # `initialize()` imports FalkorDriver locally, the ontology path uses the
+        # module-level binding — two different names for one class, so both are
+        # stubbed or a real driver would dial a real database.
+        with (
+            patch('graphiti_core.driver.falkordb_driver.FalkorDriver'),
+            patch('graphiti_mcp_server.FalkorDriver'),
+            patch('graphiti_mcp_server.Graphiti') as graphiti_cls,
+        ):
+            graphiti_cls.return_value = AsyncMock()
+            await service.initialize()
+
+        built = service._cached_cross_encoder_client
+        assert built is not None, 'CrossEncoderFactory produced nothing to pass on'
+        _assert_bounded(built.client.timeout, DEFAULT_REQUEST_TIMEOUT_SECONDS)
+
+        passed = [call.kwargs.get('cross_encoder') for call in graphiti_cls.call_args_list]
+        assert len(passed) == 2, (
+            f'expected the main client and the ontology client, saw {len(passed)} '
+            'Graphiti constructions'
+        )
+        assert all(value is built for value in passed), (
+            f'Graphiti was handed {passed!r}, not the bounded factory instance '
+            f'{built!r} — graphiti_core substitutes its own unbounded '
+            'OpenAIRerankerClient() for anything falsy here (BUG-96).'
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_ontology_client_reads_the_cache_after_it_is_populated(self, monkeypatch):
+        """The ordering property on its own.
+
+        The ontology call site reads `self._cached_cross_encoder_client` rather
+        than taking an argument, so it is correct only while the assignment in
+        `initialize()` stays ahead of it. Moving either one would leave the
+        ontology graph on the unbounded default, silently.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from graphiti_mcp_server import GraphitiService
+
+        cfg = GraphitiConfig()
+        cfg.database.provider = 'falkordb'
+        service = GraphitiService(cfg)
+
+        sentinel = MagicMock(name='bounded-reranker')
+        service._cached_cross_encoder_client = sentinel
+
+        with (
+            patch('graphiti_mcp_server.FalkorDriver'),
+            patch('graphiti_mcp_server.Graphiti') as graphiti_cls,
+        ):
+            graphiti_cls.return_value = AsyncMock()
+            await service._connect_ontology_client(
+                {'host': 'h', 'port': 6379, 'password': 'p'}, MagicMock()
+            )
+
+        assert graphiti_cls.call_args.kwargs.get('cross_encoder') is sentinel
