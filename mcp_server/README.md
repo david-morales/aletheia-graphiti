@@ -198,11 +198,14 @@ Six shipped provider branches are **not yet bounded** and still run on whatever
 their own SDK defaults to: `bedrock`, `gemini` and `groq` on the LLM side, and
 `gemini`, `voyage` and `bedrock` on the embedder side. These are live paths, not
 dead code — the Docker image installs the providers extra — so a dead socket on
-one of them can still hang the way described below. They are unbounded because
-none of them exposes a timeout seam this server can reach: `GroqClient` builds its
+one of them can still hang the way described below. For groq, voyage and bedrock
+there is no timeout seam this server can reach: `GroqClient` builds its
 `AsyncGroq` internally with no `client=` parameter, and the Bedrock LLM and
 embedder build `ChatBedrockConverse` / `BedrockEmbeddings` internally, where the
-knob is a botocore `Config`. Closing them requires a change in `graphiti_core`.
+knob is a botocore `Config` — closing those requires a change in `graphiti_core`.
+The gemini pair DOES expose the same `client=` seam this fix uses elsewhere; it
+is simply not plumbed yet (the SDK is not installed in the test environment, so
+the wiring would ship unexecuted).
 
 This is not a timeout where there was none. The `openai` SDK supplies its own
 `Timeout(connect=5.0, read=600, write=600, pool=600)` to any client built without

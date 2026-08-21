@@ -388,6 +388,10 @@ class TestTheRerankerReachesTheGraphitiClients:
         from graphiti_mcp_server import GraphitiService
 
         monkeypatch.setenv('OPENAI_API_KEY', 'dummy')
+        # The assertion below reads the DEFAULT bound; an operator's exported
+        # override (the exact vars the README documents) must not reach it.
+        monkeypatch.delenv('LLM__REQUEST_TIMEOUT_SECONDS', raising=False)
+        monkeypatch.delenv('EMBEDDER__REQUEST_TIMEOUT_SECONDS', raising=False)
 
         cfg = GraphitiConfig()
         cfg.database.provider = 'falkordb'
