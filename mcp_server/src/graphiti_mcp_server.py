@@ -1087,10 +1087,13 @@ async def explore_entity(
     edge_types: list[str] | None = None,
     limit: int = 20,
 ) -> ExploreResult:
-    """Explore everything connected to a specific entity in the knowledge graph.
+    """Expand the neighborhood around one entity in the knowledge graph.
 
     Resolves a node by name or UUID, then expands outward via graph traversal.
-    Results are ranked by proximity to the center node.
+    Results are ranked by proximity to the center node and cut at `limit`: a
+    sample of what surrounds that entity, not an exhaustive traversal, and it
+    aggregates nothing over what it returns. Counts, rankings and superlatives
+    belong to graph_query.
 
     Args:
         node_name: Find the node by name (performs a quick search). Provide this or node_uuid.
@@ -2584,9 +2587,11 @@ async def graph_query(query: str) -> CypherResultResponse:
     """Execute a read-only Cypher query against the knowledge graph.
 
     The aggregation surface: counts, rankings and superlatives are evaluated over
-    EVERY matching row in the whole graph rather than over a retrieved sample, so
-    a count is exact and an ORDER BY ... LIMIT n is the real top n. search and
-    explore_entity return ranked samples and can answer none of these.
+    EVERY matching row in the whole graph rather than over a retrieved sample —
+    unless your own query limits its input first, since a LIMIT before the
+    aggregation truncates what it sees. Written without one, a count is exact and
+    an ORDER BY ... LIMIT n is the real top n. search and explore_entity return
+    ranked samples and can answer none of these.
 
     The query is validated and sanitized before execution.
     Write operations are blocked. LIMIT 200 is auto-injected if missing;

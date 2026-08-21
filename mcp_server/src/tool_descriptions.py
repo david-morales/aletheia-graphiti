@@ -118,9 +118,11 @@ def _key_tools_lines(flavour: Flavour | None = None) -> list[str]:
         '',
         '7. graph_query -- Read-only Cypher for counts, aggregations and path queries.',
         '   THE surface for counts, rankings and superlatives: aggregation runs over',
-        '   EVERY matching row in the whole graph, not over a retrieved sample, so a',
-        '   count is exact and an ORDER BY ... LIMIT n is the real top n. search and',
-        '   explore_entity return ranked samples and can answer none of these.',
+        '   EVERY matching row in the whole graph, not over a retrieved sample --',
+        '   unless your own query limits its input first, since a LIMIT before the',
+        '   aggregation truncates what it sees. Written without one, a count is exact',
+        '   and an ORDER BY ... LIMIT n is the real top n. search and explore_entity',
+        '   return ranked samples and can answer none of these.',
         '   Writes are rejected; 200 rows are auto-limited (the cap bounds the rows',
         '   RETURNED, not the rows aggregated over).',
         '',
@@ -388,6 +390,10 @@ def build_search_description(
         'same query returns the same sample rather than the next page: an answer '
         'this tool cannot reach in one call it cannot reach in ten.',
         '',
+        'Note that intent="exhaustive" only widens the sample (limit 50). A wider '
+        'sample is still a sample -- it is not an exhaustive answer, and graph_query '
+        'is what gives you one.',
+        '',
         'Use when:',
         '- User asks a question or wants to find entities, facts, or relationships',
         '- User wants to filter by entity type, edge type, or date',
@@ -438,8 +444,12 @@ def build_search_description(
     if profile.entity_types:
         first_type = next(iter(sorted(profile.entity_types.values(), key=lambda x: -x.count)))
         parts.append(f'\nExample:')
-        parts.append(f'  User: "Find all {first_type.label} entities"')
-        parts.append(f'  Call: search(query="{first_type.label}", entity_types=["{first_type.label}"])')
+        parts.append(
+            f'  User: "Which {first_type.label} entities are most relevant to <topic>?"'
+        )
+        parts.append(
+            f'  Call: search(query="<topic>", entity_types=["{first_type.label}"])'
+        )
 
     return '\n'.join(parts)
 
@@ -454,7 +464,7 @@ def build_explore_entity_description(profile: DomainProfile) -> str:
         'traversal, and it computes nothing over what it returns.',
         '',
         'Use when:',
-        '- You have a specific entity name or UUID and want to see everything connected to it',
+        '- You have a specific entity name or UUID and want to see what connects to it',
         '- Following up on a search result to get more context about a specific entity',
         '',
         'Do NOT use when:',
@@ -649,9 +659,11 @@ def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | No
         'THE AGGREGATION SURFACE. Cypher is the only tool here that computes over '
         'the graph rather than retrieving from it: counts, rankings and superlatives '
         'are evaluated against EVERY matching row in the whole graph, not against a '
-        'retrieved sample, so a count is exact and an ORDER BY ... LIMIT n is the '
-        'real top n. search and explore_entity return relevance-ranked samples and '
-        'can answer none of these, however often they are called.',
+        'retrieved sample -- unless your own query limits its input first, since a '
+        'LIMIT placed before the aggregation truncates what it sees. Written without '
+        'one, a count is exact and an ORDER BY ... LIMIT n is the real top n. search '
+        'and explore_entity return relevance-ranked samples and can answer none of '
+        'these, however often they are called.',
         '',
         'Use when:',
         '- You need counts, aggregations, comparisons, or gap detection',
