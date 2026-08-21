@@ -17,6 +17,7 @@ import pytest
 
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 from flavours.age import AgeFlavour
+from flavours.falkordb import FalkorDbFlavour
 from tests.retired_tool_names import RETIRED_TOOL_NAMES
 from tool_annotations import TOOL_ANNOTATIONS
 from tool_descriptions import build_degraded_instructions, build_instructions
@@ -38,16 +39,32 @@ def _profile() -> DomainProfile:
 
 
 @pytest.fixture(
-    params=['healthy', 'healthy-empty', 'degraded'],
+    params=[
+        (state, flavour)
+        for state in ('healthy', 'healthy-empty', 'degraded')
+        for flavour in ('age', 'falkordb')
+    ],
+    ids=lambda p: f'{p[0]}-{p[1]}',
 )
 def instructions(request) -> str:
-    """Every state in which a client can read the announcement."""
-    if request.param == 'healthy':
-        return build_instructions(_profile(), AgeFlavour())
-    if request.param == 'healthy-empty':
-        return build_instructions(DomainProfile(group_id='empty'), AgeFlavour())
+    """Every state in which a client can read the announcement, on both backends.
+
+    BOTH FLAVOURS, and that is not decoration. `_search_catalog_entry` has two
+    branches — the episode leg is announced only where the backend can serve it —
+    so the catalog's `search` entry exists twice in the source. This fixture used
+    to build every arm with `AgeFlavour()` alone, which exercised the branch that
+    is NOT the default deployment: deleting the whole announcement from the
+    FalkorDB branch left 241 tests green. A duplicated block needs a guard per
+    copy or only one copy is guarded.
+    """
+    state, flavour_name = request.param
+    flavour = AgeFlavour() if flavour_name == 'age' else FalkorDbFlavour()
+    if state == 'healthy':
+        return build_instructions(_profile(), flavour)
+    if state == 'healthy-empty':
+        return build_instructions(DomainProfile(group_id='empty'), flavour)
     return build_degraded_instructions(
-        group_id='catalog_graph', flavour=AgeFlavour(), reason='boom', marker='!! DEGRADED !!'
+        group_id='catalog_graph', flavour=flavour, reason='boom', marker='!! DEGRADED !!'
     )
 
 
@@ -201,59 +218,73 @@ def test_the_pointer_does_not_copy_the_catalogues_it_points_at(state):
 #
 # The catalog is profile-independent and feeds BOTH `build_instructions` and
 # `build_degraded_instructions`, so these guards run over every arm of the
-# `instructions` fixture: one claim, announced identically healthy or degraded.
+# `instructions` fixture: one claim, announced identically on all six.
+#
+# EACH SENTENCE IS PINNED BY A TOKEN ONLY IT CONTAINS. The first cut of these
+# guards asserted 'exhaust' against the explore_entity entry — and deleting
+# "not exhaustive, and it aggregates nothing" left it green, because the
+# routing line's "computed exhaustively" supplied the substring. A pin another
+# sentence can satisfy guards nothing.
 
-AGGREGATION_WORDS = ('count', 'ranking', 'superlative')
+ROUTING_SENTENCE = (
+    'Use graph_query instead for counts, rankings, superlatives and anything '
+    'computed exhaustively over the whole graph.'
+)
+
+
+def _squash(text: str) -> str:
+    """Collapse whitespace runs, so a pin survives the catalog's line wrapping."""
+    return ' '.join(text.split())
 
 
 def _numbered_entry(instructions: str, start: str, end: str) -> str:
-    """A numbered catalog item, scoped between its own marker and the next one.
+    """A numbered catalog item, squashed, scoped between its marker and the next.
 
     Deliberately not `_catalog_entry`: that one finds the FIRST line containing
     the name, and these entries now cross-reference each other by name.
     """
     assert start in instructions, f'the catalog has no {start!r} entry'
     assert end in instructions, f'the catalog has no {end!r} entry'
-    return instructions.split(start, 1)[1].split(end, 1)[0]
+    return _squash(instructions.split(start, 1)[1].split(end, 1)[0])
 
 
 def test_the_search_entry_announces_that_it_returns_a_sample(instructions):
-    entry = _numbered_entry(instructions, '1. search', '2. explore_entity').lower()
-    assert 'sample' in entry, 'the catalog never says search returns a sample'
-    assert 'rank' in entry, 'the catalog never says the sample is ranked'
-
-
-@pytest.mark.parametrize('word', AGGREGATION_WORDS)
-def test_the_search_entry_routes_aggregation_to_graph_query(instructions, word):
     entry = _numbered_entry(instructions, '1. search', '2. explore_entity')
-    assert 'graph_query' in entry, (
-        'the catalog never tells a search caller where a count belongs'
-    )
-    assert word in entry.lower(), f'the search entry never names {word!r}'
+    assert 'RANKED TOP-K SAMPLE, not an enumeration' in entry
+    assert 'there is no offset' in entry
+    assert 'however many times you call it' in entry
+
+
+def test_the_search_entry_routes_aggregation_to_graph_query(instructions):
+    """The routing line is a SEPARATE claim from the sample line above: either
+    can be deleted without the other, so each gets its own guard."""
+    entry = _numbered_entry(instructions, '1. search', '2. explore_entity')
+    assert ROUTING_SENTENCE in entry
 
 
 def test_the_explore_entity_entry_announces_it_is_non_exhaustive(instructions):
     entry = _numbered_entry(instructions, '2. explore_entity', '3. search_ontology')
-    assert 'exhaust' in entry.lower()
+    assert 'ranked by proximity and cut at `limit`' in entry
+    assert 'not exhaustive, and it aggregates nothing' in entry
 
 
-@pytest.mark.parametrize('word', AGGREGATION_WORDS)
-def test_the_explore_entity_entry_routes_aggregation_to_graph_query(instructions, word):
+def test_the_explore_entity_entry_routes_aggregation_to_graph_query(instructions):
     entry = _numbered_entry(instructions, '2. explore_entity', '3. search_ontology')
-    assert 'graph_query' in entry
-    assert word in entry.lower(), f'the explore_entity entry never names {word!r}'
+    assert ROUTING_SENTENCE in entry
 
 
-@pytest.mark.parametrize('word', AGGREGATION_WORDS + ('aggregation',))
-def test_the_graph_query_entry_claims_the_aggregation_surface(instructions, word):
+def test_the_graph_query_entry_claims_the_aggregation_surface(instructions):
     """Entry 7 already claimed counts and aggregations. This EXTENDS it to the
     two shapes the measured failure actually needed — a ranking and a
     superlative — and to the exhaustiveness that distinguishes it from search.
     """
     entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data')
-    assert word in entry.lower(), f'the graph_query entry never claims {word!r}'
+    assert 'THE surface for counts, rankings and superlatives' in entry
+    assert 'EVERY matching row in the whole graph, not over a retrieved sample' in entry
+    assert 'unless your own query limits its input first' in entry
 
 
-def test_the_graph_query_entry_says_it_is_the_exhaustive_surface(instructions):
-    entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data').lower()
-    assert 'whole graph' in entry
+def test_the_graph_query_entry_scopes_the_row_cap(instructions):
+    """Read naively, the 200-row cap cancels the claim above it."""
+    entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data')
+    assert 'the cap bounds the rows RETURNED, not the rows aggregated over' in entry

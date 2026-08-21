@@ -135,108 +135,225 @@ class TestFlavourAwareDescriptions:
         assert 'Cypher dialect:' not in instr
 
 
-class TestTheRetrievalContractIsAnnounced:
-    """Step 3: the served contract must say what `search` CANNOT do.
+# ---------------------------------------------------------------------------
+# Step 3: the served contract must say what `search` CANNOT do
+# ---------------------------------------------------------------------------
+#
+# Measured on a graph-wide ranking question: the agent issued `search` seven
+# times (server default limit 10) and `graph_query` zero times, missing the
+# ranking fact on 8 of 8 runs across every arm. Nothing in the served contract
+# said that `search` returns a relevance-ranked top-k SAMPLE, and nothing named
+# `graph_query` as the surface a count, a ranking or a superlative belongs to —
+# so an agent reading the announcement had no way to learn either. Repeating a
+# sampling call is the rational move when the contract never says it is a sample.
 
-    Measured on a graph-wide ranking question: the agent issued `search` seven
-    times (server default limit 10) and `graph_query` zero times, missing the
-    ranking fact on 8 of 8 runs across every arm. Nothing in the served contract
-    said that `search` returns a relevance-ranked top-k SAMPLE, and nothing named
-    `graph_query` as the surface a count, a ranking or a superlative belongs to —
-    so an agent reading the announcement had no way to learn either. Repeating a
-    sampling call is the rational move when the contract never says it is a
-    sample.
+FLAVOUR_ARMS = ['none', 'falkordb', 'age']
 
-    These guards pin the CLAIMS, not the prose: each assertion names a word the
-    served text has to carry for the routing to be learnable from the wire alone.
+
+def _flavour(name):
+    if name == 'falkordb':
+        from flavours.falkordb import FalkorDbFlavour
+        return FalkorDbFlavour()
+    if name == 'age':
+        from flavours.age import AgeFlavour
+        return AgeFlavour()
+    return None
+
+
+def _sentence(text: str, token: str) -> str:
+    """The ONE line of `text` containing `token`, or an assertion failure.
+
+    Every guard below locates the sentence it is about by a token only that
+    sentence contains, then asserts the rest of the claim INSIDE that line.
+
+    This indirection is the whole point, and it was learned from a mutation.
+    The first cut of these guards asserted 'sample' / 'rank' / 'exhaust' against
+    the whole description — and deleting the entire lead paragraph left them
+    green, because every one of those words was also supplied by the Do-NOT-use
+    bullet. A pin that a DIFFERENT sentence can satisfy does not guard the
+    sentence it names. Scoping to one line makes each claim independently
+    deletable-and-caught.
     """
+    lines = [ln for ln in text.split('\n') if token in ln]
+    assert len(lines) == 1, (
+        f'expected exactly one line carrying {token!r}, found {len(lines)} — the '
+        f'token no longer identifies a single sentence, so the pin below is not '
+        f'guarding what it claims to'
+    )
+    return lines[0]
 
-    AGGREGATION_WORDS = ('count', 'ranking', 'superlative')
 
-    def _flavour(self, name):
-        if name == 'falkordb':
-            from flavours.falkordb import FalkorDbFlavour
-            return FalkorDbFlavour()
-        if name == 'age':
-            from flavours.age import AgeFlavour
-            return AgeFlavour()
-        return None
+class TestTheSearchDescriptionAnnouncesItIsASample:
+    """The lead paragraph and the routing bullet are pinned SEPARATELY: they are
+    two independent claims and either can be deleted without the other."""
 
-    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
-    def test_search_announces_that_its_results_are_a_ranked_sample(self, flavour_name):
-        desc = build_search_description(
-            make_test_profile(), self._flavour(flavour_name)
-        ).lower()
-        assert 'sample' in desc, 'search never says its result set is a sample'
-        assert 'rank' in desc, 'search never says the sample is relevance-ranked'
-        assert 'exhaust' in desc, (
-            'search never says it is NOT exhaustive — the claim the measured failure '
-            'needed'
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    @pytest.mark.parametrize(
+        'claim',
+        [
+            'relevance-ranked SAMPLE',
+            'never an enumeration',
+            'no offset or cursor',
+            'returns the same sample rather than the next page',
+        ],
+    )
+    def test_the_lead_paragraph_makes_its_own_claims(self, flavour_name, claim):
+        desc = build_search_description(make_test_profile(), _flavour(flavour_name))
+        lead = _sentence(desc, 'RANKED TOP-K RETRIEVAL')
+        assert claim in lead, f'the lead paragraph no longer claims {claim!r}'
+
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    @pytest.mark.parametrize('claim', ['count', 'ranking', 'superlative', 'graph_query'])
+    def test_the_routing_bullet_makes_its_own_claims(self, flavour_name, claim):
+        desc = build_search_description(make_test_profile(), _flavour(flavour_name))
+        bullet = _sentence(desc, 'a ranked sample cannot answer these')
+        assert claim in bullet, f'the routing bullet no longer names {claim!r}'
+
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    def test_the_exhaustive_intent_is_disambiguated(self, flavour_name):
+        """`intent="exhaustive"` is served in the inputSchema enum and collides
+        head-on with "never an enumeration". Unresolved, the contract contains
+        its own counter-argument."""
+        desc = build_search_description(make_test_profile(), _flavour(flavour_name))
+        line = _sentence(desc, 'intent="exhaustive"')
+        assert 'not an exhaustive answer' in line
+        assert 'graph_query' in line
+
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    def test_the_announced_widened_limit_comes_from_the_code(self, flavour_name):
+        """S4: an announcement carrying a hand-typed number drifts the first time
+        the constant moves. `INTENT_STRATEGIES` lives in the server module, which
+        imports THIS one — so it cannot be imported here without inverting the
+        dependency. The guard does what the import would have: read the live
+        value and require the served text to agree with it."""
+        from graphiti_mcp_server import INTENT_STRATEGIES
+
+        limit = INTENT_STRATEGIES['exhaustive']['limit']
+        line = _sentence(
+            build_search_description(make_test_profile(), _flavour(flavour_name)),
+            'intent="exhaustive"',
+        )
+        assert str(limit) in line, (
+            f'the description announces a widened limit that is not {limit}, the '
+            f'value INTENT_STRATEGIES actually applies'
         )
 
-    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
-    @pytest.mark.parametrize('word', AGGREGATION_WORDS)
-    def test_search_routes_aggregation_questions_to_graph_query(
-        self, flavour_name, word
-    ):
-        desc = build_search_description(make_test_profile(), self._flavour(flavour_name))
-        assert 'graph_query' in desc, (
-            'search never names the tool an aggregation question belongs to'
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    def test_the_closing_example_is_not_an_enumeration_request(self, flavour_name):
+        """The example sits in the highest-recency position of the string. One
+        reading `Find all X entities` teaches the exact call the rest of the
+        description spends four paragraphs arguing against."""
+        desc = build_search_description(make_test_profile(), _flavour(flavour_name))
+        assert 'Find all' not in desc, (
+            'the served example still demonstrates an enumeration request'
         )
-        assert word in desc.lower(), f'search never names {word!r} as out of its range'
+        assert 'all ' not in _sentence(desc, 'User:')
 
-    def test_explore_entity_announces_that_it_is_non_exhaustive(self):
-        desc = build_explore_entity_description(make_test_profile()).lower()
-        assert 'sample' in desc
-        assert 'exhaust' in desc
 
-    @pytest.mark.parametrize('word', AGGREGATION_WORDS)
-    def test_explore_entity_routes_aggregation_questions_to_graph_query(self, word):
+class TestTheExploreEntityDescriptionAnnouncesItIsASample:
+    @pytest.mark.parametrize(
+        'claim',
+        ['ranked by proximity', 'not an exhaustive traversal', 'computes nothing'],
+    )
+    def test_the_lead_paragraph_makes_its_own_claims(self, claim):
         desc = build_explore_entity_description(make_test_profile())
-        assert 'graph_query' in desc
-        assert word in desc.lower()
+        lead = _sentence(desc, 'NEIGHBORHOOD EXPANSION')
+        assert claim in lead, f'the lead paragraph no longer claims {claim!r}'
 
-    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
-    @pytest.mark.parametrize('word', AGGREGATION_WORDS + ('aggregat',))
-    def test_graph_query_claims_the_aggregation_surface(self, flavour_name, word):
+    @pytest.mark.parametrize('claim', ['count', 'ranking', 'superlative'])
+    def test_the_routing_bullet_makes_its_own_claims(self, claim):
+        desc = build_explore_entity_description(make_test_profile())
+        bullet = _sentence(desc, 'use graph_query instead')
+        assert claim in bullet, f'the routing bullet no longer names {claim!r}'
+
+    def test_it_promises_no_exhaustive_neighborhood(self):
+        """"everything connected to it" is the same over-promise as "Find all"."""
+        assert 'everything' not in build_explore_entity_description(make_test_profile())
+
+
+class TestTheGraphQueryDescriptionClaimsTheAggregationSurface:
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    @pytest.mark.parametrize(
+        'claim',
+        [
+            'counts, rankings and superlatives',
+            'whole graph',
+            'not against a retrieved sample',
+            'unless your own query limits its input first',
+        ],
+    )
+    def test_the_lead_paragraph_makes_its_own_claims(self, flavour_name, claim):
         from tool_descriptions import build_graph_query_description
 
-        desc = build_graph_query_description(
-            make_test_profile(), self._flavour(flavour_name)
-        ).lower()
-        assert word in desc, f'graph_query never claims {word!r}'
+        desc = build_graph_query_description(make_test_profile(), _flavour(flavour_name))
+        lead = _sentence(desc, 'THE AGGREGATION SURFACE')
+        assert claim in lead, f'the lead paragraph no longer claims {claim!r}'
 
-    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
-    def test_graph_query_says_it_computes_over_the_whole_graph(self, flavour_name):
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    def test_the_ranking_use_case_has_its_own_bullet(self, flavour_name):
         from tool_descriptions import build_graph_query_description
 
-        desc = build_graph_query_description(
-            make_test_profile(), self._flavour(flavour_name)
-        ).lower()
-        assert 'whole graph' in desc, (
-            'graph_query never says its answer covers the whole graph rather than a '
-            'retrieved sample'
-        )
+        desc = build_graph_query_description(make_test_profile(), _flavour(flavour_name))
+        assert 'ranking or a superlative' in _sentence(desc, 'most/least/largest')
+
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    def test_the_exhaustive_use_case_has_its_own_bullet(self, flavour_name):
+        from tool_descriptions import build_graph_query_description
+
+        desc = build_graph_query_description(make_test_profile(), _flavour(flavour_name))
+        assert 'exhaustive answer' in _sentence(desc, 'rather than the best few matches')
+
+    @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)
+    def test_the_row_cap_does_not_read_as_a_cap_on_the_aggregation(self, flavour_name):
+        """Read naively, "200 rows are auto-limited" cancels the claim above it."""
+        from tool_descriptions import build_graph_query_description
+
+        desc = build_graph_query_description(make_test_profile(), _flavour(flavour_name))
+        line = _sentence(desc, 'auto-limited to 200 rows')
+        assert 'RETURNED' in line
+        assert 'aggregated over' in line
 
 
 class TestTheStaticDocstringsStayCoherentWithTheServedText:
-    """The dynamic descriptions override these at registration — but the
-    docstring IS the served description whenever registration falls back to it,
-    and a docstring that contradicts the dynamic text is a second contract.
+    """The dynamic descriptions override these at registration — but the docstring
+    IS the served description on the DEGRADED path, where `_register_degraded_tools`
+    re-adds every dynamic tool with no description at all. A docstring that makes a
+    weaker promise than the dynamic text is a second, quieter contract, served
+    exactly when the agent is least equipped to notice.
     """
 
     def test_the_search_docstring_carries_the_sample_claim(self):
         from graphiti_mcp_server import search
 
-        doc = (search.__doc__ or '').lower()
-        assert 'sample' in doc
-        assert 'graph_query' in doc
-        for word in ('count', 'ranking', 'superlative'):
+        doc = (search.__doc__ or '')
+        assert 'SAMPLE' in doc and 'never an enumeration' in doc
+        assert 'no offset' in doc
+        for word in ('Counts', 'rankings', 'superlatives'):
             assert word in doc, f'the search docstring never names {word!r}'
+        assert 'graph_query' in doc
+
+    def test_the_explore_entity_docstring_carries_the_sample_claim(self):
+        from graphiti_mcp_server import explore_entity
+
+        doc = (explore_entity.__doc__ or '')
+        assert 'not an exhaustive traversal' in doc
+        assert 'aggregates nothing' in doc
+        for word in ('Counts', 'rankings', 'superlatives'):
+            assert word in doc, f'the explore_entity docstring never names {word!r}'
+        assert 'graph_query' in doc
+
+    def test_the_explore_entity_docstring_promises_no_exhaustive_neighborhood(self):
+        from graphiti_mcp_server import explore_entity
+
+        assert 'everything' not in (explore_entity.__doc__ or ''), (
+            'the docstring still promises "everything connected" — the exact claim '
+            'the description now denies'
+        )
 
     def test_the_graph_query_docstring_claims_the_aggregation_surface(self):
         from graphiti_mcp_server import graph_query
 
-        doc = (graph_query.__doc__ or '').lower()
-        for word in ('count', 'ranking', 'superlative', 'aggregat'):
+        doc = (graph_query.__doc__ or '')
+        for word in ('aggregation', 'counts', 'rankings', 'superlatives'):
             assert word in doc, f'the graph_query docstring never claims {word!r}'
+        assert 'unless your own query limits its input first' in doc
