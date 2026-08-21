@@ -233,9 +233,10 @@ class TestTheSearchDescriptionAnnouncesItIsASample:
             build_search_description(make_test_profile(), _flavour(flavour_name)),
             'intent="exhaustive"',
         )
-        assert str(limit) in line, (
+        assert f'(limit {limit})' in line, (
             f'the description announces a widened limit that is not {limit}, the '
-            f'value INTENT_STRATEGIES actually applies'
+            f'value INTENT_STRATEGIES actually applies (delimited pin: a bare '
+            f'substring match let 50 -> 5 drift escape)'
         )
 
     @pytest.mark.parametrize('flavour_name', FLAVOUR_ARMS)

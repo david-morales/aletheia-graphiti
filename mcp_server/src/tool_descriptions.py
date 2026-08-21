@@ -390,7 +390,7 @@ def build_search_description(
         'same query returns the same sample rather than the next page: an answer '
         'this tool cannot reach in one call it cannot reach in ten.',
         '',
-        'Note that intent="exhaustive" only widens the sample (limit 50). A wider '
+        'Note that intent="exhaustive" only widens the default sample (limit 50). A wider '
         'sample is still a sample -- it is not an exhaustive answer, and graph_query '
         'is what gives you one.',
         '',
