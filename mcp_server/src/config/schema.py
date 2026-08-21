@@ -131,6 +131,33 @@ class ServerConfig(BaseModel):
     )
 
 
+# BUG-96 layer 1 — the bound on outbound provider HTTP calls.
+#
+# Applied on the openai, azure_openai and anthropic paths (LLM, embedder,
+# reranker). NOT applied on bedrock/gemini/groq (LLM) or gemini/voyage/bedrock
+# (embedder): those construct their transport internally with no seam this
+# server can reach, so they keep their own SDK default. See the per-field
+# descriptions below, and `services/factories.py` for the seam each path uses.
+#
+# Nothing here was literally unbounded: the `openai` SDK supplies
+# `Timeout(connect=5.0, read=600, write=600, pool=600)` to any client built
+# without one. What was missing is a bound the connector CHOSE. 600 s is twice
+# the consumer's own `ALETHEIA_MCP_CALL_TIMEOUT_SECONDS` (300 s), so on a dead
+# socket the consumer always gave up first while the connector went on holding
+# the socket, the coroutine and its semaphore slot — which is the shape the
+# 2026-08-17 network flip left the process in: zero CPU, sockets in CLOSE_WAIT,
+# no answer ever.
+#
+# 300 s matches the consumer so the connector fails first and fails visibly.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 300.0
+
+# The connect leg keeps the SDK's own 5 s. Expressing the bound as a single
+# float would set connect to 300 s as well — strictly worse for the failure
+# being fixed, since an unreachable edge would then take five minutes to report
+# instead of five seconds. Not a separate knob: one dial is the point.
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
+
+
 class OpenAIProviderConfig(BaseModel):
     """OpenAI provider configuration."""
 
@@ -214,6 +241,20 @@ class LLMConfig(BaseModel):
         default=None, description='Temperature (optional, defaults to None for reasoning models)'
     )
     max_tokens: int = Field(default=4096, description='Max tokens')
+    request_timeout_seconds: float = Field(
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        gt=0,
+        description=(
+            'Read/write/pool timeout in seconds for outbound LLM (and reranker) HTTP '
+            'calls, on the openai, azure_openai and anthropic provider paths only. '
+            'Bounds a dead socket so it raises instead of hanging (BUG-96). The '
+            'bedrock, gemini and groq LLM paths are NOT bounded — they expose no '
+            'timeout seam this server can reach, so they keep their own SDK default '
+            'and this setting is silently inert for them. Override with '
+            'LLM__REQUEST_TIMEOUT_SECONDS or `llm:` in the config file. Must be '
+            'positive — 0 would disable the deadline, which is the bug.'
+        ),
+    )
     providers: LLMProvidersConfig = Field(default_factory=LLMProvidersConfig)
 
 
@@ -233,6 +274,20 @@ class EmbedderConfig(BaseModel):
     provider: str = Field(default='openai', description='Embedder provider')
     model: str = Field(default='text-embedding-3-small', description='Model name')
     dimensions: int = Field(default=1024, description='Embedding dimensions')
+    request_timeout_seconds: float = Field(
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        gt=0,
+        description=(
+            'Read/write/pool timeout in seconds for outbound embedding HTTP calls, '
+            'on the openai and azure_openai provider paths only. Bounds a dead socket '
+            'so it raises instead of hanging (BUG-96). The gemini, voyage and bedrock '
+            'embedder paths are NOT bounded — they expose no timeout seam this server '
+            'can reach, so they keep their own SDK default and this setting is '
+            'silently inert for them. Override with EMBEDDER__REQUEST_TIMEOUT_SECONDS '
+            'or `embedder:` in the config file. Must be positive — 0 would disable '
+            'the deadline, which is the bug.'
+        ),
+    )
     providers: EmbedderProvidersConfig = Field(default_factory=EmbedderProvidersConfig)
 
 
