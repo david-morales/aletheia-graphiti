@@ -903,6 +903,12 @@ async def search(
 ) -> SearchResult:
     """Search the knowledge graph using a semantic intent or explicit parameters.
 
+    Ranked top-k retrieval: results are the best-scoring matches up to `limit`, a
+    relevance-ranked SAMPLE and never an enumeration. There is no offset, so
+    repeating a query returns the same sample rather than the next page. Counts,
+    rankings and superlatives cannot be read off a sample — those belong to
+    graph_query.
+
     Prefer passing `intent` to let the server choose the best strategy.
     Pass `search_mode`/`reranker` directly only when you need explicit control.
 
@@ -1081,10 +1087,13 @@ async def explore_entity(
     edge_types: list[str] | None = None,
     limit: int = 20,
 ) -> ExploreResult:
-    """Explore everything connected to a specific entity in the knowledge graph.
+    """Expand the neighborhood around one entity in the knowledge graph.
 
     Resolves a node by name or UUID, then expands outward via graph traversal.
-    Results are ranked by proximity to the center node.
+    Results are ranked by proximity to the center node and cut at `limit`: a
+    sample of what surrounds that entity, not an exhaustive traversal, and it
+    aggregates nothing over what it returns. Counts, rankings and superlatives
+    belong to graph_query.
 
     Args:
         node_name: Find the node by name (performs a quick search). Provide this or node_uuid.
@@ -2576,6 +2585,13 @@ async def get_ontology_documentation() -> OntologyDocumentationResponse:
 
 async def graph_query(query: str) -> CypherResultResponse:
     """Execute a read-only Cypher query against the knowledge graph.
+
+    The aggregation surface: counts, rankings and superlatives are evaluated over
+    EVERY matching row in the whole graph rather than over a retrieved sample —
+    unless your own query limits its input first, since a LIMIT before the
+    aggregation truncates what it sees. Written without one, a count is exact and
+    an ORDER BY ... LIMIT n is the real top n. search and explore_entity return
+    ranked samples and can answer none of these.
 
     The query is validated and sanitized before execution.
     Write operations are blocked. LIMIT 200 is auto-injected if missing;
