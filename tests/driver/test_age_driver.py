@@ -15,7 +15,12 @@ AGE_DSN = os.environ.get('AGE_TEST_DSN', 'postgresql://age:age@localhost:5433/ag
 @pytest.mark.asyncio
 async def test_extensions_available():
     """Both extensions load and AGE's agtype is usable."""
-    conn = await asyncpg.connect(AGE_DSN)
+    from tests.driver.conftest import _UNREACHABLE_ERRORS
+
+    try:
+        conn = await asyncpg.connect(AGE_DSN)
+    except _UNREACHABLE_ERRORS as exc:  # store down => skip, like the fixtures
+        pytest.skip(f'AGE store not reachable at {AGE_DSN}: {exc}')
     try:
         exts = {
             r['extname']
