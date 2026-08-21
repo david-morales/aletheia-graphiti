@@ -35,6 +35,12 @@ def _search_catalog_entry(flavour: Flavour | None) -> list[str]:
             '1. search -- Find entities, facts, or communities by natural language query.',
             '   Use when: the user asks a question or wants to find something.',
             '   Use explore_entity instead when: you already know which entity to examine.',
+            '   RANKED TOP-K SAMPLE, not an enumeration: it returns the best matches up',
+            '   to `limit`, and there is no offset -- calling it again with the same',
+            '   query returns the same sample. It cannot produce a count, a ranking or',
+            '   a superlative, however many times you call it.',
+            '   Use graph_query instead for counts, rankings, superlatives and anything',
+            '   computed exhaustively over the whole graph.',
             '',
         ]
     return [
@@ -42,6 +48,12 @@ def _search_catalog_entry(flavour: Flavour | None) -> list[str]:
         '   natural language query.',
         '   Use when: the user asks a question or wants to find something.',
         '   Use explore_entity instead when: you already know which entity to examine.',
+        '   RANKED TOP-K SAMPLE, not an enumeration: it returns the best matches up',
+        '   to `limit`, and there is no offset -- calling it again with the same',
+        '   query returns the same sample. It cannot produce a count, a ranking or',
+        '   a superlative, however many times you call it.',
+        '   Use graph_query instead for counts, rankings, superlatives and anything',
+        '   computed exhaustively over the whole graph.',
         '   ALSO SEARCHES THE SOURCE TEXT. Alongside nodes and edges the result',
         '   carries `episodes` -- the ingested documents themselves, matched on',
         '   their full text. Extraction lifts only part of a document into',
@@ -81,6 +93,10 @@ def _key_tools_lines(flavour: Flavour | None = None) -> list[str]:
         "2. explore_entity -- Expand a known entity's neighborhood.",
         '   Use when: you have a specific entity name and want its connections.',
         "   Use search instead when: you don't know which entity to start from.",
+        '   A neighborhood expansion around ONE entity, ranked by proximity and cut',
+        '   at `limit`: not exhaustive, and it aggregates nothing.',
+        '   Use graph_query instead for counts, rankings, superlatives and anything',
+        '   computed exhaustively over the whole graph.',
         '',
         '3. search_ontology -- Look up schema definitions in the companion ontology.',
         '   Use when: you need to understand what types or properties are defined.',
@@ -101,7 +117,12 @@ def _key_tools_lines(flavour: Flavour | None = None) -> list[str]:
         '   keys and the backend `dialect_reference`. Call it before writing Cypher.',
         '',
         '7. graph_query -- Read-only Cypher for counts, aggregations and path queries.',
-        '   Writes are rejected; 200 rows are auto-limited.',
+        '   THE surface for counts, rankings and superlatives: aggregation runs over',
+        '   EVERY matching row in the whole graph, not over a retrieved sample, so a',
+        '   count is exact and an ORDER BY ... LIMIT n is the real top n. search and',
+        '   explore_entity return ranked samples and can answer none of these.',
+        '   Writes are rejected; 200 rows are auto-limited (the cap bounds the rows',
+        '   RETURNED, not the rows aggregated over).',
         '',
         '8. profile_data -- Property coverage, sample values, detected languages and',
         '   relationship cardinality. Use when you need to judge data QUALITY before',
@@ -361,6 +382,12 @@ def build_search_description(
     parts = [
         'Search this knowledge graph for entities, facts, and communities.',
         '',
+        'RANKED TOP-K RETRIEVAL. Results are the best-scoring matches up to `limit` '
+        '-- a relevance-ranked SAMPLE of the graph, never an enumeration of '
+        'everything that matches. There is no offset or cursor, so repeating the '
+        'same query returns the same sample rather than the next page: an answer '
+        'this tool cannot reach in one call it cannot reach in ten.',
+        '',
         'Use when:',
         '- User asks a question or wants to find entities, facts, or relationships',
         '- User wants to filter by entity type, edge type, or date',
@@ -368,6 +395,9 @@ def build_search_description(
         'Do NOT use when:',
         '- You already know which entity to examine -- use explore_entity instead',
         '- You need schema or ontology definitions -- use search_ontology instead',
+        '- You need a count, a ranking, a superlative (most/least/largest/first/'
+        'longest) or any total computed exhaustively over the whole graph -- a '
+        'ranked sample cannot answer these. Use graph_query instead.',
         '',
         'Returns: matching nodes (entities with name, summary, labels), '
         'edges (facts linking two entities), and community summaries.',
@@ -419,12 +449,19 @@ def build_explore_entity_description(profile: DomainProfile) -> str:
     parts = [
         "Deep-dive on a specific entity -- shows its connections, facts, and community memberships.",
         '',
+        'NEIGHBORHOOD EXPANSION around ONE entity, ranked by proximity to it and cut '
+        'at `limit`. It is a sample of what surrounds that entity, not an exhaustive '
+        'traversal, and it computes nothing over what it returns.',
+        '',
         'Use when:',
         '- You have a specific entity name or UUID and want to see everything connected to it',
         '- Following up on a search result to get more context about a specific entity',
         '',
         'Do NOT use when:',
         "- You don't know which entity to look at -- use search first",
+        '- You need a count, a ranking, a superlative (most/least/largest/first/'
+        'longest) or any total computed exhaustively over the whole graph -- use '
+        'graph_query instead',
         '',
         'Returns: the center node, connected nodes, relationship edges, and community memberships.',
     ]
@@ -609,8 +646,18 @@ def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | No
     parts = [
         f'Execute a read-only Cypher query against the {profile.group_id} graph.',
         '',
+        'THE AGGREGATION SURFACE. Cypher is the only tool here that computes over '
+        'the graph rather than retrieving from it: counts, rankings and superlatives '
+        'are evaluated against EVERY matching row in the whole graph, not against a '
+        'retrieved sample, so a count is exact and an ORDER BY ... LIMIT n is the '
+        'real top n. search and explore_entity return relevance-ranked samples and '
+        'can answer none of these, however often they are called.',
+        '',
         'Use when:',
         '- You need counts, aggregations, comparisons, or gap detection',
+        '- You need a ranking or a superlative (most/least/largest/first/longest) '
+        'over the whole graph',
+        '- You need an exhaustive answer rather than the best few matches',
         '- You need path queries or pattern matching beyond what search provides',
         '- You want to compute metrics over the graph structure',
         '',
@@ -618,7 +665,8 @@ def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | No
         '- You need semantic similarity search -- use search instead',
         '- You need to discover entities by natural language -- use search instead',
         '',
-        'Guardrails: read-only (no CREATE/DELETE/SET), auto-limited to 200 rows,',
+        'Guardrails: read-only (no CREATE/DELETE/SET), auto-limited to 200 rows '
+        '(the cap bounds the rows RETURNED, not the rows aggregated over),',
         'LLM syntax auto-corrected (smart quotes, code blocks, missing RETURN).',
     ]
 

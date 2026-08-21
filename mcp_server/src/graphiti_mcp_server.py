@@ -903,6 +903,12 @@ async def search(
 ) -> SearchResult:
     """Search the knowledge graph using a semantic intent or explicit parameters.
 
+    Ranked top-k retrieval: results are the best-scoring matches up to `limit`, a
+    relevance-ranked SAMPLE and never an enumeration. There is no offset, so
+    repeating a query returns the same sample rather than the next page. Counts,
+    rankings and superlatives cannot be read off a sample — those belong to
+    graph_query.
+
     Prefer passing `intent` to let the server choose the best strategy.
     Pass `search_mode`/`reranker` directly only when you need explicit control.
 
@@ -2576,6 +2582,11 @@ async def get_ontology_documentation() -> OntologyDocumentationResponse:
 
 async def graph_query(query: str) -> CypherResultResponse:
     """Execute a read-only Cypher query against the knowledge graph.
+
+    The aggregation surface: counts, rankings and superlatives are evaluated over
+    EVERY matching row in the whole graph rather than over a retrieved sample, so
+    a count is exact and an ORDER BY ... LIMIT n is the real top n. search and
+    explore_entity return ranked samples and can answer none of these.
 
     The query is validated and sanitized before execution.
     Write operations are blocked. LIMIT 200 is auto-injected if missing;
