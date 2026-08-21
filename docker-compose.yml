@@ -48,7 +48,8 @@ services:
       - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
 
   falkordb:
-    image: falkordb/falkordb:latest
+    # Pinned rather than `:latest` — see mcp_server/docker/Dockerfile (BUG-101).
+    image: falkordb/falkordb:v4.18.0
     profiles: ["falkordb"]
     ports:
       - "6379:6379"

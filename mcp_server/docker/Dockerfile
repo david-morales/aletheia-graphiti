@@ -2,7 +2,13 @@
 # Combined FalkorDB + Graphiti MCP Server Image
 # This extends the official FalkorDB image to include the MCP server
 
-FROM falkordb/falkordb:latest AS falkordb-base
+# PINNED, not `:latest` (BUG-101). This build broke once with zero repo changes
+# when the upstream base stripped perl and procps' postinst died with it (cured
+# by the `perl-base` line below, a9caaaa). A floating base makes the image a
+# function of the day it was built rather than of the commit that defines it.
+# v4.18.0 is the version this project standardizes on — the same tag its own
+# live-test docstrings tell you to run.
+FROM falkordb/falkordb:v4.18.0 AS falkordb-base
 
 # Install Python and system dependencies
 # Note: Debian Bookworm (FalkorDB base) ships with Python 3.11

@@ -65,22 +65,37 @@ jobs:
         # No `exit 5` tolerance here, deliberately: these tests never self-skip, so
         # an empty collection means the marker stopped selecting them.
         #
-        # The --ignore list is four modules that fail at COLLECTION on `aletheia`
-        # today — stale imports (`is_non_openai_provider`, `EdgeTypeConfig`) and a
-        # `from test_fixtures import ...` that a packaged tests/ directory cannot
-        # resolve — plus test_fixtures.py itself, which collects cleanly with zero
-        # items (it is the helper the other four import, ignored for symmetry).
-        # Marker selection happens after collection, so one broken import anywhere
-        # under tests/ would take this job down with it. None of the five carries
-        # the contract marker, and test_mcp_contract_lint.py asserts that — so this
-        # list cannot become a way to silence a guard.
+        # The --ignore list is two modules that fail at COLLECTION on `aletheia`
+        # today — a `from test_fixtures import ...` that a packaged tests/ directory
+        # cannot resolve — plus test_fixtures.py itself, which collects cleanly with
+        # zero items (it is the helper they import, ignored for symmetry). Marker
+        # selection happens after collection, so one broken import anywhere under
+        # tests/ would take this job down with it. None of the three carries the
+        # contract marker, and test_mcp_contract_lint.py asserts that — so this list
+        # cannot become a way to silence a guard.
+        #
+        # test_core_parity.py and test_factories.py were on this list too, for stale
+        # imports (`is_non_openai_provider`, `EdgeTypeConfig`) that BUG-101 has now
+        # removed. They collect again, so they are off the list — and because
+        # neither carries the contract marker, `-m contract` would still never RUN
+        # them: the step below does that, so the repair is guarded rather than
+        # merely un-ignored.
         run: |
           uv run pytest tests/ -m contract -p no:cacheprovider \
             --ignore=tests/test_async_operations.py \
-            --ignore=tests/test_core_parity.py \
-            --ignore=tests/test_factories.py \
             --ignore=tests/test_fixtures.py \
             --ignore=tests/test_stress_load.py
+      - name: Run the repaired unit modules
+        working-directory: mcp_server
+        # BUG-101 repaired these two from collection errors. `-m contract` above
+        # does not select them (neither declares the marker), so without this step
+        # nothing in CI executes them and the phantom imports could come back
+        # unnoticed — which is how they survived to `mcp-v2.4.0` in the first place.
+        # Named explicitly rather than by marker: the point is that THESE modules
+        # keep collecting and passing.
+        run: |
+          uv run pytest tests/test_core_parity.py tests/test_factories.py \
+            -p no:cacheprovider
 
   # The end-to-end gate: a real server over stdio AND streamable HTTP, against a real
   # FalkorDB and a real model, asserting the CURRENT 18-tool catalog.
@@ -114,7 +129,7 @@ jobs:
         # Run the database on the host network rather than a `services:` block: on
         # the depot-ubuntu runner pool bridge-network NAT silently drops packets to
         # published service-container ports. Readiness is checked via `docker exec`.
-        run: docker run -d --name falkordb --network host falkordb/falkordb:latest
+        run: docker run -d --name falkordb --network host falkordb/falkordb:v4.18.0
       - name: Install dependencies
         working-directory: mcp_server
         run: uv sync

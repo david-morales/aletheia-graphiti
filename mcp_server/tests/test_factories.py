@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Unit tests for service factory provider detection and client routing."""
+"""Unit tests for service factory client routing.
+
+The `is_non_openai_provider` / `reasoning_effort_for_model` tests that used to
+live here were removed with BUG-101: neither symbol exists anywhere under
+`src/` — `is_non_openai_provider` was last seen upstream in `2269d48` — so the
+classes covering them tested nothing and took the whole module down at import.
+The factory routing they sat beside is live and still covered below.
+"""
 
 import sys
 from pathlib import Path
@@ -11,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.azure_openai_client import AzureOpenAILLMClient
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
 from config.schema import (
     AzureOpenAIProviderConfig,
@@ -19,42 +25,7 @@ from config.schema import (
     LLMProvidersConfig,
     OpenAIProviderConfig,
 )
-from services.factories import (
-    LLMClientFactory,
-    is_non_openai_provider,
-    reasoning_effort_for_model,
-)
-
-
-class TestIsNonOpenAIProvider:
-    """Tests for the base_url-based provider detection."""
-
-    @pytest.mark.parametrize(
-        'base_url',
-        [
-            None,
-            '',
-            'https://api.openai.com/v1',
-            'https://api.openai.com',
-            'https://my-resource.openai.azure.com',
-        ],
-    )
-    def test_official_or_unset_is_openai(self, base_url):
-        """Unset, empty, or official OpenAI/Azure endpoints are treated as OpenAI."""
-        assert is_non_openai_provider(base_url) is False
-
-    @pytest.mark.parametrize(
-        'base_url',
-        [
-            'http://localhost:11434/v1',  # Ollama
-            'http://localhost:1234/v1',  # LM Studio
-            'http://localhost:8000/v1',  # vLLM
-            'https://my-proxy.internal/v1',
-        ],
-    )
-    def test_compatible_providers_are_non_openai(self, base_url):
-        """OpenAI-compatible third-party endpoints are detected as non-OpenAI."""
-        assert is_non_openai_provider(base_url) is True
+from services.factories import LLMClientFactory
 
 
 class TestLLMClientFactoryRouting:
@@ -73,11 +44,18 @@ class TestLLMClientFactoryRouting:
     def test_official_openai_uses_openai_client(self):
         client = LLMClientFactory.create(self._config('https://api.openai.com/v1'))
         assert isinstance(client, OpenAIClient)
-        assert not isinstance(client, OpenAIGenericClient)
 
-    def test_ollama_uses_generic_client(self):
+    def test_a_compatible_endpoint_also_uses_the_openai_client(self):
+        """BUG-101: base_url-based routing to `OpenAIGenericClient` is GONE.
+
+        Upstream #1146 routed OpenAI-compatible endpoints to the generic client
+        via `is_non_openai_provider`; that symbol and the branch that used it
+        are both absent from `services/factories.py` here. This pins what the
+        factory ACTUALLY does, so the next person reads the behaviour rather
+        than a red assertion describing a deleted feature.
+        """
         client = LLMClientFactory.create(self._config('http://localhost:11434/v1'))
-        assert isinstance(client, OpenAIGenericClient)
+        assert isinstance(client, OpenAIClient)
 
 
 class TestLLMClientReasoningEffort:
@@ -93,11 +71,17 @@ class TestLLMClientReasoningEffort:
             ),
         )
 
-    def test_gpt_5_5_uses_reasoning_none(self):
-        """gpt-5.5 (the default) runs with reasoning off."""
+    def test_gpt_5_5_uses_the_reasoning_floor(self):
+        """BUG-101: there is no per-model effort selection any more.
+
+        `reasoning_effort_for_model` is absent from `services/factories.py`;
+        the factory gives every model in the `('o1', 'o3', 'gpt-5')` family the
+        same 'minimal' floor. The old assertion (`== 'none'`) described that
+        deleted helper.
+        """
         client = LLMClientFactory.create(self._config('gpt-5.5'))
         assert isinstance(client, OpenAIClient)
-        assert client.reasoning == 'none'
+        assert client.reasoning == 'minimal'
 
     def test_earlier_reasoning_model_uses_minimal(self):
         """Earlier gpt-5 reasoning models keep the historical 'minimal' floor."""
@@ -106,29 +90,15 @@ class TestLLMClientReasoningEffort:
         assert client.reasoning == 'minimal'
 
 
-class TestReasoningEffortForModel:
-    """The shared effort selector used by both the OpenAI and Azure branches."""
-
-    @pytest.mark.parametrize(
-        ('model', 'expected'),
-        [
-            ('gpt-5.5', 'none'),
-            ('gpt-5.5-2026-04-23', 'none'),
-            ('gpt-5', 'minimal'),
-            ('gpt-5-mini', 'minimal'),
-            ('gpt-5.4-mini', 'minimal'),
-            ('o1', 'minimal'),
-            ('o3-mini', 'minimal'),
-            ('gpt-4.1', None),
-            ('gpt-4o-mini', None),
-        ],
-    )
-    def test_effort_selection(self, model, expected):
-        assert reasoning_effort_for_model(model) == expected
-
-
 class TestAzureReasoningEffort:
-    """The Azure OpenAI branch applies the same model-tied reasoning effort."""
+    """BUG-101: the Azure branch sets no reasoning effort AT ALL.
+
+    `LLMClientFactory.create` builds `AzureOpenAILLMClient(azure_client, config,
+    max_tokens)` and never passes `reasoning` — so it is `None` for every model,
+    reasoning-family or not. The previous pair of tests read as a model-tied
+    selection, and only the `gpt-4.1` one passed, by coincidence: it asserted
+    the `None` that every model gets.
+    """
 
     @staticmethod
     def _config(model: str) -> LLMConfig:
@@ -143,12 +113,8 @@ class TestAzureReasoningEffort:
             ),
         )
 
-    def test_azure_gpt_5_5_uses_reasoning_none(self):
-        client = LLMClientFactory.create(self._config('gpt-5.5'))
-        assert isinstance(client, AzureOpenAILLMClient)
-        assert client.reasoning == 'none'
-
-    def test_azure_non_reasoning_model_sends_no_effort(self):
-        client = LLMClientFactory.create(self._config('gpt-4.1'))
+    @pytest.mark.parametrize('model', ['gpt-5.5', 'gpt-4.1'])
+    def test_azure_sends_no_reasoning_effort_for_any_model(self, model):
+        client = LLMClientFactory.create(self._config(model))
         assert isinstance(client, AzureOpenAILLMClient)
         assert client.reasoning is None

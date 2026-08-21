@@ -76,6 +76,10 @@ Once you've found an issue tagged with "good first issue" or "help wanted," or p
      ```
      make install
      ```
+   - The test suite does not touch a real database unless you ask it to. Set
+     `GRAPHITI_LIVE_TESTS=1` (or select `-m integration`) to run the live
+     database tests; without it those params are skipped and no endpoint is
+     dialled. `make test` sets it for you and runs the Neo4j arm.
    - To run integration tests, set the appropriate environment variables
 
      ```

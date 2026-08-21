@@ -5,6 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# BUG-101: these tests `patch('langchain_aws....')`, and `mock.patch` IMPORTS the
+# target module — so without langchain_aws installed the module does not merely
+# skip, it errors. It is an OPTIONAL dependency here (the `bedrock` extra); a
+# plain `uv sync` venv does not carry it, and this suite passed only on machines
+# with an ad-hoc `uv pip install langchain-aws`. Skip cleanly instead.
+pytest.importorskip('langchain_aws')
+
 
 def _fake_langchain_aws_module():
     """Helper: provide a stand-in for langchain_aws.ChatBedrockConverse."""

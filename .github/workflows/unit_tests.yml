@@ -65,7 +65,7 @@ jobs:
         # be overridden, so we use `docker run --network host` instead. Readiness is
         # checked via `docker exec`, which doesn't depend on host->container networking.
         run: |
-          docker run -d --name falkordb --network host falkordb/falkordb:latest
+          docker run -d --name falkordb --network host falkordb/falkordb:v4.18.0
           docker run -d --name neo4j --network host \
             -e NEO4J_AUTH=neo4j/testpass \
             -e NEO4J_PLUGINS='["apoc"]' \
@@ -91,6 +91,13 @@ jobs:
       - name: Run database integration tests
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # REQUIRED, not an override: the root conftest's live gate is
+          # default-CLOSED (BUG-109), so without this the `graph_driver` fixture
+          # is parametrized over an EMPTY driver list and every test in this job
+          # collects as a skipped placeholder — a silently green no-op. The
+          # marker opt-in cannot serve here: this job selects `-m "not
+          # integration"`, which is the opposite request.
+          GRAPHITI_LIVE_TESTS: 1
           NEO4J_URI: bolt://127.0.0.1:7687
           NEO4J_USER: neo4j
           NEO4J_PASSWORD: testpass
