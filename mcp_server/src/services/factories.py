@@ -2,7 +2,10 @@
 
 import os
 
+import httpx
+
 from config.schema import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DatabaseConfig,
     EmbedderConfig,
     LLMConfig,
@@ -17,6 +20,8 @@ except ImportError:
     HAS_FALKOR = False
 
 # Kuzu support removed - FalkorDB is now the default
+from graphiti_core.cross_encoder.client import CrossEncoderClient
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
 from graphiti_core.llm_client import LLMClient, OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig as GraphitiLLMConfig
@@ -89,6 +94,25 @@ except ImportError:
     HAS_BEDROCK_EMBEDDER = False
 
 
+def request_timeout(seconds: float) -> httpx.Timeout:
+    """Build the timeout every outbound provider client is constructed with (BUG-96).
+
+    Returned as an `httpx.Timeout` rather than a bare float on purpose. A float
+    sets all four legs to the same value, which would stretch `connect` from the
+    SDK's 5 s out to `seconds` — the opposite of what this fix is for, since an
+    unreachable edge should be reported immediately, not five minutes later.
+
+    `read` is the leg that matters: it is the one a socket in CLOSE_WAIT sits on.
+    `write` and `pool` follow it so a stall cannot simply move to a neighbouring
+    leg — a request blocked forever waiting for a connection from the pool is the
+    same outage as one blocked forever on the read.
+
+    Both the openai and anthropic SDKs accept an `httpx.Timeout` directly, so the
+    same object serves every provider path here.
+    """
+    return httpx.Timeout(seconds, connect=DEFAULT_CONNECT_TIMEOUT_SECONDS)
+
+
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
 
@@ -150,12 +174,36 @@ class LLMClientFactory:
                 reasoning_prefixes = ('o1', 'o3', 'gpt-5')
                 is_reasoning_model = config.model.startswith(reasoning_prefixes)
 
+                # Build the HTTP client here rather than letting OpenAIClient build
+                # its own (BUG-96): that path takes the SDK's 600 s default, and
+                # `client=` is the seam that lets a chosen bound in. Constructed
+                # with exactly the arguments OpenAIClient would have used — note
+                # `llm_config.base_url` is None on this path, which preserves the
+                # existing behaviour of the openai LLM branch ignoring `api_url`.
+                from openai import AsyncOpenAI
+
+                http_client = AsyncOpenAI(
+                    api_key=llm_config.api_key,
+                    base_url=llm_config.base_url,
+                    timeout=request_timeout(config.request_timeout_seconds),
+                )
+
                 # Only pass reasoning/verbosity parameters for reasoning models (gpt-5 family)
                 if is_reasoning_model:
-                    return OpenAIClient(config=llm_config, reasoning='minimal', verbosity='low')
+                    return OpenAIClient(
+                        config=llm_config,
+                        client=http_client,
+                        reasoning='minimal',
+                        verbosity='low',
+                    )
                 else:
                     # For non-reasoning models, explicitly pass None to disable these parameters
-                    return OpenAIClient(config=llm_config, reasoning=None, verbosity=None)
+                    return OpenAIClient(
+                        config=llm_config,
+                        client=http_client,
+                        reasoning=None,
+                        verbosity=None,
+                    )
 
             case 'azure_openai':
                 if not HAS_AZURE_LLM:
@@ -188,6 +236,7 @@ class LLMClientFactory:
                 azure_client = AsyncOpenAI(
                     base_url=base_url,
                     api_key=api_key,
+                    timeout=request_timeout(config.request_timeout_seconds),
                 )
 
                 # Then create the LLMConfig
@@ -224,7 +273,21 @@ class LLMClientFactory:
                     temperature=config.temperature,
                     max_tokens=config.max_tokens,
                 )
-                return AnthropicClient(config=llm_config)
+
+                # Same seam as the openai branch (BUG-96). `max_retries=1` is not a
+                # choice made here — it is what AnthropicClient sets when it builds
+                # its own client, and building the client here would otherwise
+                # silently restore the SDK's default of 2.
+                from anthropic import AsyncAnthropic
+
+                return AnthropicClient(
+                    config=llm_config,
+                    client=AsyncAnthropic(
+                        api_key=api_key,
+                        max_retries=1,
+                        timeout=request_timeout(config.request_timeout_seconds),
+                    ),
+                )
 
             case 'bedrock':
                 if not HAS_BEDROCK:
@@ -320,7 +383,20 @@ class EmbedderFactory:
                     base_url=config.providers.openai.api_url,  # Support custom endpoints like Ollama
                     embedding_dim=config.dimensions,  # Support custom embedding dimensions
                 )
-                return OpenAIEmbedder(config=embedder_config)
+
+                # Pre-built so the call carries a chosen bound (BUG-96); same
+                # arguments OpenAIEmbedder would have used, including the custom
+                # base_url that makes Ollama-style endpoints work.
+                from openai import AsyncOpenAI
+
+                return OpenAIEmbedder(
+                    config=embedder_config,
+                    client=AsyncOpenAI(
+                        api_key=embedder_config.api_key,
+                        base_url=embedder_config.base_url,
+                        timeout=request_timeout(config.request_timeout_seconds),
+                    ),
+                )
 
             case 'azure_openai':
                 if not HAS_AZURE_EMBEDDER:
@@ -353,6 +429,7 @@ class EmbedderFactory:
                 azure_client = AsyncOpenAI(
                     base_url=base_url,
                     api_key=api_key,
+                    timeout=request_timeout(config.request_timeout_seconds),
                 )
 
                 return AzureOpenAIEmbedderClient(
@@ -423,6 +500,37 @@ class EmbedderFactory:
 
             case _:
                 raise ValueError(f'Unsupported Embedder provider: {provider}')
+
+
+class CrossEncoderFactory:
+    """Factory for the reranker client — the outbound client no factory used to build.
+
+    `Graphiti(...)` accepts `cross_encoder=`; every call site here omitted it, so
+    graphiti_core supplied its own `OpenAIRerankerClient()` and that client took
+    the openai SDK's 600 s default (BUG-96). It is not dormant code: it is reached
+    from the live `search` surface whenever `reranker='cross_encoder'` is asked
+    for, which the `precise` intent selects by default.
+
+    Behaviour is otherwise preserved exactly. `config=` is left unset, so the
+    reranker keeps the `LLMConfig()` defaults it has always run on (including its
+    own model choice), and the HTTP client is built with `api_key=None` /
+    `base_url=None` — the same arguments the implicit construction used, which
+    means the api key still resolves from `OPENAI_API_KEY` in the environment
+    exactly as before. The only delta is the timeout.
+    """
+
+    @staticmethod
+    def create(config: LLMConfig) -> CrossEncoderClient:
+        """Build a time-bounded reranker, using the LLM timeout (it is an LLM call)."""
+        from openai import AsyncOpenAI
+
+        return OpenAIRerankerClient(
+            client=AsyncOpenAI(
+                api_key=None,
+                base_url=None,
+                timeout=request_timeout(config.request_timeout_seconds),
+            )
+        )
 
 
 class DatabaseDriverFactory:

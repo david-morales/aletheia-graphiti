@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
@@ -78,7 +79,7 @@ def _embedder_config(provider: str = 'openai', **overrides) -> EmbedderConfig:
 def _assert_bounded(timeout, expected_seconds: float) -> None:
     """The client carries a real read bound, not the SDK's inherited ceiling."""
     assert timeout is not None, 'client has no timeout at all'
-    assert not isinstance(timeout, (int, float)), (
+    assert not isinstance(timeout, int | float), (
         f'timeout is a bare {type(timeout).__name__} ({timeout!r}) — that widens the '
         'connect leg to the same value. Expected an httpx.Timeout with a tight connect.'
     )
@@ -102,7 +103,7 @@ class TestTheDefault:
         """
         from openai._constants import DEFAULT_TIMEOUT as SDK_DEFAULT
 
-        assert DEFAULT_REQUEST_TIMEOUT_SECONDS < SDK_DEFAULT.read
+        assert SDK_DEFAULT.read > DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     def test_the_llm_config_defaults_to_it_when_unset(self):
         assert LLMConfig().request_timeout_seconds == DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -114,9 +115,9 @@ class TestTheDefault:
     def test_a_non_positive_timeout_is_rejected(self, bad):
         """`0` is not a sentinel for "no bound" — it is the one value that would
         reintroduce the bug by disabling the read deadline outright."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             LLMConfig(request_timeout_seconds=bad)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             EmbedderConfig(request_timeout_seconds=bad)
 
 
@@ -138,9 +139,7 @@ class TestTheConstructedClientsCarryIt:
             LLMConfig(
                 provider='openai',
                 model='gpt-5.5',
-                providers=LLMProvidersConfig(
-                    openai=OpenAIProviderConfig(api_key='test-key')
-                ),
+                providers=LLMProvidersConfig(openai=OpenAIProviderConfig(api_key='test-key')),
             )
         )
         _assert_bounded(client.client.timeout, DEFAULT_REQUEST_TIMEOUT_SECONDS)
@@ -211,9 +210,7 @@ class TestTheEnvironmentOverride:
         config = GraphitiConfig()
 
         llm = _llm_config(request_timeout_seconds=config.llm.request_timeout_seconds)
-        embedder = _embedder_config(
-            request_timeout_seconds=config.embedder.request_timeout_seconds
-        )
+        embedder = _embedder_config(request_timeout_seconds=config.embedder.request_timeout_seconds)
 
         _assert_bounded(LLMClientFactory.create(llm).client.timeout, 42.0)
         _assert_bounded(EmbedderFactory.create(embedder).client.timeout, 43.0)

@@ -100,7 +100,12 @@ from models.response_types import (
     StatusResponse,
     SubgraphResponse,
 )
-from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
+from services.factories import (
+    CrossEncoderFactory,
+    DatabaseDriverFactory,
+    EmbedderFactory,
+    LLMClientFactory,
+)
 from tool_annotations import annotations_for, apply_canonical_tool_order
 from version import CONNECTOR_VERSION
 from services.queue_service import QueueService
@@ -288,6 +293,7 @@ class GraphitiService:
         self.domain_profile: 'DomainProfile | None' = None
         self._cached_db_config: dict | None = None
         self._cached_embedder_client: Any = None
+        self._cached_cross_encoder_client: Any = None
 
     async def _connect_ontology_client(self, db_config: dict, embedder_client) -> 'Graphiti | None':
         """Build and return an ontology Graphiti client.
@@ -334,6 +340,15 @@ class GraphitiService:
             graph_driver=ontology_driver,
             llm_client=None,
             embedder=embedder_client,
+            # Read off the cache rather than taken as an argument, so the lazy
+            # reconnect path gets it without widening this signature. Omitting it
+            # lets graphiti_core substitute an unbounded OpenAIRerankerClient()
+            # (BUG-96); None here means the factory failed and that same default
+            # is what returns — the pre-fix behaviour, not a new failure mode.
+            # `llm_client=None` stays as it was: this graph is never written
+            # through an LLM, so the client graphiti_core defaults in issues no
+            # request and cannot hang on one.
+            cross_encoder=self._cached_cross_encoder_client,
         )
 
         backoff = _RETRY_INITIAL_BACKOFF_S
@@ -402,10 +417,20 @@ class GraphitiService:
             except Exception as e:
                 logger.warning(f'Failed to create embedder client: {e}')
 
+            # Create the reranker client. Graphiti() builds its own unbounded one
+            # when this is None, which is precisely the pre-BUG-96 behaviour — so a
+            # failure here degrades to what shipped before rather than to an outage.
+            cross_encoder_client = None
+            try:
+                cross_encoder_client = CrossEncoderFactory.create(self.config.llm)
+            except Exception as e:
+                logger.warning(f'Failed to create cross encoder client: {e}')
+
             # Get database configuration
             db_config = DatabaseDriverFactory.create_config(self.config.database)
             self._cached_db_config = db_config
             self._cached_embedder_client = embedder_client
+            self._cached_cross_encoder_client = cross_encoder_client
 
             # Build entity types from configuration
             custom_types = None
@@ -444,6 +469,7 @@ class GraphitiService:
                         graph_driver=falkor_driver,
                         llm_client=llm_client,
                         embedder=embedder_client,
+                        cross_encoder=cross_encoder_client,
                         max_coroutines=self.semaphore_limit,
                     )
                 elif self.config.database.provider.lower() == 'age':
@@ -468,6 +494,7 @@ class GraphitiService:
                         graph_driver=age_driver,
                         llm_client=llm_client,
                         embedder=embedder_client,
+                        cross_encoder=cross_encoder_client,
                         max_coroutines=self.semaphore_limit,
                     )
                 else:
@@ -478,6 +505,7 @@ class GraphitiService:
                         password=db_config['password'],
                         llm_client=llm_client,
                         embedder=embedder_client,
+                        cross_encoder=cross_encoder_client,
                         max_coroutines=self.semaphore_limit,
                     )
             except Exception as db_error:

@@ -188,6 +188,30 @@ the config file or `SERVER__MAX_REQUEST_BODY_SIZE` in the environment — set it
 `4194304` to adopt the SDK 2.x default instead. The value must be positive: the SDK
 has no "unlimited" sentinel and rejects anything `<= 0`.
 
+#### Provider request timeout
+
+Every outbound provider call the server makes — LLM, embeddings, reranker — is
+bounded at **300 seconds** (read/write/pool; the connect leg stays at 5 s).
+
+This is not a timeout where there was none. The `openai` SDK supplies its own
+`Timeout(connect=5.0, read=600, write=600, pool=600)` to any client built without
+one, and every client here inherited it. The problem with inheriting it is that
+600 s is a ceiling nobody chose and nothing could move: it is **twice** the
+consumer-side MCP bound, so on a dead socket — a mid-run network flip leaving the
+connection in `CLOSE_WAIT` — the caller gave up first while this server went on
+holding the socket, the coroutine and its concurrency slot, at zero CPU, until it
+was restarted.
+
+Override with `llm.request_timeout_seconds` / `embedder.request_timeout_seconds`
+in the config file, or `LLM__REQUEST_TIMEOUT_SECONDS` /
+`EMBEDDER__REQUEST_TIMEOUT_SECONDS` in the environment. The reranker follows the
+LLM knob, since it is an LLM call. The value must be positive: `0` is not a
+sentinel for "no bound", it is the setting that reproduces the outage.
+
+Raise it if a single extraction legitimately runs longer than five minutes — but
+raise the consumer's bound with it, or the consumer simply starts timing out
+first again.
+
 ### Using Ollama for Local LLM
 
 To use Ollama with the MCP server, configure it as an OpenAI-compatible endpoint:
@@ -265,6 +289,8 @@ The `config.yaml` file supports environment variable expansion using `${VAR_NAME
 - `AZURE_OPENAI_API_VERSION`: Optional Azure OpenAI API version
 - `USE_AZURE_AD`: Optional use Azure Managed Identities for authentication
 - `SEMAPHORE_LIMIT`: Episode processing concurrency. See [Concurrency and LLM Provider 429 Rate Limit Errors](#concurrency-and-llm-provider-429-rate-limit-errors)
+- `LLM__REQUEST_TIMEOUT_SECONDS`: Bound on outbound LLM and reranker HTTP calls (default `300`). See [Provider request timeout](#provider-request-timeout)
+- `EMBEDDER__REQUEST_TIMEOUT_SECONDS`: Bound on outbound embedding HTTP calls (default `300`). See [Provider request timeout](#provider-request-timeout)
 
 You can set these variables in a `.env` file in the project directory.
 
