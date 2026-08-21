@@ -133,3 +133,110 @@ class TestFlavourAwareDescriptions:
     def test_instructions_no_flavour_has_no_dialect(self):
         instr = build_instructions(make_test_profile())
         assert 'Cypher dialect:' not in instr
+
+
+class TestTheRetrievalContractIsAnnounced:
+    """Step 3: the served contract must say what `search` CANNOT do.
+
+    Measured on a graph-wide ranking question: the agent issued `search` seven
+    times (server default limit 10) and `graph_query` zero times, missing the
+    ranking fact on 8 of 8 runs across every arm. Nothing in the served contract
+    said that `search` returns a relevance-ranked top-k SAMPLE, and nothing named
+    `graph_query` as the surface a count, a ranking or a superlative belongs to —
+    so an agent reading the announcement had no way to learn either. Repeating a
+    sampling call is the rational move when the contract never says it is a
+    sample.
+
+    These guards pin the CLAIMS, not the prose: each assertion names a word the
+    served text has to carry for the routing to be learnable from the wire alone.
+    """
+
+    AGGREGATION_WORDS = ('count', 'ranking', 'superlative')
+
+    def _flavour(self, name):
+        if name == 'falkordb':
+            from flavours.falkordb import FalkorDbFlavour
+            return FalkorDbFlavour()
+        if name == 'age':
+            from flavours.age import AgeFlavour
+            return AgeFlavour()
+        return None
+
+    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
+    def test_search_announces_that_its_results_are_a_ranked_sample(self, flavour_name):
+        desc = build_search_description(
+            make_test_profile(), self._flavour(flavour_name)
+        ).lower()
+        assert 'sample' in desc, 'search never says its result set is a sample'
+        assert 'rank' in desc, 'search never says the sample is relevance-ranked'
+        assert 'exhaust' in desc, (
+            'search never says it is NOT exhaustive — the claim the measured failure '
+            'needed'
+        )
+
+    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
+    @pytest.mark.parametrize('word', AGGREGATION_WORDS)
+    def test_search_routes_aggregation_questions_to_graph_query(
+        self, flavour_name, word
+    ):
+        desc = build_search_description(make_test_profile(), self._flavour(flavour_name))
+        assert 'graph_query' in desc, (
+            'search never names the tool an aggregation question belongs to'
+        )
+        assert word in desc.lower(), f'search never names {word!r} as out of its range'
+
+    def test_explore_entity_announces_that_it_is_non_exhaustive(self):
+        desc = build_explore_entity_description(make_test_profile()).lower()
+        assert 'sample' in desc
+        assert 'exhaust' in desc
+
+    @pytest.mark.parametrize('word', AGGREGATION_WORDS)
+    def test_explore_entity_routes_aggregation_questions_to_graph_query(self, word):
+        desc = build_explore_entity_description(make_test_profile())
+        assert 'graph_query' in desc
+        assert word in desc.lower()
+
+    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
+    @pytest.mark.parametrize('word', AGGREGATION_WORDS + ('aggregat',))
+    def test_graph_query_claims_the_aggregation_surface(self, flavour_name, word):
+        from tool_descriptions import build_graph_query_description
+
+        desc = build_graph_query_description(
+            make_test_profile(), self._flavour(flavour_name)
+        ).lower()
+        assert word in desc, f'graph_query never claims {word!r}'
+
+    @pytest.mark.parametrize('flavour_name', ['none', 'falkordb', 'age'])
+    def test_graph_query_says_it_computes_over_the_whole_graph(self, flavour_name):
+        from tool_descriptions import build_graph_query_description
+
+        desc = build_graph_query_description(
+            make_test_profile(), self._flavour(flavour_name)
+        ).lower()
+        assert 'whole graph' in desc, (
+            'graph_query never says its answer covers the whole graph rather than a '
+            'retrieved sample'
+        )
+
+
+class TestTheStaticDocstringsStayCoherentWithTheServedText:
+    """The dynamic descriptions override these at registration — but the
+    docstring IS the served description whenever registration falls back to it,
+    and a docstring that contradicts the dynamic text is a second contract.
+    """
+
+    def test_the_search_docstring_carries_the_sample_claim(self):
+        from graphiti_mcp_server import search
+
+        doc = (search.__doc__ or '').lower()
+        assert 'sample' in doc
+        assert 'graph_query' in doc
+        for word in ('count', 'ranking', 'superlative'):
+            assert word in doc, f'the search docstring never names {word!r}'
+
+    def test_the_graph_query_docstring_claims_the_aggregation_surface(self):
+        from graphiti_mcp_server import graph_query
+
+        doc = (graph_query.__doc__ or '').lower()
+        for word in ('count', 'ranking', 'superlative', 'aggregat'):
+            assert word in doc, f'the graph_query docstring never claims {word!r}'

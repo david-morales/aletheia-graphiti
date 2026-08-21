@@ -188,3 +188,72 @@ def test_the_pointer_does_not_copy_the_catalogues_it_points_at(state):
         f'{copied}. A second copy of `resources/list` / `prompts/list` in prose '
         f'is a copy that drifts.'
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 3: the catalog must carry the RETRIEVAL CONTRACT, not only the roster
+# ---------------------------------------------------------------------------
+#
+# Measured: on a graph-wide ranking question the agent issued `search` seven
+# times (server default limit 10) and `graph_query` zero times, missing the
+# ranking fact on 8 of 8 runs. The catalog said what each tool finds and never
+# what `search` cannot do — so "call it again" was the rational move.
+#
+# The catalog is profile-independent and feeds BOTH `build_instructions` and
+# `build_degraded_instructions`, so these guards run over every arm of the
+# `instructions` fixture: one claim, announced identically healthy or degraded.
+
+AGGREGATION_WORDS = ('count', 'ranking', 'superlative')
+
+
+def _numbered_entry(instructions: str, start: str, end: str) -> str:
+    """A numbered catalog item, scoped between its own marker and the next one.
+
+    Deliberately not `_catalog_entry`: that one finds the FIRST line containing
+    the name, and these entries now cross-reference each other by name.
+    """
+    assert start in instructions, f'the catalog has no {start!r} entry'
+    assert end in instructions, f'the catalog has no {end!r} entry'
+    return instructions.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_the_search_entry_announces_that_it_returns_a_sample(instructions):
+    entry = _numbered_entry(instructions, '1. search', '2. explore_entity').lower()
+    assert 'sample' in entry, 'the catalog never says search returns a sample'
+    assert 'rank' in entry, 'the catalog never says the sample is ranked'
+
+
+@pytest.mark.parametrize('word', AGGREGATION_WORDS)
+def test_the_search_entry_routes_aggregation_to_graph_query(instructions, word):
+    entry = _numbered_entry(instructions, '1. search', '2. explore_entity')
+    assert 'graph_query' in entry, (
+        'the catalog never tells a search caller where a count belongs'
+    )
+    assert word in entry.lower(), f'the search entry never names {word!r}'
+
+
+def test_the_explore_entity_entry_announces_it_is_non_exhaustive(instructions):
+    entry = _numbered_entry(instructions, '2. explore_entity', '3. search_ontology')
+    assert 'exhaust' in entry.lower()
+
+
+@pytest.mark.parametrize('word', AGGREGATION_WORDS)
+def test_the_explore_entity_entry_routes_aggregation_to_graph_query(instructions, word):
+    entry = _numbered_entry(instructions, '2. explore_entity', '3. search_ontology')
+    assert 'graph_query' in entry
+    assert word in entry.lower(), f'the explore_entity entry never names {word!r}'
+
+
+@pytest.mark.parametrize('word', AGGREGATION_WORDS + ('aggregation',))
+def test_the_graph_query_entry_claims_the_aggregation_surface(instructions, word):
+    """Entry 7 already claimed counts and aggregations. This EXTENDS it to the
+    two shapes the measured failure actually needed — a ranking and a
+    superlative — and to the exhaustiveness that distinguishes it from search.
+    """
+    entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data')
+    assert word in entry.lower(), f'the graph_query entry never claims {word!r}'
+
+
+def test_the_graph_query_entry_says_it_is_the_exhaustive_surface(instructions):
+    entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data').lower()
+    assert 'whole graph' in entry
