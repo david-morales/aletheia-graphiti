@@ -12,7 +12,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from utils.cypher_extractor import PropertyAccess, RelPattern, extract_elements
+from utils.cypher_extractor import (
+    CypherElements,
+    PropertyAccess,
+    RelPattern,
+    extract_elements,
+)
 
 # Internal Graphiti properties that are always valid on any node.
 _INTERNAL_PROPERTIES: frozenset[str] = frozenset({
@@ -454,9 +459,21 @@ def refine_verdict(quality: CypherQuality) -> CypherQuality:
     return quality
 
 
-def assess_quality(query: str, *, schema: dict[str, Any] | None) -> CypherQuality:
-    """Assess quality of a Cypher query against a graph schema."""
-    elements = extract_elements(query)
+def assess_quality(
+    query: str,
+    *,
+    schema: dict[str, Any] | None,
+    elements: CypherElements | None = None,
+) -> CypherQuality:
+    """Assess quality of a Cypher query against a graph schema.
+
+    ``elements`` lets a caller that has already parsed the query pass the result
+    in. Parsing is the expensive step here and the envelope needs the same tree
+    twice (this and the schema warnings), so sharing it halves the cost without
+    changing any verdict.
+    """
+    if elements is None:
+        elements = extract_elements(query)
 
     # Parse errors -> suspect / parse_failed
     if elements.parse_errors > 0:

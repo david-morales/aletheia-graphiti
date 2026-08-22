@@ -6,7 +6,9 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from utils.cypher_extractor import extract_elements
 from utils.cypher_quality import assess_quality, compute_result_signals, refine_verdict
+from utils.schema_warnings import build_schema_warnings
 
 if TYPE_CHECKING:
     from flavours.base import Flavour
@@ -614,6 +616,10 @@ def format_result(
 
     result_type = _classify_result(records, header)
 
+    # Parse ONCE. Both the quality assessment and the schema warnings read the
+    # same tree, and parsing is the expensive step in each.
+    elements = extract_elements(query)
+
     # Build type-specific payload
     if result_type == 'scalar':
         payload = _format_scalar(records, header)
@@ -628,6 +634,13 @@ def format_result(
     envelope: dict[str, Any] = {
         'query': query,
         'auto_fixes': auto_fixes,
+        # Advisory notes about property references the census cannot account
+        # for — a null column is not an error on either backend, so without
+        # this the answer looks clean and empty. Always present, exactly like
+        # `auto_fixes`: a stable key shape beats one a consumer has to probe
+        # for, and MCPServer injects `None` for an absent optional field
+        # anyway, so omitting it would not even save the wire.
+        'schema_warnings': build_schema_warnings(query, schema, elements=elements),
         'type': result_type,
         'row_count': len(records),
         'truncated': truncated,
@@ -639,7 +652,7 @@ def format_result(
     envelope.update(payload)
 
     # Quality assessment
-    quality = assess_quality(query, schema=schema)
+    quality = assess_quality(query, schema=schema, elements=elements)
     quality.result_signals = compute_result_signals(records, header, truncated=truncated)
     quality = refine_verdict(quality)
     envelope['cypher_quality'] = quality.to_dict()

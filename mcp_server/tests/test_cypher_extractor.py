@@ -7,7 +7,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
-from utils.cypher_extractor import PropertyAccess, extract_elements
+from utils.cypher_extractor import PropertyAccess, PropertyChain, extract_elements
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +167,131 @@ class TestPropertyExtraction:
         for prop in result.properties:
             assert prop.variable != "'2024-01-01'"
             assert '2024' not in prop.variable
+
+
+# ---------------------------------------------------------------------------
+# Property CHAINS — the full dotted path, not the flattened segments
+# ---------------------------------------------------------------------------
+
+
+class TestPropertyChainExtraction:
+    """``property_chains`` keeps what ``properties`` throws away: the path.
+
+    ``properties`` flattens ``n.attributes.edad`` into two independent accesses,
+    so a consumer cannot tell a one-level read from a nested one. That distinction
+    is the whole question for a backend whose node properties are flat, so the
+    chain is recorded alongside rather than by widening ``PropertyAccess`` (whose
+    identity other call sites depend on).
+    """
+
+    def test_single_segment_chain(self):
+        result = extract_elements('MATCH (n:Evento) RETURN n.name')
+        assert PropertyChain(variable='n', path=('name',)) in result.property_chains
+
+    def test_nested_chain_keeps_both_segments(self):
+        result = extract_elements('MATCH (n:Evento) RETURN n.attributes.edad')
+        assert PropertyChain(variable='n', path=('attributes', 'edad')) in result.property_chains
+
+    def test_nested_chain_leaf_and_container_are_ordered(self):
+        result = extract_elements('MATCH (n:Evento) RETURN n.attributes.edad')
+        chain = next(c for c in result.property_chains if len(c.path) == 2)
+        assert chain.path[0] == 'attributes'
+        assert chain.path[-1] == 'edad'
+
+    def test_where_clause_chain_is_captured(self):
+        result = extract_elements(
+            "MATCH (n:Evento) WHERE n.fecha_inicio > '2026-01-01' RETURN n"
+        )
+        assert PropertyChain(variable='n', path=('fecha_inicio',)) in result.property_chains
+
+    def test_string_literal_yields_no_chain(self):
+        result = extract_elements("MATCH (n) WHERE n.x = 'a.b.c' RETURN n")
+        assert PropertyChain(variable='n', path=('x',)) in result.property_chains
+        for chain in result.property_chains:
+            assert 'a' not in chain.path
+            assert 'b' not in chain.path
+
+    def test_function_calls_yield_no_chain(self):
+        result = extract_elements('MATCH (n)-[r]->(m) RETURN type(r), keys(n), labels(m)')
+        assert result.property_chains == []
+
+    def test_map_literal_and_parameter_yield_no_chain(self):
+        result = extract_elements('MATCH (n {a: 1}) WHERE n.b = $param RETURN n')
+        assert PropertyChain(variable='n', path=('b',)) in result.property_chains
+        assert all(c.path != ('a',) for c in result.property_chains)
+
+    def test_backticked_segments_are_unquoted(self):
+        result = extract_elements('MATCH (n) RETURN n.`fecha de inicio`')
+        assert PropertyChain(variable='n', path=('fecha de inicio',)) in result.property_chains
+
+    def test_chain_survives_with_rebinding(self):
+        result = extract_elements('MATCH (p:Parte) WITH p AS q RETURN q.fecha_de_inicio')
+        assert PropertyChain(variable='q', path=('fecha_de_inicio',)) in result.property_chains
+
+
+# ---------------------------------------------------------------------------
+# Relationship variables
+# ---------------------------------------------------------------------------
+
+
+class TestNodeVarExtraction:
+    """Which variables the query binds to a NODE.
+
+    A node-label census can only speak about nodes, so a consumer validating
+    property names against one needs an ALLOW-LIST of node-bound variables
+    rather than a deny-list of everything else. A deny-list has to enumerate
+    every non-node shape a variable can take — map projections, `UNWIND`
+    elements, function results, relationship rebindings — and every shape it
+    misses becomes a wrong accusation against a valid query.
+    """
+
+    def test_node_pattern_binds_a_node_var(self):
+        result = extract_elements('MATCH (p:Parte) RETURN p.name')
+        assert 'p' in result.node_vars
+
+    def test_unlabelled_node_pattern_still_binds(self):
+        result = extract_elements('MATCH (n) RETURN n.name')
+        assert 'n' in result.node_vars
+
+    def test_relationship_var_is_not_a_node_var(self):
+        result = extract_elements('MATCH (a)-[r:REL]->(b) RETURN r.fact')
+        assert 'r' not in result.node_vars
+        assert {'a', 'b'} <= result.node_vars
+
+    def test_alias_of_a_node_var_inherits_node_ness(self):
+        result = extract_elements('MATCH (p:Parte) WITH p AS q RETURN q.fecha_de_inicio')
+        assert 'q' in result.node_vars
+
+    def test_alias_chain_within_one_clause_inherits(self):
+        result = extract_elements('MATCH (p) WITH p AS x, x AS y RETURN y.name')
+        assert 'y' in result.node_vars
+
+    def test_consecutive_with_clauses_are_a_known_parser_gap(self):
+        """Pinned as a LIMIT, not a capability: this grammar cannot read them.
+
+        The gap is pre-existing and already handled downstream — a non-zero
+        `parse_errors` suppresses every schema warning — so it costs silence,
+        never a wrong accusation.
+        """
+        result = extract_elements('MATCH (p) WITH p AS x WITH x AS y RETURN y.name')
+        assert result.parse_errors > 0
+
+    def test_alias_of_a_relationship_var_does_not_inherit(self):
+        result = extract_elements('MATCH (a)-[r:REL]->(b) WITH r AS rel RETURN rel.rol')
+        assert 'rel' not in result.node_vars
+
+    def test_map_projection_alias_is_not_a_node_var(self):
+        result = extract_elements(
+            'MATCH (p:Parte) WITH {mun: p.municipio, n: count(*)} AS agg RETURN agg.mun'
+        )
+        assert 'agg' not in result.node_vars
+
+    def test_aggregate_alias_is_not_a_node_var(self):
+        result = extract_elements('MATCH (p) WITH collect(p) AS rows RETURN rows')
+        assert 'rows' not in result.node_vars
+
+    def test_unwind_alias_is_not_a_node_var(self):
+        result = extract_elements(
+            'MATCH (p) WITH collect(p) AS rows UNWIND rows AS row RETURN row.municipio'
+        )
+        assert 'row' not in result.node_vars

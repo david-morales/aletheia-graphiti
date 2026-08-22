@@ -2731,6 +2731,26 @@ _DYNAMIC_TOOLS = (
 )
 
 
+def _ontology_is_configured() -> bool:
+    """Is a companion ontology graph configured for this connector?
+
+    Tool registration is UNCONDITIONAL, so without one the ontology tools are
+    served and answer every call with 'No ontology graph configured'. Any
+    description that claims classification questions there routes an agent into
+    a dead end — and with graph_query simultaneously disclaiming them, no tool
+    would admit to the question at all. So the claims are gated on this.
+
+    Read defensively: `config` is an annotation-only module global, unbound
+    until startup assigns it, and this runs on the registration path that a
+    degraded boot also takes. A gating signal that can itself raise would turn
+    a missing ontology into a collapsed tool surface — which is exactly the
+    failure `register_fallback_tools` exists to contain, reached for a reason
+    that is not an error at all.
+    """
+    graphiti_cfg = getattr(globals().get('config'), 'graphiti', None)
+    return bool(getattr(graphiti_cfg, 'ontology_graph', None))
+
+
 def register_dynamic_tools(profile: DomainProfile) -> None:
     """Register the main tools with dynamic descriptions from the DomainProfile."""
     # Remove any existing registrations (e.g., if called multiple times)
@@ -2742,6 +2762,8 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     # description + server instructions (ADR-019 R1/R6), and gates the capability
     # claims that are only true on some backends — see Flavour.searches_episode_content.
     flavour = graphiti_service.flavour if graphiti_service is not None else None
+
+    has_ontology = _ontology_is_configured()
 
     # Annotations (ADR-019 R3) come from the one table in tool_annotations.py, the same
     # source the static @mcp.tool() decorators read — the two paths cannot drift.
@@ -2757,12 +2779,12 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     )
     mcp.add_tool(
         search_ontology,
-        description=build_search_ontology_description(profile),
+        description=build_search_ontology_description(profile, has_ontology),
         annotations=annotations_for('search_ontology'),
     )
     mcp.add_tool(
         explore_ontology,
-        description=build_explore_ontology_description(profile),
+        description=build_explore_ontology_description(profile, has_ontology),
         annotations=annotations_for('explore_ontology'),
     )
     mcp.add_tool(
@@ -2777,7 +2799,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     )
     mcp.add_tool(
         graph_query,
-        description=build_graph_query_description(profile, flavour),
+        description=build_graph_query_description(profile, flavour, has_ontology),
         annotations=annotations_for('graph_query'),
     )
     mcp.add_tool(profile_data, annotations=annotations_for('profile_data'))

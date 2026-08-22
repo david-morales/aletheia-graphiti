@@ -1183,6 +1183,84 @@ class TestCypherQualityInEnvelope:
         assert result['cypher_quality']['verdict'] == 'empty_legit'
 
 
+class TestSchemaWarningsInEnvelope:
+    """The census-validated property warnings ride the success envelope.
+
+    They are advisory: the query has already run, so a warning can only change
+    what the NEXT query looks like. The field is therefore always present (like
+    `auto_fixes`) and never carries a verdict the census cannot support.
+    """
+
+    _CENSUS = {
+        'attribute_container': None,
+        'node_labels': {
+            'Evento': {
+                'count': 3,
+                'properties': ['fecha_de_inicio', 'name'],
+                'attribute_keys': ['fecha_de_inicio'],
+                'sampled': True,
+            },
+        },
+        'relationship_types': {},
+    }
+
+    def test_field_always_present_even_when_empty(self):
+        result = format_result(
+            [{'name': 'A'}], ['name'],
+            query='MATCH (n:Evento) RETURN n.name',
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema=self._CENSUS,
+        )
+        assert result['schema_warnings'] == []
+
+    def test_guessed_property_is_reported(self):
+        result = format_result(
+            [], [],
+            query='MATCH (n:Evento) RETURN n.fecha_inicio',
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema=self._CENSUS,
+        )
+        assert result['schema_warnings'], 'a guessed property name must be reported'
+        assert 'fecha_de_inicio' in '\n'.join(result['schema_warnings'])
+
+    def test_warning_does_not_alter_the_query_or_the_rows(self):
+        query = 'MATCH (n:Evento) RETURN n.fecha_inicio'
+        result = format_result(
+            [{'fecha_inicio': None}], ['fecha_inicio'],
+            query=query,
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema=self._CENSUS,
+        )
+        assert result['schema_warnings']
+        assert result['query'] == query
+        assert result['row_count'] == 1
+
+    def test_field_present_without_a_schema(self):
+        result = format_result(
+            [{'x': 1}], ['x'],
+            query='MATCH (n) RETURN count(n) AS x',
+            auto_fixes=[],
+            execution_ms=5.0,
+            limit=200,
+            schema=None,
+        )
+        assert result['schema_warnings'] == []
+
+    def test_field_is_not_added_to_the_error_envelope(self):
+        """A rejected query never ran, so it has no null columns to explain."""
+        err = CypherError(
+            stage='security', reason='write_operation', found='CREATE',
+            explanation='no', suggestion='use MATCH',
+        )
+        assert 'schema_warnings' not in format_error('CREATE (n)', err)
+
+
 class TestCypherQualityInErrorEnvelope:
     """Verify cypher_quality field appears in format_error output."""
 

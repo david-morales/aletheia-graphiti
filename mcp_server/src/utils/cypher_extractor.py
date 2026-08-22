@@ -29,6 +29,27 @@ class PropertyAccess:
         return hash((self.variable, self.property_name))
 
 
+@dataclass(frozen=True)
+class PropertyChain:
+    """A full dotted property path like ``n.attributes.edad``.
+
+    ``PropertyAccess`` flattens a nested path into one entry per segment, with no
+    record that one was written through the other. That distinction is decisive
+    for a backend whose node properties are FLAT — there ``n.attributes.edad``
+    reads a map that does not exist and yields null for every row, while
+    ``n.edad`` is the correct form — so the path is recorded alongside rather
+    than by widening ``PropertyAccess``, whose identity (variable + single name)
+    other call sites already depend on.
+
+    ``path`` is the segment tuple after the variable: ``('edad',)`` for a
+    one-level read, ``('attributes', 'edad')`` for a nested one. The LEAF is
+    always ``path[-1]``.
+    """
+
+    variable: str
+    path: tuple[str, ...]
+
+
 @dataclass
 class RelPattern:
     """A relationship pattern with source, target, type and direction."""
@@ -46,7 +67,18 @@ class CypherElements:
     labels: list[str] = field(default_factory=list)
     rel_types: list[str] = field(default_factory=list)
     properties: list[PropertyAccess] = field(default_factory=list)
+    # The same accesses with their PATH intact — see PropertyChain. Additive:
+    # `properties` keeps its historic flattened shape for existing consumers.
+    property_chains: list[PropertyChain] = field(default_factory=list)
     var_labels: dict[str, str] = field(default_factory=dict)
+    # Variables the query binds to a NODE, including aliases rebound from one
+    # (`WITH p AS q`). A node-label census can only speak about nodes, so a
+    # consumer validating property names against one needs this ALLOW-LIST:
+    # a deny-list would have to enumerate every non-node shape a variable can
+    # take — map projections, UNWIND elements, function results, relationship
+    # rebindings — and every shape it missed would become a wrong accusation
+    # against a valid query.
+    node_vars: set[str] = field(default_factory=set)
     rel_patterns: list[RelPattern] = field(default_factory=list)
     parse_errors: int = 0
 
@@ -77,7 +109,9 @@ class _ElementListener(CypherParserListener):
         self._labels: list[str] = []
         self._rel_types: list[str] = []
         self._properties: list[PropertyAccess] = []
+        self._property_chains: list[PropertyChain] = []
         self._var_labels: dict[str, str] = {}
+        self._node_vars: set[str] = set()
         self._rel_patterns: list[RelPattern] = []
         # Track the previous node variable in a pattern element chain
         # so multi-hop paths get correct source variables.
@@ -88,6 +122,9 @@ class _ElementListener(CypherParserListener):
     def enterNodePattern(self, ctx: CypherParser.NodePatternContext) -> None:
         sym = ctx.symbol()
         var_name = sym.getText() if sym else None
+
+        if var_name:
+            self._node_vars.add(var_name)
 
         labels_ctx = ctx.nodeLabels()
         if labels_ctx:
@@ -173,6 +210,55 @@ class _ElementListener(CypherParserListener):
                 if t not in self._rel_types:
                     self._rel_types.append(t)
 
+    # -- Projections (alias rebinding) -----------------------------------------
+
+    def enterProjectionItem(self, ctx: CypherParser.ProjectionItemContext) -> None:
+        """Propagate node-ness across ``WITH <var> AS <alias>``.
+
+        ONLY a bare identifier already bound to a node propagates. Everything
+        else a projection can produce — a map literal, an aggregate, a function
+        result, a property access, a relationship variable — yields an alias
+        that is not a node, and is therefore simply never added to the
+        allow-list.
+
+        The walk is in document order, so the `MATCH` that binds the source
+        variable is always seen before the `WITH` that renames it, and a chain
+        of rebindings (`WITH p AS x WITH x AS y`) propagates one link at a time.
+        """
+        sym = ctx.symbol()
+        expr = ctx.expression()
+        if sym is None or expr is None:
+            return
+        self._rebind(sym.getText(), _strip_backticks(expr.getText()))
+
+    def enterUnwindSt(self, ctx: CypherParser.UnwindStContext) -> None:
+        """`UNWIND <expr> AS x` — the element is not a node binding.
+
+        Handled for the same reason as the projection: without it an `UNWIND`
+        onto a name a `MATCH` already bound would leave the stale node entry
+        standing.
+        """
+        sym = ctx.symbol()
+        expr = ctx.expression()
+        if sym is None or expr is None:
+            return
+        self._rebind(sym.getText(), _strip_backticks(expr.getText()))
+
+    def _rebind(self, alias: str, source: str) -> None:
+        """Grant or REVOKE node-ness for ``alias``, according to ``source``.
+
+        Symmetric on purpose. Binding is not add-only: `WITH <non-node> AS p`
+        where `p` was a node has to take the entry away, or every non-node shape
+        walks back in the moment it reuses a node's name — and reusing the name
+        is the natural thing to write. Only a bare identifier already bound to a
+        node grants; everything else a projection or an UNWIND can produce
+        revokes.
+        """
+        if source in self._node_vars:
+            self._node_vars.add(alias)
+        else:
+            self._node_vars.discard(alias)
+
     # -- Property expressions --------------------------------------------------
 
     def enterPropertyExpression(self, ctx: CypherParser.PropertyExpressionContext) -> None:
@@ -197,6 +283,13 @@ class _ElementListener(CypherParserListener):
             if pa not in self._properties:
                 self._properties.append(pa)
 
+        # The same access with its path kept whole. Guarded on `prop_names` so a
+        # bare atom never produces an empty chain.
+        if prop_names:
+            chain = PropertyChain(variable=variable, path=tuple(prop_names))
+            if chain not in self._property_chains:
+                self._property_chains.append(chain)
+
     # -- Build result ----------------------------------------------------------
 
     def build(self, parse_errors: int) -> CypherElements:
@@ -204,7 +297,9 @@ class _ElementListener(CypherParserListener):
             labels=self._labels,
             rel_types=self._rel_types,
             properties=self._properties,
+            property_chains=self._property_chains,
             var_labels=self._var_labels,
+            node_vars=self._node_vars,
             rel_patterns=self._rel_patterns,
             parse_errors=parse_errors,
         )
