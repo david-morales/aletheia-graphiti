@@ -106,39 +106,137 @@ class TestTheOntologyToolsClaimClassificationQuestions:
 
     @pytest.mark.parametrize('build', _BUILDERS)
     def test_claims_classification_questions(self, build):
-        desc = build(make_test_profile()).lower()
+        desc = build(make_test_profile(), has_ontology=True).lower()
         assert 'classification' in desc
 
     @pytest.mark.parametrize('build', _BUILDERS)
     def test_claims_grouping_and_scheme_questions(self, build):
-        desc = build(make_test_profile()).lower()
+        desc = build(make_test_profile(), has_ontology=True).lower()
         assert 'grouping' in desc or 'scheme' in desc
 
     @pytest.mark.parametrize('build', _BUILDERS)
     def test_says_the_memberships_are_held_as_individuals(self, build):
-        desc = build(make_test_profile()).lower()
+        desc = build(make_test_profile(), has_ontology=True).lower()
         assert 'individual' in desc
         assert 'membership' in desc
 
     @pytest.mark.parametrize('build', _BUILDERS)
     def test_says_they_are_absent_from_the_data_graph(self, build):
-        desc = build(make_test_profile()).lower()
+        desc = build(make_test_profile(), has_ontology=True).lower()
         assert 'data graph' in desc
 
     @pytest.mark.parametrize('build', _BUILDERS)
     def test_the_existing_schema_documentation_claims_survive(self, build):
         """The new claim is ADDITIVE — the tools still document the schema."""
-        desc = build(make_test_profile()).lower()
+        desc = build(make_test_profile(), has_ontology=True).lower()
         assert 'propert' in desc
         assert 'ontology' in desc
 
     def test_search_ontology_keeps_its_formal_schema_claim(self):
-        desc = build_search_ontology_description(make_test_profile())
+        desc = build_search_ontology_description(make_test_profile(), has_ontology=True)
         assert 'formal schema behind the data' in desc
 
     def test_explore_ontology_keeps_its_hierarchy_claim(self):
-        desc = build_explore_ontology_description(make_test_profile())
+        desc = build_explore_ontology_description(make_test_profile(), has_ontology=True)
         assert 'class hierarchy' in desc
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_the_claim_does_not_generalise_beyond_this_dataset(self, build):
+        """Where classifications live is a fact about THIS dataset, not about graphs."""
+        desc = build(make_test_profile(), has_ontology=True).lower()
+        for overreach in (
+            'no cypher query can recover',
+            'the data graph carries no such grouping',
+        ):
+            assert overreach not in desc, f'the text still claims {overreach!r} universally'
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_the_claim_is_scoped_to_this_dataset(self, build):
+        desc = build(make_test_profile(), has_ontology=True).lower()
+        assert 'this dataset' in desc
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_no_benchmark_framing(self, build):
+        """A producer contract describes the data, not how an answer gets scored."""
+        desc = build(make_test_profile(), has_ontology=True).lower()
+        assert 'judged' not in desc
+
+
+class TestTheOntologyClaimsAreGatedOnAnOntology:
+    """Registration is unconditional; a CONFIGURED ontology is not.
+
+    With `ontology_graph` unset the ontology tools answer every call with
+    'No ontology graph configured'. Claiming classification questions there
+    routes the agent into a dead end and, with graph_query simultaneously
+    disclaiming them, leaves no tool that admits to the question at all.
+    """
+
+    _BUILDERS = (build_search_ontology_description, build_explore_ontology_description)
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_no_classification_claim_without_an_ontology(self, build):
+        desc = build(make_test_profile(), has_ontology=False).lower()
+        assert 'classification' not in desc
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_no_membership_claim_without_an_ontology(self, build):
+        desc = build(make_test_profile(), has_ontology=False).lower()
+        assert 'membership' not in desc
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_the_base_description_survives_without_an_ontology(self, build):
+        desc = build(make_test_profile(), has_ontology=False).lower()
+        assert 'ontology' in desc
+        assert 'use when' in desc
+
+    @pytest.mark.parametrize('build', _BUILDERS)
+    def test_absent_signal_defaults_to_no_claim(self, build):
+        """Positive evidence only — the same rule the flavour gating follows."""
+        desc = build(make_test_profile()).lower()
+        assert 'classification' not in desc
+
+    def test_graph_query_does_not_disclaim_without_an_ontology(self):
+        from tool_descriptions import build_graph_query_description
+
+        desc = build_graph_query_description(make_test_profile(), has_ontology=False)
+        block = desc.split('Do NOT use when:')[1].split('Guardrails:')[0].lower()
+        assert 'classification' not in block
+        assert 'taxonomy' not in block
+
+    def test_graph_query_keeps_its_other_bullets_without_an_ontology(self):
+        from tool_descriptions import build_graph_query_description
+
+        desc = build_graph_query_description(make_test_profile(), has_ontology=False)
+        block = desc.split('Do NOT use when:')[1].split('Guardrails:')[0]
+        assert '- You need semantic similarity search -- use search instead' in block
+
+    def test_the_signal_never_raises_when_config_is_absent(self, monkeypatch):
+        """A gating signal that can raise turns a missing ontology into a
+        COLLAPSED tool surface — reached on the registration path a degraded
+        boot also takes, for a condition that is not an error at all. Caught
+        this way once: reading it off the service dropped the whole surface to
+        the fallback and took three profile resources with it.
+        """
+        import graphiti_mcp_server as srv
+
+        monkeypatch.delitem(srv.__dict__, 'config', raising=False)
+        assert srv._ontology_is_configured() is False
+
+    @pytest.mark.parametrize(
+        'cfg, expected',
+        [
+            (None, False),
+            (object(), False),
+            (type('C', (), {'graphiti': type('G', (), {'ontology_graph': None})}), False),
+            (type('C', (), {'graphiti': type('G', (), {'ontology_graph': ''})}), False),
+            (type('C', (), {'graphiti': type('G', (), {'ontology_graph': 'onto_v1'})}), True),
+        ],
+    )
+    def test_the_signal_reads_the_configured_graph(self, monkeypatch, cfg, expected):
+        import graphiti_mcp_server as srv
+
+        monkeypatch.setattr(srv, 'config', cfg, raising=False)
+        assert srv._ontology_is_configured() is expected
 
     @pytest.mark.parametrize('build', _BUILDERS)
     def test_the_builders_name_no_domain(self, build):
@@ -158,14 +256,14 @@ class TestGraphQueryDefersClassificationQuestions:
     def test_has_a_do_not_use_bullet_for_classification_questions(self):
         from tool_descriptions import build_graph_query_description
 
-        desc = build_graph_query_description(make_test_profile())
+        desc = build_graph_query_description(make_test_profile(), has_ontology=True)
         block = desc.split('Do NOT use when:')[1].split('Guardrails:')[0].lower()
         assert 'classification' in block or 'taxonomy' in block
 
     def test_the_bullet_redirects_to_the_ontology_tools(self):
         from tool_descriptions import build_graph_query_description
 
-        desc = build_graph_query_description(make_test_profile())
+        desc = build_graph_query_description(make_test_profile(), has_ontology=True)
         block = desc.split('Do NOT use when:')[1].split('Guardrails:')[0].lower()
         line = next(l for l in block.splitlines() if 'classification' in l or 'taxonomy' in l)
         assert 'ontology' in line

@@ -490,8 +490,18 @@ def build_explore_entity_description(profile: DomainProfile) -> str:
     return '\n'.join(parts)
 
 
-def build_search_ontology_description(profile: DomainProfile) -> str:
-    """Build the search_ontology tool description."""
+def build_search_ontology_description(
+    profile: DomainProfile, has_ontology: bool = False
+) -> str:
+    """Build the search_ontology tool description.
+
+    ``has_ontology`` gates the classification claims on a CONFIGURED ontology
+    graph. Registration is unconditional, so without one this tool answers every
+    call with 'No ontology graph configured' — and a description that claims
+    classification questions there routes the agent into a dead end. Defaults to
+    False for the same reason the flavour gating does: a claim is made only from
+    positive evidence, never from a signal that failed to arrive.
+    """
     parts = [
         'Search the companion ontology graph for schema definitions, entity types, and relationships.',
         '',
@@ -499,16 +509,25 @@ def build_search_ontology_description(profile: DomainProfile) -> str:
         '- You need to understand what types of entities and relationships are defined',
         '- You want to know what properties or attributes a type has',
         '- You need the formal schema behind the data',
-        '- You need to know how this dataset organises its categorical values -- '
-        'which classification, grouping or scheme a given value belongs to',
-        '',
-        'Classification questions are answered HERE and nowhere else. The ontology '
-        'holds each scheme as individuals with explicit memberships; the data graph '
-        'stores the bare value and carries no grouping for it, so no Cypher query can '
-        'recover one. Look the membership up rather than supplying it from your own '
-        'knowledge -- this dataset\'s scheme need not agree with the one you would '
-        'assume, and where they differ the dataset is what the answer is judged '
-        'against.',
+    ]
+
+    if has_ontology:
+        parts.append(
+            '- You need to know how this dataset organises its categorical values -- '
+            'which classification, grouping or scheme a given value belongs to'
+        )
+        parts.append('')
+        parts.append(
+            'Classification questions are answered here. Where this dataset keeps a '
+            'classification in the ontology, the ontology holds it as individuals '
+            'with explicit memberships while the data graph stores the bare value '
+            'alone -- so the grouping is not reachable from the data graph. Look the '
+            'membership up rather than supplying it from your own knowledge: this '
+            'dataset\'s scheme need not agree with the one you would assume, and '
+            'where they differ the dataset\'s scheme is the correct one.'
+        )
+
+    parts += [
         '',
         'Do NOT use when:',
         '- You want actual data (entities, facts) -- use search instead',
@@ -531,22 +550,38 @@ def build_search_ontology_description(profile: DomainProfile) -> str:
     return '\n'.join(parts)
 
 
-def build_explore_ontology_description(profile: DomainProfile) -> str:
-    """Build the explore_ontology tool description."""
+def build_explore_ontology_description(
+    profile: DomainProfile, has_ontology: bool = False
+) -> str:
+    """Build the explore_ontology tool description.
+
+    ``has_ontology`` gates the classification claims — see
+    :func:`build_search_ontology_description`.
+    """
     parts = [
         'Explore a specific class in the companion ontology graph.',
         '',
         'Use when:',
         '- You want properties, relationships, and parent classes for a specific type',
         '- You want to understand the class hierarchy',
-        '- You need the classification a value belongs to -- which grouping or scheme '
-        'contains it, and what else that grouping contains',
-        '',
-        'Classification and membership questions are answered HERE and nowhere else. '
-        'The ontology holds each scheme as individuals with explicit memberships; the '
-        'data graph carries no such grouping, so one lookup here settles a question no '
-        'amount of querying can. Look the membership up rather than supplying it from '
-        'your own knowledge.',
+    ]
+
+    if has_ontology:
+        parts.append(
+            '- You need the classification a value belongs to -- which grouping or '
+            'scheme contains it, and what else that grouping contains'
+        )
+        parts.append('')
+        parts.append(
+            'Classification and membership questions are answered here. Where this '
+            'dataset keeps a classification in the ontology, the ontology holds it as '
+            'individuals with explicit memberships while the data graph stores the '
+            'bare value alone -- so one lookup here settles what querying the data '
+            'graph cannot. Look the membership up rather than supplying it from your '
+            'own knowledge.'
+        )
+
+    parts += [
         '',
         'Do NOT use when:',
         '- You want actual data -- use explore_entity instead',
@@ -669,8 +704,18 @@ def _build_example_queries(profile: DomainProfile) -> list[str]:
     return examples
 
 
-def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
-    """Build the graph_query tool description from a DomainProfile (and the backend flavour)."""
+def build_graph_query_description(
+    profile: DomainProfile,
+    flavour: 'Flavour | None' = None,
+    has_ontology: bool = False,
+) -> str:
+    """Build the graph_query tool description from a DomainProfile (and the backend flavour).
+
+    ``has_ontology`` gates the classification disclaimer: without a configured
+    ontology graph there is no tool to redirect to, and disclaiming the question
+    here while the ontology tools cannot answer it would leave no tool admitting
+    to it at all.
+    """
     parts = [
         f'Execute a read-only Cypher query against the {profile.group_id} graph.',
         '',
@@ -694,8 +739,18 @@ def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | No
         'Do NOT use when:',
         '- You need semantic similarity search -- use search instead',
         '- You need to discover entities by natural language -- use search instead',
-        '- You need a classification or taxonomy membership (which scheme or grouping '
-        'a value belongs to) -- the data graph does not carry these, use the ontology tools',
+    ]
+
+    # Only worth disclaiming when there is somewhere to send the question.
+    if has_ontology:
+        parts.append(
+            '- You need a classification or taxonomy membership (which scheme or '
+            'grouping a value belongs to) -- where this dataset keeps these in the '
+            'ontology the data graph carries the bare value only, so use the '
+            'ontology tools'
+        )
+
+    parts += [
         '',
         'Guardrails: read-only (no CREATE/DELETE/SET), auto-limited to 200 rows '
         '(the cap bounds the rows RETURNED, not the rows aggregated over),',
