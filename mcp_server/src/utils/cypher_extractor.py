@@ -29,6 +29,27 @@ class PropertyAccess:
         return hash((self.variable, self.property_name))
 
 
+@dataclass(frozen=True)
+class PropertyChain:
+    """A full dotted property path like ``n.attributes.edad``.
+
+    ``PropertyAccess`` flattens a nested path into one entry per segment, with no
+    record that one was written through the other. That distinction is decisive
+    for a backend whose node properties are FLAT — there ``n.attributes.edad``
+    reads a map that does not exist and yields null for every row, while
+    ``n.edad`` is the correct form — so the path is recorded alongside rather
+    than by widening ``PropertyAccess``, whose identity (variable + single name)
+    other call sites already depend on.
+
+    ``path`` is the segment tuple after the variable: ``('edad',)`` for a
+    one-level read, ``('attributes', 'edad')`` for a nested one. The LEAF is
+    always ``path[-1]``.
+    """
+
+    variable: str
+    path: tuple[str, ...]
+
+
 @dataclass
 class RelPattern:
     """A relationship pattern with source, target, type and direction."""
@@ -46,6 +67,9 @@ class CypherElements:
     labels: list[str] = field(default_factory=list)
     rel_types: list[str] = field(default_factory=list)
     properties: list[PropertyAccess] = field(default_factory=list)
+    # The same accesses with their PATH intact — see PropertyChain. Additive:
+    # `properties` keeps its historic flattened shape for existing consumers.
+    property_chains: list[PropertyChain] = field(default_factory=list)
     var_labels: dict[str, str] = field(default_factory=dict)
     rel_patterns: list[RelPattern] = field(default_factory=list)
     parse_errors: int = 0
@@ -77,6 +101,7 @@ class _ElementListener(CypherParserListener):
         self._labels: list[str] = []
         self._rel_types: list[str] = []
         self._properties: list[PropertyAccess] = []
+        self._property_chains: list[PropertyChain] = []
         self._var_labels: dict[str, str] = {}
         self._rel_patterns: list[RelPattern] = []
         # Track the previous node variable in a pattern element chain
@@ -197,6 +222,13 @@ class _ElementListener(CypherParserListener):
             if pa not in self._properties:
                 self._properties.append(pa)
 
+        # The same access with its path kept whole. Guarded on `prop_names` so a
+        # bare atom never produces an empty chain.
+        if prop_names:
+            chain = PropertyChain(variable=variable, path=tuple(prop_names))
+            if chain not in self._property_chains:
+                self._property_chains.append(chain)
+
     # -- Build result ----------------------------------------------------------
 
     def build(self, parse_errors: int) -> CypherElements:
@@ -204,6 +236,7 @@ class _ElementListener(CypherParserListener):
             labels=self._labels,
             rel_types=self._rel_types,
             properties=self._properties,
+            property_chains=self._property_chains,
             var_labels=self._var_labels,
             rel_patterns=self._rel_patterns,
             parse_errors=parse_errors,

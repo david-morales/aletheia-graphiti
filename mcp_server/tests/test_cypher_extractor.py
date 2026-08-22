@@ -7,7 +7,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
-from utils.cypher_extractor import PropertyAccess, extract_elements
+from utils.cypher_extractor import PropertyAccess, PropertyChain, extract_elements
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +167,63 @@ class TestPropertyExtraction:
         for prop in result.properties:
             assert prop.variable != "'2024-01-01'"
             assert '2024' not in prop.variable
+
+
+# ---------------------------------------------------------------------------
+# Property CHAINS — the full dotted path, not the flattened segments
+# ---------------------------------------------------------------------------
+
+
+class TestPropertyChainExtraction:
+    """``property_chains`` keeps what ``properties`` throws away: the path.
+
+    ``properties`` flattens ``n.attributes.edad`` into two independent accesses,
+    so a consumer cannot tell a one-level read from a nested one. That distinction
+    is the whole question for a backend whose node properties are flat, so the
+    chain is recorded alongside rather than by widening ``PropertyAccess`` (whose
+    identity other call sites depend on).
+    """
+
+    def test_single_segment_chain(self):
+        result = extract_elements('MATCH (n:Evento) RETURN n.name')
+        assert PropertyChain(variable='n', path=('name',)) in result.property_chains
+
+    def test_nested_chain_keeps_both_segments(self):
+        result = extract_elements('MATCH (n:Evento) RETURN n.attributes.edad')
+        assert PropertyChain(variable='n', path=('attributes', 'edad')) in result.property_chains
+
+    def test_nested_chain_leaf_and_container_are_ordered(self):
+        result = extract_elements('MATCH (n:Evento) RETURN n.attributes.edad')
+        chain = next(c for c in result.property_chains if len(c.path) == 2)
+        assert chain.path[0] == 'attributes'
+        assert chain.path[-1] == 'edad'
+
+    def test_where_clause_chain_is_captured(self):
+        result = extract_elements(
+            "MATCH (n:Evento) WHERE n.fecha_inicio > '2026-01-01' RETURN n"
+        )
+        assert PropertyChain(variable='n', path=('fecha_inicio',)) in result.property_chains
+
+    def test_string_literal_yields_no_chain(self):
+        result = extract_elements("MATCH (n) WHERE n.x = 'a.b.c' RETURN n")
+        assert PropertyChain(variable='n', path=('x',)) in result.property_chains
+        for chain in result.property_chains:
+            assert 'a' not in chain.path
+            assert 'b' not in chain.path
+
+    def test_function_calls_yield_no_chain(self):
+        result = extract_elements('MATCH (n)-[r]->(m) RETURN type(r), keys(n), labels(m)')
+        assert result.property_chains == []
+
+    def test_map_literal_and_parameter_yield_no_chain(self):
+        result = extract_elements('MATCH (n {a: 1}) WHERE n.b = $param RETURN n')
+        assert PropertyChain(variable='n', path=('b',)) in result.property_chains
+        assert all(c.path != ('a',) for c in result.property_chains)
+
+    def test_backticked_segments_are_unquoted(self):
+        result = extract_elements('MATCH (n) RETURN n.`fecha de inicio`')
+        assert PropertyChain(variable='n', path=('fecha de inicio',)) in result.property_chains
+
+    def test_chain_survives_with_rebinding(self):
+        result = extract_elements('MATCH (p:Parte) WITH p AS q RETURN q.fecha_de_inicio')
+        assert PropertyChain(variable='q', path=('fecha_de_inicio',)) in result.property_chains
