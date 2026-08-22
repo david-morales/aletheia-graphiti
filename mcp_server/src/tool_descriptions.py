@@ -499,6 +499,16 @@ def build_search_ontology_description(profile: DomainProfile) -> str:
         '- You need to understand what types of entities and relationships are defined',
         '- You want to know what properties or attributes a type has',
         '- You need the formal schema behind the data',
+        '- You need to know how this dataset organises its categorical values -- '
+        'which classification, grouping or scheme a given value belongs to',
+        '',
+        'Classification questions are answered HERE and nowhere else. The ontology '
+        'holds each scheme as individuals with explicit memberships; the data graph '
+        'stores the bare value and carries no grouping for it, so no Cypher query can '
+        'recover one. Look the membership up rather than supplying it from your own '
+        'knowledge -- this dataset\'s scheme need not agree with the one you would '
+        'assume, and where they differ the dataset is what the answer is judged '
+        'against.',
         '',
         'Do NOT use when:',
         '- You want actual data (entities, facts) -- use search instead',
@@ -529,6 +539,14 @@ def build_explore_ontology_description(profile: DomainProfile) -> str:
         'Use when:',
         '- You want properties, relationships, and parent classes for a specific type',
         '- You want to understand the class hierarchy',
+        '- You need the classification a value belongs to -- which grouping or scheme '
+        'contains it, and what else that grouping contains',
+        '',
+        'Classification and membership questions are answered HERE and nowhere else. '
+        'The ontology holds each scheme as individuals with explicit memberships; the '
+        'data graph carries no such grouping, so one lookup here settles a question no '
+        'amount of querying can. Look the membership up rather than supplying it from '
+        'your own knowledge.',
         '',
         'Do NOT use when:',
         '- You want actual data -- use explore_entity instead',
@@ -676,6 +694,8 @@ def build_graph_query_description(profile: DomainProfile, flavour: 'Flavour | No
         'Do NOT use when:',
         '- You need semantic similarity search -- use search instead',
         '- You need to discover entities by natural language -- use search instead',
+        '- You need a classification or taxonomy membership (which scheme or grouping '
+        'a value belongs to) -- the data graph does not carry these, use the ontology tools',
         '',
         'Guardrails: read-only (no CREATE/DELETE/SET), auto-limited to 200 rows '
         '(the cap bounds the rows RETURNED, not the rows aggregated over),',
