@@ -71,6 +71,10 @@ class CypherElements:
     # `properties` keeps its historic flattened shape for existing consumers.
     property_chains: list[PropertyChain] = field(default_factory=list)
     var_labels: dict[str, str] = field(default_factory=dict)
+    # Variables the query binds to a RELATIONSHIP. A node-label census says
+    # nothing about edge properties, so a consumer validating property names
+    # against one must be able to leave these references alone.
+    rel_vars: set[str] = field(default_factory=set)
     rel_patterns: list[RelPattern] = field(default_factory=list)
     parse_errors: int = 0
 
@@ -103,6 +107,7 @@ class _ElementListener(CypherParserListener):
         self._properties: list[PropertyAccess] = []
         self._property_chains: list[PropertyChain] = []
         self._var_labels: dict[str, str] = {}
+        self._rel_vars: set[str] = set()
         self._rel_patterns: list[RelPattern] = []
         # Track the previous node variable in a pattern element chain
         # so multi-hop paths get correct source variables.
@@ -191,6 +196,10 @@ class _ElementListener(CypherParserListener):
         patternElemChain (though rare). The chain handler above also
         collects types; duplicates are prevented by the ``not in`` check.
         """
+        sym = ctx.symbol()
+        if sym:
+            self._rel_vars.add(sym.getText())
+
         rt = ctx.relationshipTypes()
         if rt:
             type_names = _normalize_names(rt.name())
@@ -238,6 +247,7 @@ class _ElementListener(CypherParserListener):
             properties=self._properties,
             property_chains=self._property_chains,
             var_labels=self._var_labels,
+            rel_vars=self._rel_vars,
             rel_patterns=self._rel_patterns,
             parse_errors=parse_errors,
         )

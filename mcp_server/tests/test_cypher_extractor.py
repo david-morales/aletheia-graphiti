@@ -227,3 +227,33 @@ class TestPropertyChainExtraction:
     def test_chain_survives_with_rebinding(self):
         result = extract_elements('MATCH (p:Parte) WITH p AS q RETURN q.fecha_de_inicio')
         assert PropertyChain(variable='q', path=('fecha_de_inicio',)) in result.property_chains
+
+
+# ---------------------------------------------------------------------------
+# Relationship variables
+# ---------------------------------------------------------------------------
+
+
+class TestRelVarExtraction:
+    """Which variables the query binds to a RELATIONSHIP rather than a node.
+
+    A node-label census says nothing about edge properties, so a consumer
+    checking property names against one must be able to leave edge-side
+    references alone.
+    """
+
+    def test_named_rel_var(self):
+        result = extract_elements('MATCH (a)-[r:REL]->(b) RETURN r.fact')
+        assert result.rel_vars == {'r'}
+
+    def test_anonymous_rel_binds_nothing(self):
+        result = extract_elements('MATCH (a)-[:REL]->(b) RETURN a.name')
+        assert result.rel_vars == set()
+
+    def test_untyped_named_rel_var(self):
+        result = extract_elements('MATCH (a)-[rel]->(b) WHERE rel.peso > 1 RETURN rel.tipo')
+        assert result.rel_vars == {'rel'}
+
+    def test_node_vars_are_not_rel_vars(self):
+        result = extract_elements('MATCH (a:Parte)-[r:REL]->(b:Persona) RETURN a.x, b.y, r.z')
+        assert result.rel_vars == {'r'}
