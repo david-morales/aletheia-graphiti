@@ -239,6 +239,75 @@ class TestOnlyNodeBoundReferencesAreJudged:
         assert 'fecha_inicio' in _joined(w)
 
 
+class TestAReturnAliasIsNotARebinding:
+    """`RETURN parte.name AS parte` must not silence the rest of the query.
+
+    Measured on a live judged run: this shape — projecting a node property
+    under an alias equal to the node's own variable — is the agent's bread and
+    butter, and it took the whole cure down. A RETURN alias creates no binding
+    that any same-clause reference can see: every `parte.<prop>` in the same
+    RETURN and its ORDER BY is evaluated in MATCH scope, where `parte` is the
+    node. Treating the alias as a rebinding revoked node-ness for the WHOLE
+    query and retro-silenced references that had already been read correctly.
+    """
+
+    _CENSUS = {
+        'attribute_container': None,
+        'node_labels': {
+            'ParteDeIntervencion': {
+                'count': 20,
+                'properties': ['clase_de_actuacion', 'fecha_de_inicio', 'name', 'uuid'],
+                'attribute_keys': ['clase_de_actuacion', 'fecha_de_inicio'],
+                'sampled': True,
+            },
+            'Persona': {
+                'count': 40,
+                'properties': ['name', 'uuid'],
+                'attribute_keys': [],
+                'sampled': True,
+            },
+        },
+    }
+
+    # The exact query the benchmark agent ran, verbatim.
+    _AGENT_QUERY = (
+        'MATCH (p:Persona {name: "KHADIJA DAOUD"})-[r1]->(id)'
+        '-[r2:EN_PARTE]->(parte:ParteDeIntervencion)\n'
+        'RETURN parte.name AS parte, type(r1) AS rol, '
+        'parte.fecha_inicio AS fecha, parte.clase_de_actuacion AS clase\n'
+        'ORDER BY parte.fecha_inicio'
+    )
+
+    def test_the_agent_query_still_gets_its_warning(self):
+        w = build_schema_warnings(self._AGENT_QUERY, self._CENSUS)
+        assert w, 'the cure went silent on the shape it exists for'
+        assert 'fecha_inicio' in _joined(w)
+
+    def test_the_agent_query_warning_carries_did_you_mean(self):
+        w = build_schema_warnings(self._AGENT_QUERY, self._CENSUS)
+        assert 'fecha_de_inicio' in _joined(w)
+
+    def test_the_correctly_named_columns_are_not_reported(self):
+        w = build_schema_warnings(self._AGENT_QUERY, self._CENSUS)
+        assert 'clase_de_actuacion' not in _joined(w)
+
+    def test_self_shadow_with_an_alias_equal_to_the_bad_property(self):
+        """Run 1's shape: self-shadow AND an alias named like the misspelling."""
+        w = build_schema_warnings(
+            'MATCH (parte:ParteDeIntervencion) WHERE parte.name IN ["a", "b"] '
+            'RETURN parte.name AS parte, parte.fecha_inicio AS fecha_inicio',
+            self._CENSUS,
+        )
+        assert 'fecha_inicio' in _joined(w)
+
+    def test_a_plain_return_alias_does_not_revoke(self):
+        w = build_schema_warnings(
+            'MATCH (p:ParteDeIntervencion) RETURN count(*) AS p, p.fecha_inicio',
+            self._CENSUS,
+        )
+        assert 'fecha_inicio' in _joined(w)
+
+
 class TestARebindThatShadowsANodeName:
     """Binding is not add-only: a name can STOP being a node.
 

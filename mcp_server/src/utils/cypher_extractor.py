@@ -8,9 +8,15 @@ variable-to-label bindings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream, ParseTreeWalker
 from antlr4_cypher import CypherLexer, CypherParser, CypherParserListener
+
+# How far above a projectionItem its owning clause sits: projectionItems ->
+# projectionBody -> the WITH/RETURN clause. Bounded so a malformed tree cannot
+# turn the lookup into a climb to the root.
+_CLAUSE_ANCESTOR_DEPTH = 3
 
 
 @dataclass
@@ -213,23 +219,51 @@ class _ElementListener(CypherParserListener):
     # -- Projections (alias rebinding) -----------------------------------------
 
     def enterProjectionItem(self, ctx: CypherParser.ProjectionItemContext) -> None:
-        """Propagate node-ness across ``WITH <var> AS <alias>``.
+        """Propagate node-ness across ``WITH <var> AS <alias>`` — WITH only.
 
         ONLY a bare identifier already bound to a node propagates. Everything
         else a projection can produce — a map literal, an aggregate, a function
         result, a property access, a relationship variable — yields an alias
-        that is not a node, and is therefore simply never added to the
-        allow-list.
+        that is not a node, and revokes the name it lands on.
+
+        A **RETURN** alias is NOT a rebinding and is ignored here. `WITH`
+        rescopes what follows it; `RETURN` only names output columns, and no
+        reference can see those names — the other items of the same `RETURN`,
+        and its `ORDER BY`, are all evaluated in the scope `RETURN` consumed.
+        Treating a RETURN alias as a rebinding made
+        `RETURN parte.name AS parte, parte.fecha AS f` revoke `parte` for the
+        WHOLE query and retro-silence references already read correctly, which
+        is measured: it took the property-name warning off a live agent query
+        whose whole point was that `fecha_inicio` was misspelled.
 
         The walk is in document order, so the `MATCH` that binds the source
         variable is always seen before the `WITH` that renames it, and a chain
-        of rebindings (`WITH p AS x WITH x AS y`) propagates one link at a time.
+        of rebindings (`WITH p AS x, x AS y`) propagates one link at a time.
         """
+        if not self._is_within(ctx, CypherParser.WithStContext):
+            return
         sym = ctx.symbol()
         expr = ctx.expression()
         if sym is None or expr is None:
             return
         self._rebind(sym.getText(), _strip_backticks(expr.getText()))
+
+    @staticmethod
+    def _is_within(ctx: Any, ancestor_type: type) -> bool:
+        """Does ``ctx`` sit inside an ``ancestor_type`` context?
+
+        Bounded walk: a projectionItem's clause is three links up
+        (projectionItems -> projectionBody -> the clause), and the cap keeps a
+        malformed tree from turning this into a climb to the root.
+        """
+        node = ctx.parentCtx
+        for _ in range(_CLAUSE_ANCESTOR_DEPTH):
+            if node is None:
+                return False
+            if isinstance(node, ancestor_type):
+                return True
+            node = node.parentCtx
+        return False
 
     def enterUnwindSt(self, ctx: CypherParser.UnwindStContext) -> None:
         """`UNWIND <expr> AS x` — the element is not a node binding.
@@ -251,8 +285,15 @@ class _ElementListener(CypherParserListener):
         where `p` was a node has to take the entry away, or every non-node shape
         walks back in the moment it reuses a node's name — and reusing the name
         is the natural thing to write. Only a bare identifier already bound to a
-        node grants; everything else a projection or an UNWIND can produce
+        node grants; everything else a WITH projection or an UNWIND can produce
         revokes.
+
+        ACCEPTED RESIDUAL: because RETURN aliases are ignored (see
+        `enterProjectionItem`), an ORDER BY that member-accesses a RETURN alias
+        shadowing a node name — `MATCH (p:A) RETURN {a: 1} AS p ORDER BY p.a` —
+        is judged in node scope and could draw an unwarranted warning. That
+        shape is contrived; the shape this exclusion protects is what agents
+        write constantly.
         """
         if source in self._node_vars:
             self._node_vars.add(alias)
