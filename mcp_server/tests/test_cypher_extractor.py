@@ -234,26 +234,64 @@ class TestPropertyChainExtraction:
 # ---------------------------------------------------------------------------
 
 
-class TestRelVarExtraction:
-    """Which variables the query binds to a RELATIONSHIP rather than a node.
+class TestNodeVarExtraction:
+    """Which variables the query binds to a NODE.
 
-    A node-label census says nothing about edge properties, so a consumer
-    checking property names against one must be able to leave edge-side
-    references alone.
+    A node-label census can only speak about nodes, so a consumer validating
+    property names against one needs an ALLOW-LIST of node-bound variables
+    rather than a deny-list of everything else. A deny-list has to enumerate
+    every non-node shape a variable can take — map projections, `UNWIND`
+    elements, function results, relationship rebindings — and every shape it
+    misses becomes a wrong accusation against a valid query.
     """
 
-    def test_named_rel_var(self):
+    def test_node_pattern_binds_a_node_var(self):
+        result = extract_elements('MATCH (p:Parte) RETURN p.name')
+        assert 'p' in result.node_vars
+
+    def test_unlabelled_node_pattern_still_binds(self):
+        result = extract_elements('MATCH (n) RETURN n.name')
+        assert 'n' in result.node_vars
+
+    def test_relationship_var_is_not_a_node_var(self):
         result = extract_elements('MATCH (a)-[r:REL]->(b) RETURN r.fact')
-        assert result.rel_vars == {'r'}
+        assert 'r' not in result.node_vars
+        assert {'a', 'b'} <= result.node_vars
 
-    def test_anonymous_rel_binds_nothing(self):
-        result = extract_elements('MATCH (a)-[:REL]->(b) RETURN a.name')
-        assert result.rel_vars == set()
+    def test_alias_of_a_node_var_inherits_node_ness(self):
+        result = extract_elements('MATCH (p:Parte) WITH p AS q RETURN q.fecha_de_inicio')
+        assert 'q' in result.node_vars
 
-    def test_untyped_named_rel_var(self):
-        result = extract_elements('MATCH (a)-[rel]->(b) WHERE rel.peso > 1 RETURN rel.tipo')
-        assert result.rel_vars == {'rel'}
+    def test_alias_chain_within_one_clause_inherits(self):
+        result = extract_elements('MATCH (p) WITH p AS x, x AS y RETURN y.name')
+        assert 'y' in result.node_vars
 
-    def test_node_vars_are_not_rel_vars(self):
-        result = extract_elements('MATCH (a:Parte)-[r:REL]->(b:Persona) RETURN a.x, b.y, r.z')
-        assert result.rel_vars == {'r'}
+    def test_consecutive_with_clauses_are_a_known_parser_gap(self):
+        """Pinned as a LIMIT, not a capability: this grammar cannot read them.
+
+        The gap is pre-existing and already handled downstream — a non-zero
+        `parse_errors` suppresses every schema warning — so it costs silence,
+        never a wrong accusation.
+        """
+        result = extract_elements('MATCH (p) WITH p AS x WITH x AS y RETURN y.name')
+        assert result.parse_errors > 0
+
+    def test_alias_of_a_relationship_var_does_not_inherit(self):
+        result = extract_elements('MATCH (a)-[r:REL]->(b) WITH r AS rel RETURN rel.rol')
+        assert 'rel' not in result.node_vars
+
+    def test_map_projection_alias_is_not_a_node_var(self):
+        result = extract_elements(
+            'MATCH (p:Parte) WITH {mun: p.municipio, n: count(*)} AS agg RETURN agg.mun'
+        )
+        assert 'agg' not in result.node_vars
+
+    def test_aggregate_alias_is_not_a_node_var(self):
+        result = extract_elements('MATCH (p) WITH collect(p) AS rows RETURN rows')
+        assert 'rows' not in result.node_vars
+
+    def test_unwind_alias_is_not_a_node_var(self):
+        result = extract_elements(
+            'MATCH (p) WITH collect(p) AS rows UNWIND rows AS row RETURN row.municipio'
+        )
+        assert 'row' not in result.node_vars

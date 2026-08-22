@@ -11,7 +11,7 @@ to call it before writing Cypher) and is measured insufficient. This module adds
 the channel that arrives at the moment it can act: a WARNING in the result the
 model reads next turn, while it still holds the query that produced the nulls.
 
-Two rules govern every warning here:
+Three rules govern every warning here:
 
 * **It never blocks and never rewrites.** The query has already run. A warning is
   advice attached to the answer, not a verdict on it.
@@ -19,6 +19,28 @@ Two rules govern every warning here:
   an empty property union is not evidence of absence, and no-evidence must not be
   spent as an accusation. Where the census cannot support a verdict, this module
   is silent.
+* **It never claims more than the census measured.** The census SAMPLES a bounded
+  number of nodes per label; `sampled: True` means "the probe returned rows", not
+  "every key was observed". A live scan of a bench graph found a real domain
+  property the sample never saw. So an unknown name is reported as ABSENT FROM
+  THE CENSUS, never as absent from the graph — the difference decides whether a
+  model fixes a broken query or breaks a working one.
+
+**Silence is the safe failure.** Every uncertainty here resolves toward emitting
+nothing. A missed warning costs the model one wrong query it was going to write
+anyway; a wrong warning tells it to edit a query that works, on the connector's
+authority.
+
+Known limits — what this cannot see (all of them cost silence, never a false
+warning):
+
+* **UNION arms after the first.** The vendored grammar's entry rules stop at the
+  first `singleQuery` and report NO parse error, so references in later arms are
+  invisible. Measured prevalence in the reference artifact: 4/120 queries.
+* **`exists()` and `CALL {}` subqueries.** These fail to parse, and a non-zero
+  `parse_errors` suppresses every warning for the whole query. Measured
+  prevalence: 0/120.
+* **Consecutive `WITH` clauses.** Same parser gap, same suppression.
 
 Relationship to :mod:`utils.cypher_quality`: that module answers the finer,
 per-label question (is this property reachable on the label this alias is bound
@@ -35,7 +57,7 @@ from __future__ import annotations
 import difflib
 from typing import Any
 
-from utils.cypher_extractor import extract_elements
+from utils.cypher_extractor import CypherElements, extract_elements
 from utils.cypher_quality import _INTERNAL_PROPERTIES as _NODE_INTERNAL_PROPERTIES
 
 # Properties Graphiti itself stores, which no domain census needs to announce.
@@ -67,6 +89,23 @@ _INTERNAL_PROPERTIES: frozenset[str] = _NODE_INTERNAL_PROPERTIES | frozenset({
 # How many census names a did-you-mean may offer, and how close they must be.
 _SUGGESTION_COUNT = 3
 _SUGGESTION_CUTOFF = 0.6
+
+# A warning list is read by a model with a context budget, and a query can name
+# an unbounded number of properties. Past this many findings of either kind the
+# rest are COUNTED rather than spelled out — a truncation that says so beats
+# both a silent drop and a wall of text.
+_MAX_WARNINGS_PER_KIND = 5
+
+# The consequence is identical for every finding, so it is stated ONCE at the
+# end rather than repeated per entry. Unconditionally true: it does not depend
+# on how complete the census is.
+_SHARED_NOTE = (
+    'A property name the graph does not carry is not an error here — the query '
+    'runs and the column comes back null for every row, so an empty or '
+    'null-filled result does NOT establish that the fact is absent. Call '
+    'get_schema for this graph\'s property names before concluding anything '
+    'from this result.'
+)
 
 
 def _is_internal(name: str) -> bool:
@@ -117,18 +156,24 @@ def _did_you_mean(name: str, union: set[str]) -> list[str]:
 
 
 def _unknown_property_warning(name: str, union: set[str]) -> str:
+    """Report a name the census did not observe — as exactly that, and no more.
+
+    The census samples a bounded number of nodes per label, so it can say a name
+    was NOT SEEN. It cannot say the name does not exist: a live scan of a bench
+    graph turned up a real domain property the sample missed. Stated absolutely,
+    that gap makes the connector tell a model to edit a query that works.
+    """
+    text = f'Property `{name}` does not appear in this graph\'s sampled property census.'
     suggestions = _did_you_mean(name, union)
-    text = (
-        f'Property `{name}` is not carried by any node type in this graph. '
-        f'A property that does not exist is not an error here: the column comes '
-        f'back null for every row, so an empty result does NOT mean the fact is '
-        f'absent.'
-    )
     if suggestions:
         named = ', '.join(f'`{s}`' for s in suggestions)
-        text += f' Closest names this graph does carry: {named}.'
+        text += f' Closest names in the census: {named}.'
     else:
-        text += ' Call get_schema for this graph\'s exact property names.'
+        text += (
+            ' The census samples nodes rather than enumerating every key, so a '
+            'rare property can be missing from it — check get_schema before '
+            'assuming the name is wrong.'
+        )
     return text
 
 
@@ -155,28 +200,46 @@ def _chain_warning(variable: str, path: tuple[str, ...], container: str | None) 
             f'`{correct}`'
         )
     return (
-        f'`{written}` reads through a map that stored nodes do not have — '
-        f'{shape}. Nested field maps appear in the JSON that search and explore '
-        f'return, but the stored node does not carry that shape, so this path '
-        f'returns null for every row rather than failing.'
+        f'`{written}` reads through a map the census does not show on stored '
+        f'nodes — {shape}. Nested field maps appear in the JSON that search and '
+        f'explore return; the stored node does not carry that shape.'
     )
 
 
-def build_schema_warnings(query: str, schema: dict[str, Any] | None) -> list[str]:
+def _capped(warnings: list[str], noun: str) -> list[str]:
+    """At most ``_MAX_WARNINGS_PER_KIND`` findings, with the remainder counted."""
+    if len(warnings) <= _MAX_WARNINGS_PER_KIND:
+        return warnings
+    hidden = len(warnings) - _MAX_WARNINGS_PER_KIND
+    return [
+        *warnings[:_MAX_WARNINGS_PER_KIND],
+        f'... and {hidden} more {noun} the census cannot account for.',
+    ]
+
+
+def build_schema_warnings(
+    query: str,
+    schema: dict[str, Any] | None,
+    *,
+    elements: CypherElements | None = None,
+) -> list[str]:
     """Warnings about property references the census cannot account for.
 
     ``query`` is the SANITIZED query — the text that actually ran, so a warning
-    can never describe something the pipeline already rewrote away.
+    can never describe something the pipeline already rewrote away. ``elements``
+    lets a caller that has already parsed the query pass the result in rather
+    than paying for a second parse.
 
     Returns an empty list wherever a verdict would not be grounded: no census, a
-    query this parser could not read, or a census too degraded to prove an
+    query this parser could not read, or a census too degraded to support an
     absence. The result is advisory only — the caller attaches it to a response
     that has already been produced.
     """
     if not schema:
         return []
 
-    elements = extract_elements(query)
+    if elements is None:
+        elements = extract_elements(query)
     # A partial parse yields partial references, and a warning derived from one
     # would be a guess about a guess. cypher_quality takes the same position
     # (`parse_failed` suppresses its schema verdict).
@@ -191,23 +254,37 @@ def build_schema_warnings(query: str, schema: dict[str, Any] | None) -> list[str
     unknown_warnings: dict[str, str] = {}
 
     for chain in elements.property_chains:
-        # The census describes NODE labels. An edge-bound reference is outside
-        # what it can speak to, so it is left alone rather than guessed at.
-        if chain.variable in elements.rel_vars:
+        # ONLY node-bound variables are judged. The census describes node
+        # labels, so an edge reference, a map projection, an UNWIND element or
+        # a function result is outside what it can speak to — and every one of
+        # those is a shape valid queries use routinely. An allow-list is the
+        # only safe direction here: a deny-list would have to enumerate every
+        # non-node shape, and each one it missed would be a wrong accusation
+        # against working Cypher.
+        if chain.variable not in elements.node_vars:
             continue
 
+        head = chain.path[0]
         nested = len(chain.path) > 1
-        through_container = (
-            nested and container is not None and chain.path[0] == container
-        )
+        through_container = nested and container is not None and head == container
+
+        # `p.created_at.year` reads a COMPONENT of a real property, not a path
+        # through a phantom map. Warned about naively it advised `p.year` — a
+        # property that does not exist — so following the advice made the query
+        # worse. A first segment the census knows means the read is grounded;
+        # this module has nothing to say about what lives inside a value.
+        component_access = nested and (head in union or _is_internal(head))
 
         # A nested read is a defect unless it goes through the map this backend
-        # announced. Schema-INDEPENDENT: it does not consult the property union,
-        # so the positive-census gate does not bind it.
-        if nested and not through_container:
+        # announced, or reaches into a property that exists. Schema-INDEPENDENT
+        # in the flat case, so the positive-census gate does not bind it.
+        if nested and not through_container and not component_access:
             warning = _chain_warning(chain.variable, chain.path, container)
             if warning not in chain_warnings:
                 chain_warnings.append(warning)
+
+        if component_access:
+            continue
 
         # The leaf is the name the query is actually reaching for, whatever
         # shape it was written through — so a chain that was ALSO misspelled
@@ -226,4 +303,8 @@ def build_schema_warnings(query: str, schema: dict[str, Any] | None) -> list[str
         if leaf not in unknown_warnings:
             unknown_warnings[leaf] = _unknown_property_warning(leaf, union)
 
-    return chain_warnings + [unknown_warnings[k] for k in sorted(unknown_warnings)]
+    findings = _capped(chain_warnings, 'nested property paths') + _capped(
+        [unknown_warnings[k] for k in sorted(unknown_warnings)], 'property references'
+    )
+    # The consequence is the same for all of them, so it is stated once.
+    return [*findings, _SHARED_NOTE] if findings else []

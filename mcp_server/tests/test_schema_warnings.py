@@ -163,6 +163,12 @@ class TestInternalProperties:
         )
         assert w == []
 
+    def test_alias_of_an_edge_variable_is_not_judged_either(self):
+        w = build_schema_warnings(
+            'MATCH (a)-[r:REL]->(b) WITH r AS rel RETURN rel.rol', _flat_census()
+        )
+        assert w == []
+
     def test_node_reference_still_checked_alongside_an_edge_one(self):
         w = build_schema_warnings(
             'MATCH (a:Parte)-[r:REL]->(b) RETURN r.peso_relativo, a.fecha_inicio',
@@ -170,6 +176,93 @@ class TestInternalProperties:
         )
         assert 'fecha_inicio' in _joined(w)
         assert 'peso_relativo' not in _joined(w)
+
+
+# ---------------------------------------------------------------------------
+# Only NODE-bound references are judged
+# ---------------------------------------------------------------------------
+
+
+class TestOnlyNodeBoundReferencesAreJudged:
+    """A node-label census can only speak about nodes.
+
+    Every probe here is a VALID query. Judging its non-node atoms against a
+    node census told the model to edit working Cypher on the connector's
+    authority — the worst failure this channel can have, because the advice
+    is both wrong and confidently sourced.
+    """
+
+    def test_map_projection_alias_is_not_judged(self):
+        """This is how a model writes top-N-per-group — it lands on the guard cells."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) WITH {mun: p.localidad, n: count(*)} AS agg '
+            'RETURN agg.mun, agg.n',
+            _flat_census(),
+        )
+        assert w == []
+
+    def test_unwound_row_alias_is_not_judged(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) '
+            'WITH collect({localidad: p.localidad, total: 1}) AS rows '
+            'UNWIND rows AS row RETURN row.localidad, row.total',
+            _flat_census(),
+        )
+        assert w == []
+
+    def test_function_result_atom_is_not_judged(self):
+        w = build_schema_warnings(
+            'MATCH (a)-[r:REL]->(b) RETURN properties(r).rol', _flat_census()
+        )
+        assert w == []
+
+    def test_constructed_value_atom_is_not_judged(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN point({latitude: 1, longitude: 2}).latitude',
+            _flat_census(),
+        )
+        assert w == []
+
+    def test_a_node_alias_is_still_judged(self):
+        """The allow-list must not silence the case this channel exists for."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) WITH p AS q RETURN q.fecha_inicio', _flat_census()
+        )
+        assert 'fecha_inicio' in _joined(w)
+
+
+# ---------------------------------------------------------------------------
+# Component access on a real property
+# ---------------------------------------------------------------------------
+
+
+class TestComponentAccess:
+    """`p.created_at.year` reads a COMPONENT of a real property, not a bad path.
+
+    Warned about naively it produced four findings and advised `p.year` — a
+    property that does not exist, so following the advice makes the query worse
+    and invites the model to loop.
+    """
+
+    def test_internal_property_component_is_silent(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.created_at.year, p.created_at.month',
+            _flat_census(),
+        )
+        assert w == []
+
+    def test_census_property_component_is_silent(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.fecha_de_inicio.year', _flat_census()
+        )
+        assert w == []
+
+    def test_component_of_an_unknown_property_still_warns(self):
+        """The FIRST segment is what is being read; an unknown one is still unknown."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.fecha_inicio.year', _flat_census()
+        )
+        assert 'fecha_inicio' in _joined(w)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +411,93 @@ class TestNoFalsePositives:
 # ---------------------------------------------------------------------------
 # Contract
 # ---------------------------------------------------------------------------
+
+
+class TestTheClaimMatchesTheEvidence:
+    """The census SAMPLES; it does not enumerate.
+
+    Measured on the live bench graph: a full `MATCH (n) UNWIND keys(n)` scan
+    turned up a real domain property the 50-node-per-label sample never saw.
+    `sampled: True` means "the probe returned rows", not "every key was
+    observed" — so an absolute claim of non-existence is a claim the connector
+    cannot support, and acting on it means editing a WORKING query.
+    """
+
+    def test_no_absolute_nonexistence_claim(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.situacion_especial', _flat_census()
+        )
+        joined = _joined(w)
+        assert joined, 'the reference is still worth reporting'
+        for absolute in (
+            'not carried by any node type',
+            'does not exist',
+            'no node type',
+            'nowhere in',
+        ):
+            assert absolute not in joined.lower(), (
+                f'the warning still claims {absolute!r}, which the census cannot prove'
+            )
+
+    def test_the_claim_is_scoped_to_the_census(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.situacion_especial', _flat_census()
+        )
+        assert 'census' in _joined(w).lower()
+
+    def test_the_did_you_mean_survives_the_rewording(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.fecha_inicio', _flat_census()
+        )
+        assert 'fecha_de_inicio' in _joined(w)
+
+    def test_the_get_schema_pointer_survives(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.situacion_especial', _flat_census()
+        )
+        assert 'get_schema' in _joined(w)
+
+    def test_the_silent_null_column_explanation_survives(self):
+        """Unconditionally true regardless of how complete the census is."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.situacion_especial', _flat_census()
+        )
+        assert 'null' in _joined(w).lower()
+
+
+class TestOutputIsBounded:
+    """A warning list is read by a model with a context budget."""
+
+    def _many_bad_props(self, n: int) -> str:
+        refs = ', '.join(f'p.bogus_prop_{i}' for i in range(n))
+        return f'MATCH (p:Parte) RETURN {refs}'
+
+    def test_one_hundred_bad_references_stay_bounded(self):
+        w = build_schema_warnings(self._many_bad_props(100), _flat_census())
+        assert len(w) <= 8, f'emitted {len(w)} warnings'
+        assert len(_joined(w)) < 4000, f'emitted {len(_joined(w))} chars'
+
+    def test_the_overflow_is_counted_not_dropped_silently(self):
+        w = build_schema_warnings(self._many_bad_props(100), _flat_census())
+        assert 'more' in _joined(w).lower()
+
+    def test_a_small_number_is_not_truncated(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.bogus_one, p.bogus_two', _flat_census()
+        )
+        assert 'more' not in _joined(w).lower()
+
+    def test_the_shared_explanation_is_stated_once(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.bogus_one, p.bogus_two, p.bogus_three',
+            _flat_census(),
+        )
+        assert _joined(w).lower().count('null for every row') == 1
+
+    def test_many_bad_chains_stay_bounded(self):
+        refs = ', '.join(f'p.attributes.bogus_{i}' for i in range(100))
+        w = build_schema_warnings(f'MATCH (p:Parte) RETURN {refs}', _flat_census())
+        assert len(_joined(w)) < 4000, f'emitted {len(_joined(w))} chars'
 
 
 class TestContract:

@@ -71,10 +71,14 @@ class CypherElements:
     # `properties` keeps its historic flattened shape for existing consumers.
     property_chains: list[PropertyChain] = field(default_factory=list)
     var_labels: dict[str, str] = field(default_factory=dict)
-    # Variables the query binds to a RELATIONSHIP. A node-label census says
-    # nothing about edge properties, so a consumer validating property names
-    # against one must be able to leave these references alone.
-    rel_vars: set[str] = field(default_factory=set)
+    # Variables the query binds to a NODE, including aliases rebound from one
+    # (`WITH p AS q`). A node-label census can only speak about nodes, so a
+    # consumer validating property names against one needs this ALLOW-LIST:
+    # a deny-list would have to enumerate every non-node shape a variable can
+    # take — map projections, UNWIND elements, function results, relationship
+    # rebindings — and every shape it missed would become a wrong accusation
+    # against a valid query.
+    node_vars: set[str] = field(default_factory=set)
     rel_patterns: list[RelPattern] = field(default_factory=list)
     parse_errors: int = 0
 
@@ -107,7 +111,7 @@ class _ElementListener(CypherParserListener):
         self._properties: list[PropertyAccess] = []
         self._property_chains: list[PropertyChain] = []
         self._var_labels: dict[str, str] = {}
-        self._rel_vars: set[str] = set()
+        self._node_vars: set[str] = set()
         self._rel_patterns: list[RelPattern] = []
         # Track the previous node variable in a pattern element chain
         # so multi-hop paths get correct source variables.
@@ -118,6 +122,9 @@ class _ElementListener(CypherParserListener):
     def enterNodePattern(self, ctx: CypherParser.NodePatternContext) -> None:
         sym = ctx.symbol()
         var_name = sym.getText() if sym else None
+
+        if var_name:
+            self._node_vars.add(var_name)
 
         labels_ctx = ctx.nodeLabels()
         if labels_ctx:
@@ -196,16 +203,35 @@ class _ElementListener(CypherParserListener):
         patternElemChain (though rare). The chain handler above also
         collects types; duplicates are prevented by the ``not in`` check.
         """
-        sym = ctx.symbol()
-        if sym:
-            self._rel_vars.add(sym.getText())
-
         rt = ctx.relationshipTypes()
         if rt:
             type_names = _normalize_names(rt.name())
             for t in type_names:
                 if t not in self._rel_types:
                     self._rel_types.append(t)
+
+    # -- Projections (alias rebinding) -----------------------------------------
+
+    def enterProjectionItem(self, ctx: CypherParser.ProjectionItemContext) -> None:
+        """Propagate node-ness across ``WITH <var> AS <alias>``.
+
+        ONLY a bare identifier already bound to a node propagates. Everything
+        else a projection can produce — a map literal, an aggregate, a function
+        result, a property access, a relationship variable — yields an alias
+        that is not a node, and is therefore simply never added to the
+        allow-list.
+
+        The walk is in document order, so the `MATCH` that binds the source
+        variable is always seen before the `WITH` that renames it, and a chain
+        of rebindings (`WITH p AS x WITH x AS y`) propagates one link at a time.
+        """
+        sym = ctx.symbol()
+        expr = ctx.expression()
+        if sym is None or expr is None:
+            return
+        source = _strip_backticks(expr.getText())
+        if source in self._node_vars:
+            self._node_vars.add(sym.getText())
 
     # -- Property expressions --------------------------------------------------
 
@@ -247,7 +273,7 @@ class _ElementListener(CypherParserListener):
             properties=self._properties,
             property_chains=self._property_chains,
             var_labels=self._var_labels,
-            rel_vars=self._rel_vars,
+            node_vars=self._node_vars,
             rel_patterns=self._rel_patterns,
             parse_errors=parse_errors,
         )
