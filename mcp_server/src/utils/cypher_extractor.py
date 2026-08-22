@@ -229,9 +229,35 @@ class _ElementListener(CypherParserListener):
         expr = ctx.expression()
         if sym is None or expr is None:
             return
-        source = _strip_backticks(expr.getText())
+        self._rebind(sym.getText(), _strip_backticks(expr.getText()))
+
+    def enterUnwindSt(self, ctx: CypherParser.UnwindStContext) -> None:
+        """`UNWIND <expr> AS x` — the element is not a node binding.
+
+        Handled for the same reason as the projection: without it an `UNWIND`
+        onto a name a `MATCH` already bound would leave the stale node entry
+        standing.
+        """
+        sym = ctx.symbol()
+        expr = ctx.expression()
+        if sym is None or expr is None:
+            return
+        self._rebind(sym.getText(), _strip_backticks(expr.getText()))
+
+    def _rebind(self, alias: str, source: str) -> None:
+        """Grant or REVOKE node-ness for ``alias``, according to ``source``.
+
+        Symmetric on purpose. Binding is not add-only: `WITH <non-node> AS p`
+        where `p` was a node has to take the entry away, or every non-node shape
+        walks back in the moment it reuses a node's name — and reusing the name
+        is the natural thing to write. Only a bare identifier already bound to a
+        node grants; everything else a projection or an UNWIND can produce
+        revokes.
+        """
         if source in self._node_vars:
-            self._node_vars.add(sym.getText())
+            self._node_vars.add(alias)
+        else:
+            self._node_vars.discard(alias)
 
     # -- Property expressions --------------------------------------------------
 

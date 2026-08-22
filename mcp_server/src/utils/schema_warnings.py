@@ -41,6 +41,11 @@ warning):
   `parse_errors` suppresses every warning for the whole query. Measured
   prevalence: 0/120.
 * **Consecutive `WITH` clauses.** Same parser gap, same suppression.
+* **Cross-label property confusion.** The union is graph-wide and label-blind by
+  design, so a real property read on the wrong label — `p.municipio.fecha` where
+  both names are censused somewhere — passes unremarked. Judging it would need
+  alias-to-label resolution, whose failure mode is the accusation this module
+  must never make. `cypher_quality` answers the per-label question separately.
 
 Relationship to :mod:`utils.cypher_quality`: that module answers the finer,
 per-label question (is this property reachable on the label this alias is bound
@@ -96,15 +101,17 @@ _SUGGESTION_CUTOFF = 0.6
 # both a silent drop and a wall of text.
 _MAX_WARNINGS_PER_KIND = 5
 
-# The consequence is identical for every finding, so it is stated ONCE at the
-# end rather than repeated per entry. Unconditionally true: it does not depend
-# on how complete the census is.
+# The consequence is identical for every unknown-name finding, so it is stated
+# ONCE at the end rather than repeated per entry. Attached only where a NAME is
+# in doubt: a chain finding disputes a SHAPE, and the note would be answering a
+# question nobody asked. Phrased to the same evidence as the findings it
+# summarises — the census sampled, so it can report a name missing from itself
+# and nothing stronger.
 _SHARED_NOTE = (
-    'A property name the graph does not carry is not an error here — the query '
-    'runs and the column comes back null for every row, so an empty or '
-    'null-filled result does NOT establish that the fact is absent. Call '
-    'get_schema for this graph\'s property names before concluding anything '
-    'from this result.'
+    'A name missing from the census is not an error here — the query runs and '
+    'the column comes back null for every row, so an empty or null-filled '
+    'result does NOT establish that the fact is absent. Call get_schema for '
+    'this graph\'s property names before concluding anything from this result.'
 )
 
 
@@ -266,45 +273,55 @@ def build_schema_warnings(
 
         head = chain.path[0]
         nested = len(chain.path) > 1
-        through_container = nested and container is not None and head == container
 
-        # `p.created_at.year` reads a COMPONENT of a real property, not a path
-        # through a phantom map. Warned about naively it advised `p.year` — a
-        # property that does not exist — so following the advice made the query
-        # worse. A first segment the census knows means the read is grounded;
-        # this module has nothing to say about what lives inside a value.
-        component_access = nested and (head in union or _is_internal(head))
+        # WHICH SEGMENT IS THE DOMAIN REFERENCE depends on the arm, and getting
+        # it wrong on either one is silent.
+        if nested and container is not None and head == container:
+            # Through the ANNOUNCED container, the reference is path[1] — not
+            # the head (that is transport) and not the last segment (that may
+            # be a component of the value). Reading it as either killed this
+            # check outright on the nesting backend: there `keys(n)` returns the
+            # container, so the container is IN the property union and a
+            # "head is a known property" test short-circuits every correct
+            # reference form the backend has.
+            target = chain.path[1]
+        else:
+            # `p.created_at.year` reads a COMPONENT of a real property, not a
+            # path through a phantom map. Warned about naively it advised
+            # `p.year` — a property that does not exist — so following the
+            # advice made the query worse.
+            if nested and (head in union or _is_internal(head)):
+                continue
+            # A nested read that reaches through neither the announced
+            # container nor a known property is a defect. Schema-INDEPENDENT,
+            # so the positive-census gate does not bind it.
+            if nested:
+                warning = _chain_warning(chain.variable, chain.path, container)
+                if warning not in chain_warnings:
+                    chain_warnings.append(warning)
+            # The leaf is the name being reached for, whatever shape it was
+            # written through — so a chain that was ALSO misspelled earns both
+            # findings, which is the measured failure.
+            target = chain.path[-1]
 
-        # A nested read is a defect unless it goes through the map this backend
-        # announced, or reaches into a property that exists. Schema-INDEPENDENT
-        # in the flat case, so the positive-census gate does not bind it.
-        if nested and not through_container and not component_access:
-            warning = _chain_warning(chain.variable, chain.path, container)
-            if warning not in chain_warnings:
-                chain_warnings.append(warning)
-
-        if component_access:
-            continue
-
-        # The leaf is the name the query is actually reaching for, whatever
-        # shape it was written through — so a chain that was ALSO misspelled
-        # earns both findings, which is the measured failure.
-        leaf = chain.path[-1]
         if not census_is_positive:
             continue
-        if _is_internal(leaf):
+        if _is_internal(target):
             continue
         # The container is transport, not a domain field: naming it is never a
         # missing property.
-        if container is not None and leaf == container:
+        if container is not None and target == container:
             continue
-        if leaf in union:
+        if target in union:
             continue
-        if leaf not in unknown_warnings:
-            unknown_warnings[leaf] = _unknown_property_warning(leaf, union)
+        if target not in unknown_warnings:
+            unknown_warnings[target] = _unknown_property_warning(target, union)
 
-    findings = _capped(chain_warnings, 'nested property paths') + _capped(
-        [unknown_warnings[k] for k in sorted(unknown_warnings)], 'property references'
-    )
-    # The consequence is the same for all of them, so it is stated once.
-    return [*findings, _SHARED_NOTE] if findings else []
+    # Unknown findings keep the order the query names them in, so the leaves of
+    # the chains shown above sit next to them; sorting alphabetically split the
+    # two halves of one defect across the truncation.
+    unknowns = _capped(list(unknown_warnings.values()), 'property references')
+    findings = _capped(chain_warnings, 'nested property paths') + unknowns
+    # The note answers "what does an empty result mean here", which only arises
+    # once a NAME is in doubt.
+    return [*findings, _SHARED_NOTE] if unknowns else findings

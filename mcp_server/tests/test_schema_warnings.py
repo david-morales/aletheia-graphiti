@@ -49,13 +49,21 @@ def _flat_census(**overrides) -> dict:
 
 
 def _nesting_census(**overrides) -> dict:
-    """A NESTING census: the backend announces the map its domain fields sit in."""
+    """A NESTING census, shaped as the real one is.
+
+    `properties` is what `keys(n)` returns, and on a nesting backend that is the
+    bookkeeping columns PLUS the container itself — so `attributes` IS in the
+    property union. An earlier version of this fixture omitted it, which made
+    the union look flat-shaped and hid a regression that killed the whole
+    unknown-property check on this arm. A fixture that is not honest about the
+    shape it stands for tests nothing.
+    """
     schema = {
         'attribute_container': 'attributes',
         'node_labels': {
             'Parte': {
                 'count': 20,
-                'properties': ['name', 'uuid'],
+                'properties': ['attributes', 'created_at', 'group_id', 'name', 'uuid'],
                 'attribute_keys': ['fecha_de_inicio', 'localidad'],
                 'sampled': True,
             },
@@ -231,6 +239,48 @@ class TestOnlyNodeBoundReferencesAreJudged:
         assert 'fecha_inicio' in _joined(w)
 
 
+class TestARebindThatShadowsANodeName:
+    """Binding is not add-only: a name can STOP being a node.
+
+    The allow-list closed B1 for fresh names, but `WITH <non-node> AS p` where
+    `p` was a node left the old entry standing, so every shape B1 covered came
+    back the moment it reused a node's name — and reusing `p` is the natural
+    thing to write. The rule has to be symmetric: a rebinding grants node-ness
+    or revokes it, never only grants.
+    """
+
+    def test_relationship_rebound_onto_a_node_name(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte)-[r:REL]->(b) WITH r AS p RETURN p.rol', _flat_census()
+        )
+        assert w == []
+
+    def test_map_literal_rebound_onto_a_node_name(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) WITH {k: 1} AS p RETURN p.k', _flat_census()
+        )
+        assert w == []
+
+    def test_unwound_list_rebound_onto_a_node_name(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) WITH [1, 2] AS l UNWIND l AS p RETURN p.zzz', _flat_census()
+        )
+        assert w == []
+
+    def test_aggregate_rebound_onto_a_node_name(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) WITH count(*) AS p RETURN p.zzz', _flat_census()
+        )
+        assert w == []
+
+    def test_a_node_to_node_rebinding_still_grants(self):
+        """Revoking must not overreach — this is the pinned cure case."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) WITH p AS x RETURN x.fecha_inicio', _flat_census()
+        )
+        assert 'fecha_inicio' in _joined(w)
+
+
 # ---------------------------------------------------------------------------
 # Component access on a real property
 # ---------------------------------------------------------------------------
@@ -319,6 +369,58 @@ class TestNestedChains:
             'MATCH (p:Parte) RETURN p.a.b.fecha_de_inicio', _flat_census()
         )
         assert w
+
+
+class TestTheNestingArmIsStillChecked:
+    """On a nesting backend the container is IN the property union.
+
+    `properties` is `keys(n)`, which on that backend returns the bookkeeping
+    columns plus the container — so a component-access rule keyed on "is the
+    first segment a known property?" short-circuits `n.attributes.<key>`, the
+    only correct reference form there. That silently killed the entire
+    unknown-property check on this arm while every flat-arm test stayed green.
+
+    Through the announced container the DOMAIN reference is `path[1]`, not the
+    head and not the last segment. These pin that reading.
+    """
+
+    def test_misspelled_leaf_under_the_right_container_warns(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes.fecha_inicio', _nesting_census()
+        )
+        assert w, 'the measured defect must be caught on this arm too'
+        assert 'fecha_inicio' in _joined(w)
+
+    def test_that_warning_carries_did_you_mean(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes.fecha_inicio', _nesting_census()
+        )
+        assert 'fecha_de_inicio' in _joined(w)
+
+    def test_the_correct_form_stays_silent(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes.fecha_de_inicio', _nesting_census()
+        )
+        assert w == []
+
+    def test_component_of_a_real_nested_property_stays_silent(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes.fecha_de_inicio.year', _nesting_census()
+        )
+        assert w == []
+
+    def test_component_of_a_misspelled_nested_property_warns(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes.fecha_inicio.year', _nesting_census()
+        )
+        assert 'fecha_inicio' in _joined(w)
+        assert 'year' not in _joined(w), 'the component is not the reference being made'
+
+    def test_the_container_name_alone_is_not_an_unknown_property(self):
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes', _nesting_census()
+        )
+        assert w == []
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +565,21 @@ class TestTheClaimMatchesTheEvidence:
             'MATCH (p:Parte) RETURN p.situacion_especial', _flat_census()
         )
         assert 'null' in _joined(w).lower()
+
+    def test_the_shared_note_makes_no_absolute_claim_either(self):
+        """The note is where the phrasing B2 removed crept back in."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.situacion_especial', _flat_census()
+        )
+        assert 'the graph does not carry' not in _joined(w).lower()
+
+    def test_the_shared_note_is_absent_when_no_name_is_in_question(self):
+        """A chain-only finding disputes a SHAPE; no property name is doubted."""
+        w = build_schema_warnings(
+            'MATCH (p:Parte) RETURN p.attributes.fecha_de_inicio', _flat_census()
+        )
+        assert w, 'the chain itself is still reported'
+        assert 'null' not in _joined(w).lower()
 
 
 class TestOutputIsBounded:
