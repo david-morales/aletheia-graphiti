@@ -276,6 +276,22 @@ class TestNodeVarExtraction:
         result = extract_elements('MATCH (p) WITH p AS x WITH x AS y RETURN y.name')
         assert result.parse_errors > 0
 
+    def test_a_return_alias_does_not_rebind(self):
+        """A RETURN alias binds nothing any same-clause reference can see.
+
+        `RETURN parte.name AS parte` is projection, not scoping: the other
+        `parte.<prop>` items in that same RETURN are evaluated in MATCH scope.
+        Treating it as a rebinding revoked the node for the WHOLE query.
+        """
+        result = extract_elements(
+            'MATCH (parte:P) RETURN parte.name AS parte, parte.fecha AS f'
+        )
+        assert 'parte' in result.node_vars
+
+    def test_a_return_alias_shadowing_another_node_does_not_revoke_it(self):
+        result = extract_elements('MATCH (p:P) RETURN count(*) AS p, p.name')
+        assert 'p' in result.node_vars
+
     def test_alias_of_a_relationship_var_does_not_inherit(self):
         result = extract_elements('MATCH (a)-[r:REL]->(b) WITH r AS rel RETURN rel.rol')
         assert 'rel' not in result.node_vars
