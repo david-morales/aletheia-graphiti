@@ -122,7 +122,7 @@ def test_query_and_schema_tools_publish_output_schema():
     assert rc is not None
     rc_props = rc["properties"]
     # rich envelope + ADR-015 R4 error path both surfaced in the schema
-    for key in ("query", "auto_fixes", "type", "row_count", "truncated",
+    for key in ("query", "auto_fixes", "schema_warnings", "type", "row_count", "truncated",
                 "limit_applied", "execution_ms", "cypher_quality", "error", "hint", "error_detail"):
         assert key in rc_props, f"graph_query outputSchema missing {key}"
 

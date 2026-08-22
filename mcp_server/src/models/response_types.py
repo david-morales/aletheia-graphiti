@@ -475,6 +475,13 @@ class CypherResultResponse(TypedDict, total=False):
     """
     query: str | None
     auto_fixes: list[str] | None
+    # Advisory notes about property references this graph's census cannot
+    # account for (an unknown name, or a dotted path through a map the backend
+    # never announced). Additive and non-blocking: the query has already run,
+    # and a null column is not an error on either backend — so an empty result
+    # with a warning attached means something different from an empty result
+    # without one. Empty list when the census supports no finding.
+    schema_warnings: list[str] | None
     type: str | None  # "scalar", "tabular", "graph", "path", "error"
     result: Any
     columns: list[str] | None
