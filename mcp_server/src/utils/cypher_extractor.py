@@ -346,6 +346,37 @@ class _ElementListener(CypherParserListener):
         )
 
 
+def _without_leading_trivia(query: str) -> str:
+    """Drop whitespace and comments preceding the first clause keyword.
+
+    The grammar's entry rule requires a clause keyword as its FIRST token, and
+    this lexer puts whitespace and comments on the default channel rather than
+    a hidden one. So a query that merely opens with a newline is reported as
+    "extraneous input '\\n' expecting {'CALL', 'MATCH', ...}".
+
+    That is not a cosmetic miscount. `parse_errors > 0` suppresses the entire
+    schema-warning channel and collapses `cypher_quality` to `parse_failed` with
+    an empty `schema_match` — and agents open with a newline: 166 of 182 real
+    `graph_query` calls (91%). Both features were therefore inert on nearly all
+    production traffic while every hand-written test passed.
+
+    The trim happens BEFORE parsing rather than by discounting the error
+    afterwards, because the error count has to keep meaning "this query is
+    malformed" — silencing a category of it would hide the real breakage this
+    module needs to stay conservative about.
+
+    The LEXER decides what counts as trivia, not a regex here: it already folds
+    spaces, tabs, newlines, CRLF, `//` line comments and `/* */` block comments
+    into a single leading `SP` token, so every one of those forms is handled by
+    construction rather than by a pattern someone has to remember to extend.
+    No offsets are exposed by this module, so removing the prefix costs nothing.
+    """
+    first = CypherLexer(InputStream(query)).nextToken()
+    if first.type == CypherLexer.SP:
+        return query[first.stop + 1:]
+    return query
+
+
 def extract_elements(query: str) -> CypherElements:
     """Parse a Cypher query and extract its structural elements.
 
@@ -353,6 +384,7 @@ def extract_elements(query: str) -> CypherElements:
     property accesses, variable-label bindings, directional relationship
     patterns, and a count of parse errors (0 = clean parse).
     """
+    query = _without_leading_trivia(query)
     input_stream = InputStream(query)
     lexer = CypherLexer(input_stream)
     tokens = CommonTokenStream(lexer)

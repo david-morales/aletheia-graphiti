@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
@@ -232,6 +234,69 @@ class TestPropertyChainExtraction:
 # ---------------------------------------------------------------------------
 # Relationship variables
 # ---------------------------------------------------------------------------
+
+
+class TestLeadingTrivia:
+    """Whitespace and comments before the first clause are not syntax errors.
+
+    This grammar lexes them as a real leading token and wants a clause keyword
+    first, so it called every such query malformed. Since `parse_errors > 0`
+    suppresses the whole schema-warning channel, and agents open with a newline
+    91% of the time, that one token turned the feature off in production while
+    the suite stayed green.
+    """
+
+    _BODY = 'MATCH (p:Parte) RETURN p.fecha_inicio'
+
+    @pytest.mark.parametrize(
+        'prefix, label',
+        [
+            ('', 'nothing'),
+            ('\n', 'newline'),
+            ('\n\n', 'blank lines'),
+            (' ', 'space'),
+            ('   ', 'spaces'),
+            ('\t', 'tab'),
+            ('\r\n', 'CRLF'),
+            ('\r\n\t  ', 'CRLF then mixed indent'),
+            ('// find the partes\n', 'line comment'),
+            ('/* a block comment */ ', 'block comment'),
+            ('\n// comment after a blank line\n\n', 'blank line then comment'),
+        ],
+    )
+    def test_leading_trivia_parses_cleanly(self, prefix, label):
+        result = extract_elements(prefix + self._BODY)
+        assert result.parse_errors == 0, f'{label} still reports a syntax error'
+
+    @pytest.mark.parametrize(
+        'prefix',
+        ['', '\n', ' ', '\t', '\r\n', '// c\n', '/* c */ '],
+    )
+    def test_extraction_is_unchanged_by_leading_trivia(self, prefix):
+        plain = extract_elements(self._BODY)
+        prefixed = extract_elements(prefix + self._BODY)
+        assert prefixed.node_vars == plain.node_vars
+        assert prefixed.labels == plain.labels
+        assert prefixed.property_chains == plain.property_chains
+
+    def test_trailing_trivia_still_parses(self):
+        assert extract_elements(self._BODY + '\n\n').parse_errors == 0
+
+    def test_leading_and_trailing_together(self):
+        assert extract_elements('\n  ' + self._BODY + '  \n').parse_errors == 0
+
+    def test_an_injected_limit_after_leading_trivia_parses(self):
+        """The pipeline appends LIMIT, so this is the shape that reaches us."""
+        assert extract_elements('\n' + self._BODY + ' LIMIT 201').parse_errors == 0
+
+    def test_a_query_that_is_only_trivia_does_not_crash(self):
+        for blank in ('', '   ', '\n\n', '// just a comment\n'):
+            result = extract_elements(blank)
+            assert result.node_vars == set()
+
+    def test_a_genuine_syntax_error_is_still_reported(self):
+        """The fix must not silence real breakage."""
+        assert extract_elements('\nthis is not cypher at all {{{').parse_errors > 0
 
 
 class TestNodeVarExtraction:
