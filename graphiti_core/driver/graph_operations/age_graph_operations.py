@@ -18,14 +18,17 @@ Write strategy (avoids AGE's cypher() parameter friction):
     tables via typed asyncpg parameters.
 """
 
+import hashlib
 import json
 import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
+from graphiti_core.driver.age_driver import LABEL_DDL_RACE_ERRORS
 from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
 
 logger = logging.getLogger(__name__)
@@ -63,7 +66,103 @@ def _cy(value: Any) -> str:
     return "'" + s + "'"
 
 
-_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+# Anchored with `\Z`, NOT `$`. Python's `$` also matches just BEFORE a trailing
+# newline, so `'BROADER\n'` satisfied a `$`-anchored version of this pattern —
+# and that one character split the two things that must never disagree: the
+# label DECLARED to `ensure_*_label` went through a `::name` parameter and kept
+# the newline, while the label MERGEd was inlined into Cypher text where the
+# parser stops at the whitespace. Declared `BROADER\n`, merged `BROADER`: the
+# declaration materialises one label and the write takes AGE's implicit-DDL path
+# on the other, which is exactly the divergence the declaration exists to
+# prevent (BUG-38/BUG-47). `\Z` is end-of-string with no exception.
+_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\Z')
+
+# PostgreSQL's NAMEDATALEN (64) minus the terminating NUL. A label reaches SQL as
+# a PARAMETER bound to `name` (`AGEDriver._ensure_label`/`_label_exists`), and a
+# parameter is not truncated the way an over-long literal in the SQL text is — it
+# is rejected: `NameTooLongError` 42622. Measured on the AGE bed: 62 OK, 63 OK,
+# 64 raises (BUG-47).
+_MAX_LABEL_LEN = 63
+
+# Hex characters of the digest appended when a label has to be shortened, plus
+# the '_' that separates it from the kept prefix.
+_LABEL_DIGEST_LEN = 8
+
+# How many DISTINCT over-long labels are remembered as already-warned-about.
+# Bounded on purpose — see `_warn_label_shortened`.
+_LABEL_WARN_CACHE = 1024
+
+
+@lru_cache(maxsize=_LABEL_WARN_CACHE)
+def _warn_label_shortened(label: str, bounded: str) -> None:
+    """Warn ONCE per distinct over-long label, not once per call.
+
+    `_bounded_label` is called far more often than there are labels: the bulk
+    path alone runs `_node_label` three times per node (grouping the uuids by
+    label, keying the stored-attribute map, and emitting the MERGE). A warning on
+    every call turned a 10-node bulk of one long label into 30 lines, which
+    extrapolates to ~15,000 on a 5,000-entity ingest — destroying the very
+    traceability the warning exists to provide.
+
+    Deduped through an LRU rather than a plain set so it CANNOT grow without
+    bound in a long-lived server. The lifetime is therefore "until evicted":
+    process-scoped, capped at `_LABEL_WARN_CACHE` distinct over-long labels, and
+    a label evicted and then seen again warns again. That is the right failure
+    mode — a periodic re-notification, never a flood, and never unbounded memory
+    even against an endless stream of novel LLM-produced names.
+
+    Returns None and is cached for its SIDE EFFECT only; the caller must not
+    depend on the return value. Keyed on both arguments, but `bounded` is a pure
+    function of `label`, so the key is effectively the label alone.
+    """
+    logger.warning(
+        'AGE label %r is %d characters, over PostgreSQL\'s %d-character limit; '
+        'stored as %r (deterministic hash-suffix shortening, BUG-47). The full '
+        'name is preserved in the element\'s `name`/`labels` property. Further '
+        'occurrences of this label are not logged.',
+        label,
+        len(label),
+        _MAX_LABEL_LEN,
+        bounded,
+    )
+
+
+def _bounded_label(label: str) -> str:
+    """Return ``label`` shortened to something PostgreSQL can store as a `name`.
+
+    SHORTEN rather than REJECT. The two failure modes are not symmetric: a
+    rejection turns one exotic LLM-produced relationship name into a raised save
+    that loses the rest of a long ingest run, while a shortening costs one
+    warning and keeps the run alive. What made the historical silent truncation
+    dangerous was not the shortening but the COLLISION — plain truncation maps
+    every name sharing its first 63 characters onto one label, fusing distinct
+    relationship types. Appending a digest of the WHOLE original removes exactly
+    that: the part truncation discards is what the suffix is computed from, so
+    two names that differ only past character 63 still get two labels.
+
+    Deterministic ACROSS processes and driver instances, which is the property
+    that matters — two writers on one graph that shortened the same name
+    differently would create two labels for one type. Hence `sha256` and not
+    `hash()`: `hash()` of a str is salted per process by PYTHONHASHSEED, so it is
+    stable within one process and different in the next. The RETURN VALUE is a
+    pure function of the name — no per-process state, no counters. (The warning
+    below is deduplicated through a cache, but that is a side effect only and
+    changes nothing about what this returns.)
+
+    The result is identifier-safe whenever the input is: the kept prefix comes
+    from a label the callers have already matched against `_IDENT_RE`, and '_'
+    plus lowercase hex adds nothing new.
+
+    Quiet on the hot path in two senses: nothing is logged for a label within the
+    limit, and an over-long one is announced once per distinct name rather than
+    once per call (`_warn_label_shortened`).
+    """
+    if len(label) <= _MAX_LABEL_LEN:
+        return label
+    digest = hashlib.sha256(label.encode('utf-8')).hexdigest()[:_LABEL_DIGEST_LEN]
+    bounded = label[: _MAX_LABEL_LEN - _LABEL_DIGEST_LEN - 1] + '_' + digest
+    _warn_label_shortened(label, bounded)
+    return bounded
 
 
 def _map(props: dict[str, Any]) -> str:
@@ -105,10 +204,14 @@ def _node_label(labels: Any) -> str:
     the last identifier-safe, non-'Entity' label is the leaf. Falls back to 'Entity'
     (Graphiti's base label, and the narrative-extraction default). The full list is
     still persisted in the `labels` property for abstract-tier filtering.
+
+    An over-long leaf is SHORTENED (`_bounded_label`), not skipped in favour of a
+    shorter ancestor: the leaf is the correct type, and falling back up the
+    hierarchy would silently mis-type the vertex.
     """
     for lbl in reversed(list(labels or [])):
         if lbl and lbl != 'Entity' and _IDENT_RE.match(str(lbl)):
-            return str(lbl)
+            return _bounded_label(str(lbl))
     return 'Entity'
 
 
@@ -119,8 +222,12 @@ def _edge_label(name: Any) -> str:
     EN_PARTE, INVOLUCRA_ARMA, …) → typed labels. Narrative-extracted edges carry
     free-text predicates that are not valid labels → RELATES_TO fallback. The
     original name is always preserved in the `name` property.
+
+    An identifier-safe name that is merely too long keeps its typed label,
+    shortened (`_bounded_label`) — collapsing it to RELATES_TO would throw the
+    type away over a length.
     """
-    return str(name) if name and _IDENT_RE.match(str(name)) else 'RELATES_TO'
+    return _bounded_label(str(name)) if name and _IDENT_RE.match(str(name)) else 'RELATES_TO'
 
 
 def _vec(embedding: Any) -> str | None:
@@ -201,12 +308,60 @@ class AGEGraphOperations(GraphOperationsInterface):
         Every MERGE/CREATE in this class goes through this method; that is what
         keeps the guarantee from depending on each writer remembering. Read
         patterns do NOT need it: AGE's MATCH on an unknown label creates nothing.
+
+        BUG-48 recovery. The declaration above can be short-circuited by a LIE:
+        the driver's `_known_labels` cache is per-instance, so a graph rebuilt by
+        another instance or process leaves it asserting labels that no longer
+        exist, `ensure_*_label` returns without doing anything, and the MERGE is
+        back on the implicit DDL. That shows up here, as the DDL-race error class
+        — so here is where it is answered: drop the declared pairs, re-ensure them
+        ONCE against the real catalogue, retry the write ONCE.
+
+        The retry is safe to bound at one and safe to replay: every write routed
+        through this method is a uuid-keyed MERGE, so re-running it is idempotent,
+        and the re-ensure consults the store rather than the cache — one round is
+        therefore either enough or the error was never about the cache. A second
+        consecutive failure is left to propagate as the real error it is.
         """
-        for label in vertex_labels:
-            await driver.ensure_vertex_label(label)
-        for label in edge_labels:
-            await driver.ensure_edge_label(label)
-        return await driver.execute_query(cypher)
+        declared = tuple(('v', label) for label in vertex_labels)
+        declared += tuple(('e', label) for label in edge_labels)
+        await AGEGraphOperations._declare(driver, declared)
+        try:
+            return await driver.execute_query(cypher)
+        except LABEL_DDL_RACE_ERRORS:
+            if not declared:
+                # Nothing was declared, so no cached pair can be stale and there
+                # is nothing to invalidate — this is a genuine error.
+                raise
+            logger.warning(
+                'AGE write failed on label DDL for %s; the driver\'s label cache '
+                'claimed labels the graph does not have (a foreign rebuild — '
+                'BUG-48). Dropping those cache entries, re-checking the catalogue '
+                'and retrying the write once.',
+                sorted(declared),
+                # The caught error is the only record of WHICH SQLSTATE fired and
+                # on which relation. When the retry succeeds nothing else ever
+                # surfaces it, so a recovery would otherwise be indistinguishable
+                # in the log from a race that never happened.
+                exc_info=True,
+            )
+            for kind, label in declared:
+                driver.forget_label(kind, label)
+            await AGEGraphOperations._declare(driver, declared)
+            # Deliberately NOT wrapped: a second consecutive failure means the
+            # cache was not the problem, and burying that in a loop would turn a
+            # raised save into a hang.
+            return await driver.execute_query(cypher)
+
+    @staticmethod
+    async def _declare(driver: Any, declared: tuple[tuple[str, str], ...]) -> None:
+        """Materialise every declared (kind, label) pair. Shared by the first
+        attempt and the post-invalidation retry so the two cannot drift."""
+        for kind, label in declared:
+            if kind == 'v':
+                await driver.ensure_vertex_label(label)
+            else:
+                await driver.ensure_edge_label(label)
 
     @staticmethod
     def _node_read_pattern(label: str) -> tuple[str, str]:
