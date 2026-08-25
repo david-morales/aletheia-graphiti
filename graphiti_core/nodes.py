@@ -30,6 +30,8 @@ from graphiti_core.driver.driver import (
     GraphDriver,
     GraphProvider,
 )
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+from graphiti_core.driver.interface_dispatch import implements
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.helpers import parse_db_date, validate_node_labels
@@ -109,11 +111,8 @@ class Node(BaseModel, ABC):
     async def save(self, driver: GraphDriver): ...
 
     async def delete(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_delete(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.node_delete):
+            return await driver.graph_operations_interface.node_delete(self, driver)
 
         match driver.provider:
             case GraphProvider.NEO4J:
@@ -176,13 +175,12 @@ class Node(BaseModel, ABC):
 
     @classmethod
     async def delete_by_group_id(cls, driver: GraphDriver, group_id: str, batch_size: int = 100):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_delete_by_group_id(
-                    cls, driver, group_id, batch_size
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.node_delete_by_group_id
+        ):
+            return await driver.graph_operations_interface.node_delete_by_group_id(
+                cls, driver, group_id, batch_size
+            )
 
         match driver.provider:
             case GraphProvider.NEO4J:
@@ -235,13 +233,12 @@ class Node(BaseModel, ABC):
 
     @classmethod
     async def delete_by_uuids(cls, driver: GraphDriver, uuids: list[str], batch_size: int = 100):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_delete_by_uuids(
-                    cls, driver, uuids, group_id=None, batch_size=batch_size
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.node_delete_by_uuids
+        ):
+            return await driver.graph_operations_interface.node_delete_by_uuids(
+                cls, driver, uuids, group_id=None, batch_size=batch_size
+            )
 
         match driver.provider:
             case GraphProvider.FALKORDB:
@@ -332,11 +329,10 @@ class EpisodicNode(Node):
     )
 
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_node_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.episodic_node_save
+        ):
+            return await driver.graph_operations_interface.episodic_node_save(self, driver)
 
         episode_args = {
             'uuid': self.uuid,
@@ -360,13 +356,12 @@ class EpisodicNode(Node):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_node_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.episodic_node_get_by_uuid
+        ):
+            return await driver.graph_operations_interface.episodic_node_get_by_uuid(
+                cls, driver, uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -391,13 +386,12 @@ class EpisodicNode(Node):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_node_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.episodic_node_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.episodic_node_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -426,13 +420,13 @@ class EpisodicNode(Node):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_node_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.episodic_node_get_by_group_ids,
+        ):
+            return await driver.graph_operations_interface.episodic_node_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -467,15 +461,13 @@ class EpisodicNode(Node):
 
     @classmethod
     async def get_by_entity_node_uuid(cls, driver: GraphDriver, entity_node_uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return (
-                    await driver.graph_operations_interface.episodic_node_get_by_entity_node_uuid(
-                        cls, driver, entity_node_uuid
-                    )
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.episodic_node_get_by_entity_node_uuid,
+        ):
+            return await driver.graph_operations_interface.episodic_node_get_by_entity_node_uuid(
+                cls, driver, entity_node_uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -527,11 +519,10 @@ class EntityNode(Node):
         return self.summary_embedding
 
     async def load_name_embedding(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_load_embeddings(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.node_load_embeddings
+        ):
+            return await driver.graph_operations_interface.node_load_embeddings(self, driver)
 
         if driver.provider == GraphProvider.NEPTUNE:
             query: LiteralString = """
@@ -556,11 +547,8 @@ class EntityNode(Node):
         self.name_embedding = records[0]['name_embedding']
 
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.node_save):
+            return await driver.graph_operations_interface.node_save(self, driver)
 
         entity_data: dict[str, Any] = {
             'uuid': self.uuid,
@@ -596,11 +584,8 @@ class EntityNode(Node):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_get_by_uuid(cls, driver, uuid)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.node_get_by_uuid):
+            return await driver.graph_operations_interface.node_get_by_uuid(cls, driver, uuid)
 
         records, _, _ = await driver.execute_query(
             """
@@ -621,13 +606,12 @@ class EntityNode(Node):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str], group_id: str | None = None):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_get_by_uuids(
-                    cls, driver, uuids, group_id
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.node_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.node_get_by_uuids(
+                cls, driver, uuids, group_id
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -653,13 +637,12 @@ class EntityNode(Node):
         uuid_cursor: str | None = None,
         with_embeddings: bool = False,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.node_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.node_get_by_group_ids
+        ):
+            return await driver.graph_operations_interface.node_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND n.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -702,11 +685,10 @@ class CommunityNode(Node):
     summary: str = Field(description='region summary of member nodes', default_factory=str)
 
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_node_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.community_node_save
+        ):
+            return await driver.graph_operations_interface.community_node_save(self, driver)
 
         if driver.provider == GraphProvider.NEPTUNE:
             await driver.save_to_aoss(  # pyright: ignore reportAttributeAccessIssue
@@ -739,13 +721,13 @@ class CommunityNode(Node):
         return self.name_embedding
 
     async def load_name_embedding(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_node_load_name_embedding(
-                    self, driver
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.community_node_load_name_embedding,
+        ):
+            return await driver.graph_operations_interface.community_node_load_name_embedding(
+                self, driver
+            )
 
         if driver.provider == GraphProvider.NEPTUNE:
             query: LiteralString = """
@@ -771,13 +753,12 @@ class CommunityNode(Node):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_node_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.community_node_get_by_uuid
+        ):
+            return await driver.graph_operations_interface.community_node_get_by_uuid(
+                cls, driver, uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -802,13 +783,12 @@ class CommunityNode(Node):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_node_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.community_node_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.community_node_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -837,13 +817,13 @@ class CommunityNode(Node):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_node_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.community_node_get_by_group_ids,
+        ):
+            return await driver.graph_operations_interface.community_node_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND c.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -889,11 +869,8 @@ class SagaNode(Node):
     last_summarized_episode_valid_at: datetime | None = None
 
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.saga_node_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.saga_node_save):
+            return await driver.graph_operations_interface.saga_node_save(self, driver)
 
         result = await driver.execute_query(
             get_saga_node_save_query(driver.provider),
@@ -913,11 +890,8 @@ class SagaNode(Node):
         return result
 
     async def delete(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.saga_node_delete(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.saga_node_delete):
+            return await driver.graph_operations_interface.saga_node_delete(self, driver)
 
         await driver.execute_query(
             """
@@ -931,13 +905,10 @@ class SagaNode(Node):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.saga_node_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.saga_node_get_by_uuid
+        ):
+            return await driver.graph_operations_interface.saga_node_get_by_uuid(cls, driver, uuid)
 
         records, _, _ = await driver.execute_query(
             """
@@ -962,13 +933,12 @@ class SagaNode(Node):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.saga_node_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.saga_node_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.saga_node_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -997,13 +967,12 @@ class SagaNode(Node):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.saga_node_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.saga_node_get_by_group_ids
+        ):
+            return await driver.graph_operations_interface.saga_node_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND s.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''

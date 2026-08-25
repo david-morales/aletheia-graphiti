@@ -10,9 +10,10 @@ not passed down), and that `[]` and `None` stay different arguments.
 
 WHICH PATH ACTUALLY RUNS. `remove_communities` consults exactly one thing:
 `driver.graph_operations_interface`. Only `AGEDriver` sets it (`age_driver.py`), and
-`AGEGraphOperations` does not override `remove_communities`, so the base raises
-NotImplementedError and AGE falls through too. **Every flavour therefore reaches the
-generic query in `community_operations`** — the per-driver
+`AGEGraphOperations` does not override `remove_communities`, so the capability check
+(`interface_dispatch.implements`, BUG-108) is False and AGE falls through too.
+**Every flavour therefore reaches the generic query in `community_operations`** —
+the per-driver
 `*GraphMaintenanceOperations.remove_communities` methods are a DIFFERENT abstraction
 (`driver.graph_ops`, `driver/operations/graph_ops.py`) that nothing calls for this
 operation. Their tests live below under a heading that says so, because a green
@@ -28,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from graphiti_core.driver.falkordb.operations.graph_ops import FalkorGraphMaintenanceOperations
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
 from graphiti_core.driver.kuzu.operations.graph_ops import KuzuGraphMaintenanceOperations
 from graphiti_core.driver.neo4j.operations.graph_ops import Neo4jGraphMaintenanceOperations
 from graphiti_core.driver.neptune.operations.graph_ops import NeptuneGraphMaintenanceOperations
@@ -215,16 +217,37 @@ async def test_generic_fallback_forwards_group_ids_to_the_driver_interface():
     assert driver.calls == []
 
 
-async def test_generic_fallback_still_falls_through_on_not_implemented():
+async def test_generic_fallback_still_runs_when_the_interface_does_not_override():
+    """The fall-through condition is a MISSING override, not a caught exception.
+
+    This is the AGE path: `AGEGraphOperations` inherits `remove_communities` from
+    the base and every flavour therefore reaches the generic query.
+    """
     driver = RecordingExecutor()
-    driver.graph_operations_interface = MagicMock()
-    driver.graph_operations_interface.remove_communities = AsyncMock(
-        side_effect=NotImplementedError
-    )
+    driver.graph_operations_interface = GraphOperationsInterface()
 
     await remove_communities(driver, group_ids=['alpha'])
 
     assert 'c.group_id IN $group_ids' in _normalised(driver.only_query)
+
+
+async def test_a_failing_override_is_not_swallowed_into_the_generic_query():
+    """BUG-108: an interface that HAS the method owns its errors.
+
+    The old idiom read any `NotImplementedError` as "not implemented" and
+    re-issued the generic delete against the same driver — after the interface's
+    own delete had already run.
+    """
+    driver = RecordingExecutor()
+    driver.graph_operations_interface = MagicMock()
+    driver.graph_operations_interface.remove_communities = AsyncMock(
+        side_effect=NotImplementedError('helper is missing')
+    )
+
+    with pytest.raises(NotImplementedError, match='helper is missing'):
+        await remove_communities(driver, group_ids=['alpha'])
+
+    assert driver.calls == []
 
 
 # ---------------------------------------------------------------------------

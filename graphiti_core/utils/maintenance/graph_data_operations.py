@@ -20,6 +20,8 @@ from datetime import datetime
 from typing_extensions import LiteralString
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+from graphiti_core.driver.interface_dispatch import implements
 from graphiti_core.models.nodes.node_db_queries import (
     EPISODIC_NODE_RETURN,
     EPISODIC_NODE_RETURN_NEPTUNE,
@@ -32,11 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 async def clear_data(driver: GraphDriver, group_ids: list[str] | None = None):
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.clear_data(driver, group_ids)
-        except NotImplementedError:
-            pass
+    if implements(driver.graph_operations_interface, GraphOperationsInterface.clear_data):
+        return await driver.graph_operations_interface.clear_data(driver, group_ids)
 
     async with driver.session() as session:
 
@@ -88,13 +87,10 @@ async def retrieve_episodes(
     Returns:
         list[EpisodicNode]: A list of EpisodicNode objects representing the retrieved episodes.
     """
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.retrieve_episodes(
-                driver, reference_time, last_n, group_ids, source, saga
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.graph_operations_interface, GraphOperationsInterface.retrieve_episodes):
+        return await driver.graph_operations_interface.retrieve_episodes(
+            driver, reference_time, last_n, group_ids, source, saga
+        )
 
     # If saga is provided, retrieve episodes from that saga only
     if saga is not None:

@@ -5,6 +5,8 @@ from collections import defaultdict
 from pydantic import BaseModel
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+from graphiti_core.driver.interface_dispatch import implements
 from graphiti_core.edges import CommunityEdge
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.graph_queries import entity_edge_pattern_type
@@ -33,11 +35,10 @@ class Neighbor(BaseModel):
 async def get_community_clusters(
     driver: GraphDriver, group_ids: list[str] | None
 ) -> list[list[EntityNode]]:
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.get_community_clusters(driver, group_ids)
-        except NotImplementedError:
-            pass
+    if implements(
+        driver.graph_operations_interface, GraphOperationsInterface.get_community_clusters
+    ):
+        return await driver.graph_operations_interface.get_community_clusters(driver, group_ids)
 
     community_clusters: list[list[EntityNode]] = []
 
@@ -299,11 +300,8 @@ async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = 
     caller's intent ("these partitions") is impossible to misread as its opposite
     ("all partitions").
     """
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.remove_communities(driver, group_ids)
-        except NotImplementedError:
-            pass
+    if implements(driver.graph_operations_interface, GraphOperationsInterface.remove_communities):
+        return await driver.graph_operations_interface.remove_communities(driver, group_ids)
 
     if group_ids is not None:
         # `IN []` matches nothing, which is precisely the semantics an empty partition
@@ -329,13 +327,10 @@ async def remove_communities(driver: GraphDriver, group_ids: list[str] | None = 
 async def determine_entity_community(
     driver: GraphDriver, entity: EntityNode
 ) -> tuple[CommunityNode | None, bool]:
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.determine_entity_community(
-                driver, entity
-            )
-        except NotImplementedError:
-            pass
+    if implements(
+        driver.graph_operations_interface, GraphOperationsInterface.determine_entity_community
+    ):
+        return await driver.graph_operations_interface.determine_entity_community(driver, entity)
 
     # Check if the node is already part of a community
     records, _, _ = await driver.execute_query(

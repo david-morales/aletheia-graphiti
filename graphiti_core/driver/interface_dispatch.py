@@ -14,12 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Any
+from typing import Any, TypeVar
+
+from typing_extensions import TypeIs
 
 __all__ = ['implements']
 
+TInterface = TypeVar('TInterface')
 
-def implements(interface: Any, base_method: Any) -> bool:
+
+def implements(interface: TInterface | None, base_method: Any) -> TypeIs[TInterface]:
     """Does `interface` actually implement `base_method`'s capability?
 
     `SearchInterface` and `GraphOperationsInterface` declare their whole surface
@@ -46,11 +50,22 @@ def implements(interface: Any, base_method: Any) -> bool:
 
         # ... provider-generic fallback ...
 
+    `GraphDriver` declares these attributes as `SearchInterface | None` and
+    `GraphOperationsInterface | None`, so the class lookup is the real contract.
+    An object that supplies the method WITHOUT inheriting the base declaration —
+    a duck-typed adapter, or a test double such as `MagicMock`, whose attributes
+    live on the instance rather than the class — still has the capability, and
+    is treated as such: only the base class's own stub means "not implemented".
+
     Args:
         interface: The interface instance to test, or None when the driver
             supplies none.
         base_method: The unbound method as declared on the base interface class
             (e.g. `SearchInterface.edge_bfs_search`).
+
+    Declared as a `TypeIs` so it also does the narrowing the truthiness test it
+    replaces used to do: the driver attributes are `... | None`, and inside the
+    guarded block a type checker must see the non-optional interface.
 
     Returns:
         True if `interface` resolves that method to something other than the
@@ -59,5 +74,8 @@ def implements(interface: Any, base_method: Any) -> bool:
     if interface is None:
         return False
 
-    override = getattr(type(interface), base_method.__name__, None)
+    name = base_method.__name__
+    override = getattr(type(interface), name, None)
+    if override is None:
+        override = getattr(interface, name, None)
     return override is not None and override is not base_method

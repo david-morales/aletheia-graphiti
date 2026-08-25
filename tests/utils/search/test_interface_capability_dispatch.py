@@ -158,6 +158,22 @@ def test_implements_is_true_through_an_intermediate_subclass():
     assert implements(Grandchild(), SearchInterface.edge_bfs_search) is True
 
 
+def test_implements_accepts_a_duck_typed_interface():
+    """An adapter that supplies the method without inheriting the base still has
+    the capability — the attribute may live on the instance, as it does on a Mock."""
+    duck = MagicMock()
+    duck.edge_bfs_search = AsyncMock()
+
+    assert implements(duck, SearchInterface.edge_bfs_search) is True
+
+
+def test_implements_is_false_for_an_object_without_the_method():
+    class Empty:
+        pass
+
+    assert implements(Empty(), SearchInterface.edge_bfs_search) is False
+
+
 def test_implements_discriminates_per_method():
     iface = _Working()
     assert implements(iface, SearchInterface.edge_bfs_search) is True
