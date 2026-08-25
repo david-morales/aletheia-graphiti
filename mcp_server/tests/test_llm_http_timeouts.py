@@ -454,3 +454,137 @@ class TestTheRerankerReachesTheGraphitiClients:
             )
 
         assert graphiti_cls.call_args.kwargs.get('cross_encoder') is sentinel
+
+
+class TestAFailedFactoryNeverLandsAnUnboundedClient:
+    """BUG-96 follow-up (a) — the `llm_client=` / `embedder=` siblings.
+
+    The layer-1 fix bounded every client the factories BUILD. It did not cover
+    what happens when a factory RAISES. `initialize()` caught the exception,
+    logged a warning, and left the variable at None — and `Graphiti(llm_client=None)`
+    /`Graphiti(embedder=None)` is the same instruction as omitting the argument:
+    graphiti_core substitutes its own `OpenAIClient()` / `OpenAIEmbedder()`
+    (graphiti.py:226-232), built with no `client=`, and therefore carrying the
+    SDK's 600 s ceiling — the exact unbounded client BUG-96 exists to remove.
+
+    Two things land silently, not one. The substitute is unbounded AND it is
+    OpenAI regardless of what the operator configured: an Anthropic deployment
+    whose LLM factory raises comes up answering through OpenAI, on whatever
+    OPENAI_API_KEY happens to be in the environment, behind a `logger.warning`
+    on a server whose `/health` and `get_status` both read green.
+
+    So these two are FATAL, and that is a deliberate asymmetry with the reranker
+    directly above, which is allowed to degrade because its substitute is a
+    ranking quality difference rather than a wrong provider answering writes.
+    The asymmetry is pinned by the last test here, so it stays a decision.
+    """
+
+    def _service(self, monkeypatch):
+        from graphiti_mcp_server import GraphitiService
+
+        monkeypatch.setenv('OPENAI_API_KEY', 'dummy')
+        cfg = GraphitiConfig()
+        cfg.database.provider = 'falkordb'
+        cfg.graphiti.ontology_graph = 'test_ontology'
+        return GraphitiService(cfg)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_llm_factory_is_fatal(self, monkeypatch):
+        from unittest.mock import AsyncMock, patch
+
+        service = self._service(monkeypatch)
+
+        with (
+            patch('graphiti_core.driver.falkordb_driver.FalkorDriver'),
+            patch('graphiti_mcp_server.FalkorDriver'),
+            patch('graphiti_mcp_server.Graphiti') as graphiti_cls,
+            patch(
+                'graphiti_mcp_server.LLMClientFactory.create',
+                side_effect=RuntimeError('no api key configured'),
+            ),
+        ):
+            graphiti_cls.return_value = AsyncMock()
+            with pytest.raises(RuntimeError, match='no api key configured'):
+                await service.initialize()
+
+        passed = [call.kwargs.get('llm_client') for call in graphiti_cls.call_args_list]
+        assert all(value is not None for value in passed), (
+            f'Graphiti was constructed with llm_client={passed!r} — graphiti_core '
+            'substitutes an unbounded OpenAIClient() for None (BUG-96 follow-up a)'
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failing_embedder_factory_is_fatal(self, monkeypatch):
+        from unittest.mock import AsyncMock, patch
+
+        service = self._service(monkeypatch)
+
+        with (
+            patch('graphiti_core.driver.falkordb_driver.FalkorDriver'),
+            patch('graphiti_mcp_server.FalkorDriver'),
+            patch('graphiti_mcp_server.Graphiti') as graphiti_cls,
+            patch(
+                'graphiti_mcp_server.EmbedderFactory.create',
+                side_effect=RuntimeError('embedder misconfigured'),
+            ),
+        ):
+            graphiti_cls.return_value = AsyncMock()
+            with pytest.raises(RuntimeError, match='embedder misconfigured'):
+                await service.initialize()
+
+        passed = [call.kwargs.get('embedder') for call in graphiti_cls.call_args_list]
+        assert all(value is not None for value in passed), (
+            f'Graphiti was constructed with embedder={passed!r} — graphiti_core '
+            'substitutes an unbounded OpenAIEmbedder() for None (BUG-96 follow-up a)'
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_original_cause_is_not_swallowed(self, monkeypatch):
+        """The operator has to be able to see WHICH provider failed and why."""
+        from unittest.mock import AsyncMock, patch
+
+        service = self._service(monkeypatch)
+
+        with (
+            patch('graphiti_core.driver.falkordb_driver.FalkorDriver'),
+            patch('graphiti_mcp_server.FalkorDriver'),
+            patch('graphiti_mcp_server.Graphiti') as graphiti_cls,
+            patch(
+                'graphiti_mcp_server.LLMClientFactory.create',
+                side_effect=ValueError('OPENAI_API_KEY is not set'),
+            ),
+        ):
+            graphiti_cls.return_value = AsyncMock()
+            with pytest.raises(RuntimeError) as caught:
+                await service.initialize()
+
+        assert isinstance(caught.value.__cause__, ValueError)
+        assert 'OPENAI_API_KEY is not set' in str(caught.value.__cause__)
+
+    @pytest.mark.asyncio
+    async def test_a_failing_reranker_factory_still_only_degrades(self, monkeypatch):
+        """The deliberate asymmetry, pinned.
+
+        The reranker keeps the behaviour BUG-96 layer 1 chose for it: a failure
+        leaves None, graphiti_core's default returns, and the server starts. If
+        this test ever has to change, the asymmetry is being revisited on
+        purpose rather than drifting.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        service = self._service(monkeypatch)
+
+        with (
+            patch('graphiti_core.driver.falkordb_driver.FalkorDriver'),
+            patch('graphiti_mcp_server.FalkorDriver'),
+            patch('graphiti_mcp_server.Graphiti') as graphiti_cls,
+            patch(
+                'graphiti_mcp_server.CrossEncoderFactory.create',
+                side_effect=RuntimeError('reranker unavailable'),
+            ),
+        ):
+            graphiti_cls.return_value = AsyncMock()
+            await service.initialize()
+
+        assert graphiti_cls.call_args_list, 'the server must still start'
+        assert service._cached_cross_encoder_client is None
