@@ -18,6 +18,7 @@ Write strategy (avoids AGE's cypher() parameter friction):
     tables via typed asyncpg parameters.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -65,6 +66,57 @@ def _cy(value: Any) -> str:
 
 _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
+# PostgreSQL's NAMEDATALEN (64) minus the terminating NUL. A label reaches SQL as
+# a PARAMETER bound to `name` (`AGEDriver._ensure_label`/`_label_exists`), and a
+# parameter is not truncated the way an over-long literal in the SQL text is — it
+# is rejected: `NameTooLongError` 42622. Measured on the AGE bed: 62 OK, 63 OK,
+# 64 raises (BUG-47).
+_MAX_LABEL_LEN = 63
+
+# Hex characters of the digest appended when a label has to be shortened, plus
+# the '_' that separates it from the kept prefix.
+_LABEL_DIGEST_LEN = 8
+
+
+def _bounded_label(label: str) -> str:
+    """Return ``label`` shortened to something PostgreSQL can store as a `name`.
+
+    SHORTEN rather than REJECT. The two failure modes are not symmetric: a
+    rejection turns one exotic LLM-produced relationship name into a raised save
+    that loses the rest of a long ingest run, while a shortening costs one
+    warning and keeps the run alive. What made the historical silent truncation
+    dangerous was not the shortening but the COLLISION — plain truncation maps
+    every name sharing its first 63 characters onto one label, fusing distinct
+    relationship types. Appending a digest of the WHOLE original removes exactly
+    that: the part truncation discards is what the suffix is computed from, so
+    two names that differ only past character 63 still get two labels.
+
+    Deterministic ACROSS processes and driver instances, which is the property
+    that matters — two writers on one graph that shortened the same name
+    differently would create two labels for one type. Hence `sha256` and not
+    `hash()`: `hash()` of a str is salted per process by PYTHONHASHSEED, so it is
+    stable within one process and different in the next. Pure function of the
+    name, no per-process state, no counters.
+
+    The result is identifier-safe whenever the input is: the kept prefix comes
+    from a label the callers have already matched against `_IDENT_RE`, and '_'
+    plus lowercase hex adds nothing new.
+    """
+    if len(label) <= _MAX_LABEL_LEN:
+        return label
+    digest = hashlib.sha256(label.encode('utf-8')).hexdigest()[:_LABEL_DIGEST_LEN]
+    bounded = label[: _MAX_LABEL_LEN - _LABEL_DIGEST_LEN - 1] + '_' + digest
+    logger.warning(
+        'AGE label %r is %d characters, over PostgreSQL\'s %d-character limit; '
+        'stored as %r (deterministic hash-suffix shortening, BUG-47). The full '
+        'name is preserved in the element\'s `name`/`labels` property.',
+        label,
+        len(label),
+        _MAX_LABEL_LEN,
+        bounded,
+    )
+    return bounded
+
 
 def _map(props: dict[str, Any]) -> str:
     """Build an agtype map literal from a dict — nested maps and lists round-trip
@@ -105,10 +157,14 @@ def _node_label(labels: Any) -> str:
     the last identifier-safe, non-'Entity' label is the leaf. Falls back to 'Entity'
     (Graphiti's base label, and the narrative-extraction default). The full list is
     still persisted in the `labels` property for abstract-tier filtering.
+
+    An over-long leaf is SHORTENED (`_bounded_label`), not skipped in favour of a
+    shorter ancestor: the leaf is the correct type, and falling back up the
+    hierarchy would silently mis-type the vertex.
     """
     for lbl in reversed(list(labels or [])):
         if lbl and lbl != 'Entity' and _IDENT_RE.match(str(lbl)):
-            return str(lbl)
+            return _bounded_label(str(lbl))
     return 'Entity'
 
 
@@ -119,8 +175,12 @@ def _edge_label(name: Any) -> str:
     EN_PARTE, INVOLUCRA_ARMA, …) → typed labels. Narrative-extracted edges carry
     free-text predicates that are not valid labels → RELATES_TO fallback. The
     original name is always preserved in the `name` property.
+
+    An identifier-safe name that is merely too long keeps its typed label,
+    shortened (`_bounded_label`) — collapsing it to RELATES_TO would throw the
+    type away over a length.
     """
-    return str(name) if name and _IDENT_RE.match(str(name)) else 'RELATES_TO'
+    return _bounded_label(str(name)) if name and _IDENT_RE.match(str(name)) else 'RELATES_TO'
 
 
 def _vec(embedding: Any) -> str | None:
