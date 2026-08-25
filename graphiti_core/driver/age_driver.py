@@ -31,6 +31,32 @@ _SESSION_INIT = "LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;"
 
 _PARAM_RE = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)')
 
+# The error class a write raises when it reached AGE's implicit label DDL and
+# lost the race — i.e. when the explicit-DDL guard below did NOT run first.
+# Declared once, here, next to the SQLSTATEs it names; imported by
+# `AGEGraphOperations._write`, which is the only place that recovers from it.
+#
+#   DuplicateTableError  42P07  the label's backing relation
+#   UniqueViolationError 23505  pg_class_relname_nsp_index, i.e. the same race
+#                               landing on the label's SEQUENCE instead
+#
+# This is NOT a second guard against BUG-38 — the advisory-locked explicit DDL is
+# the guard, and catching SQLSTATEs was rejected for that job precisely because
+# AGE publishes no bounded list of the relations it creates per label. This is
+# the narrower recovery for BUG-48: the guard was SKIPPED because the cache
+# claimed a label that a foreign rebuild had removed. So the response is not
+# "retry until it works", it is "the cache lied — drop it, re-ensure against the
+# real catalogue, try once more". A second failure means the cache was not the
+# problem and the error is real.
+#
+# `InvalidSchemaNameError` (3F000, "label X already exists" for the other kind)
+# is deliberately absent: that is a true, permanent error the driver surfaces on
+# purpose, and retrying it would only bury it.
+LABEL_DDL_RACE_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.exceptions.DuplicateTableError,
+    asyncpg.exceptions.UniqueViolationError,
+)
+
 # The text-search configuration used when none is named. `simple` folds case and
 # does nothing else — no stemming, no stopwords — which is the only defensible
 # DEFAULT for a language-agnostic engine. A deployment that knows its corpus
@@ -391,6 +417,30 @@ class AGEDriver(GraphDriver):
     async def ensure_edge_label(self, label: str) -> None:
         """Materialise an edge label before any write MERGEs on it."""
         await self._ensure_label(label, 'e')
+
+    def forget_label(self, kind: str, label: str) -> None:
+        """Discard a cached (kind, label) pair so the next ensure re-checks the store.
+
+        BUG-48. `_known_labels` is per-INSTANCE and is cleared only by this
+        instance's own `build_indices_and_constraints(delete_existing=True)` and
+        `drop_graph`. A different instance or process rebuilding the graph
+        therefore leaves this cache asserting labels that no longer exist:
+        `_ensure_label` short-circuits, nothing is created, and the MERGE becomes
+        the label's first real use again — back on AGE's unsynchronised implicit
+        DDL, which is the failure the guard exists to prevent (measured: 7 of 24
+        concurrent saves lost after a foreign rebuild).
+
+        Nothing here polls or re-verifies on a cadence: a periodic `ag_catalog`
+        check would cost a query on writes that are fine, and would still have a
+        window. The cache is dropped only where the lie has already shown itself
+        — `AGEGraphOperations._write`, on `LABEL_DDL_RACE_ERRORS` — so the hot
+        path keeps costing nothing.
+
+        Idempotent by construction: the recovery drops every label the failed
+        write declared without first asking which of them raced, so forgetting a
+        pair that was never cached must be a no-op.
+        """
+        self._known_labels.discard((kind, label))
 
     # Shadow tables (pgvector + tsvector) keyed by node/edge uuid. AGE has no
     # native vector or fulltext, so search runs against these, kept in sync by

@@ -27,6 +27,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from graphiti_core.driver.age_driver import LABEL_DDL_RACE_ERRORS
 from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
 
 logger = logging.getLogger(__name__)
@@ -261,12 +262,55 @@ class AGEGraphOperations(GraphOperationsInterface):
         Every MERGE/CREATE in this class goes through this method; that is what
         keeps the guarantee from depending on each writer remembering. Read
         patterns do NOT need it: AGE's MATCH on an unknown label creates nothing.
+
+        BUG-48 recovery. The declaration above can be short-circuited by a LIE:
+        the driver's `_known_labels` cache is per-instance, so a graph rebuilt by
+        another instance or process leaves it asserting labels that no longer
+        exist, `ensure_*_label` returns without doing anything, and the MERGE is
+        back on the implicit DDL. That shows up here, as the DDL-race error class
+        — so here is where it is answered: drop the declared pairs, re-ensure them
+        ONCE against the real catalogue, retry the write ONCE.
+
+        The retry is safe to bound at one and safe to replay: every write routed
+        through this method is a uuid-keyed MERGE, so re-running it is idempotent,
+        and the re-ensure consults the store rather than the cache — one round is
+        therefore either enough or the error was never about the cache. A second
+        consecutive failure is left to propagate as the real error it is.
         """
-        for label in vertex_labels:
-            await driver.ensure_vertex_label(label)
-        for label in edge_labels:
-            await driver.ensure_edge_label(label)
-        return await driver.execute_query(cypher)
+        declared = tuple(('v', label) for label in vertex_labels)
+        declared += tuple(('e', label) for label in edge_labels)
+        await AGEGraphOperations._declare(driver, declared)
+        try:
+            return await driver.execute_query(cypher)
+        except LABEL_DDL_RACE_ERRORS:
+            if not declared:
+                # Nothing was declared, so no cached pair can be stale and there
+                # is nothing to invalidate — this is a genuine error.
+                raise
+            logger.warning(
+                'AGE write failed on label DDL for %s; the driver\'s label cache '
+                'claimed labels the graph does not have (a foreign rebuild — '
+                'BUG-48). Dropping those cache entries, re-checking the catalogue '
+                'and retrying the write once.',
+                sorted(declared),
+            )
+            for kind, label in declared:
+                driver.forget_label(kind, label)
+            await AGEGraphOperations._declare(driver, declared)
+            # Deliberately NOT wrapped: a second consecutive failure means the
+            # cache was not the problem, and burying that in a loop would turn a
+            # raised save into a hang.
+            return await driver.execute_query(cypher)
+
+    @staticmethod
+    async def _declare(driver: Any, declared: tuple[tuple[str, str], ...]) -> None:
+        """Materialise every declared (kind, label) pair. Shared by the first
+        attempt and the post-invalidation retry so the two cannot drift."""
+        for kind, label in declared:
+            if kind == 'v':
+                await driver.ensure_vertex_label(label)
+            else:
+                await driver.ensure_edge_label(label)
 
     @staticmethod
     def _node_read_pattern(label: str) -> tuple[str, str]:
