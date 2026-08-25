@@ -227,6 +227,22 @@ Raise it if a single extraction legitimately runs longer than five minutes — b
 raise the consumer's bound with it, or the consumer simply starts timing out
 first again.
 
+**A failed LLM or embedder factory now stops the server rather than starting it
+degraded.** Bounding the clients the factories build says nothing about the case
+where a factory raises — the server used to log a warning, leave the client
+`None`, and hand that `None` to `Graphiti(...)`, which treats it exactly like an
+omitted argument and substitutes its own `OpenAIClient()` / `OpenAIEmbedder()`.
+That substitute is built with no `client=`, so it carries the 600 s ceiling this
+section exists to remove, and it is OpenAI whatever you configured: an Anthropic
+deployment whose factory failed came up answering through whatever
+`OPENAI_API_KEY` was in the environment, while `get_status` read green. Startup
+now fails loudly instead, naming the provider and the original error.
+
+The reranker deliberately still degrades: a failure there leaves `None`,
+graphiti_core's default returns and the server starts, because its substitute
+costs ranking quality rather than putting a different provider behind your
+writes.
+
 ### Using Ollama for Local LLM
 
 To use Ollama with the MCP server, configure it as an OpenAI-compatible endpoint:
