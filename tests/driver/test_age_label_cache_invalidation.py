@@ -37,6 +37,8 @@ itself, driven through the real `_write` funnel and the real `AGEDriver` cache
 with a stub connection.
 """
 
+import logging
+
 import asyncpg
 import pytest
 
@@ -177,6 +179,27 @@ async def test_every_label_the_write_declared_is_invalidated():
 
     assert sorted(driver.forgotten) == [('e', 'MENTIONS'), ('v', 'Episodic')]
     assert driver.known_labels == {('v', 'Episodic'), ('e', 'MENTIONS')}  # re-ensured
+
+
+@pytest.mark.asyncio
+async def test_the_recovery_warning_carries_the_original_error(caplog):
+    """A recovery that succeeds swallows the only evidence it happened unless the
+    caught error is logged with it: which SQLSTATE fired, and on which relation.
+    Without it a recovered race is indistinguishable in the log from a race that
+    never happened, and the 42P07-vs-23505 arm is unknowable."""
+    driver = _StubDriver(failures=[_duplicate_table()])
+
+    with caplog.at_level(logging.WARNING, logger='graphiti_core.driver.graph_operations'):
+        await AGEGraphOperations._write(
+            driver, 'MERGE (a)-[r:BROADER]->(b)', edge_labels=('BROADER',)
+        )
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is not None, 'the caught error was dropped'
+    original = warnings[0].exc_info[1]
+    assert isinstance(original, asyncpg.exceptions.DuplicateTableError)
+    assert 'BROADER' in str(original)
 
 
 @pytest.mark.asyncio

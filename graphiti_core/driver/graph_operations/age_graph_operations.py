@@ -25,6 +25,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 from graphiti_core.driver.age_driver import LABEL_DDL_RACE_ERRORS
@@ -65,7 +66,16 @@ def _cy(value: Any) -> str:
     return "'" + s + "'"
 
 
-_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+# Anchored with `\Z`, NOT `$`. Python's `$` also matches just BEFORE a trailing
+# newline, so `'BROADER\n'` satisfied a `$`-anchored version of this pattern —
+# and that one character split the two things that must never disagree: the
+# label DECLARED to `ensure_*_label` went through a `::name` parameter and kept
+# the newline, while the label MERGEd was inlined into Cypher text where the
+# parser stops at the whitespace. Declared `BROADER\n`, merged `BROADER`: the
+# declaration materialises one label and the write takes AGE's implicit-DDL path
+# on the other, which is exactly the divergence the declaration exists to
+# prevent (BUG-38/BUG-47). `\Z` is end-of-string with no exception.
+_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\Z')
 
 # PostgreSQL's NAMEDATALEN (64) minus the terminating NUL. A label reaches SQL as
 # a PARAMETER bound to `name` (`AGEDriver._ensure_label`/`_label_exists`), and a
@@ -77,6 +87,44 @@ _MAX_LABEL_LEN = 63
 # Hex characters of the digest appended when a label has to be shortened, plus
 # the '_' that separates it from the kept prefix.
 _LABEL_DIGEST_LEN = 8
+
+# How many DISTINCT over-long labels are remembered as already-warned-about.
+# Bounded on purpose — see `_warn_label_shortened`.
+_LABEL_WARN_CACHE = 1024
+
+
+@lru_cache(maxsize=_LABEL_WARN_CACHE)
+def _warn_label_shortened(label: str, bounded: str) -> None:
+    """Warn ONCE per distinct over-long label, not once per call.
+
+    `_bounded_label` is called far more often than there are labels: the bulk
+    path alone runs `_node_label` three times per node (grouping the uuids by
+    label, keying the stored-attribute map, and emitting the MERGE). A warning on
+    every call turned a 10-node bulk of one long label into 30 lines, which
+    extrapolates to ~15,000 on a 5,000-entity ingest — destroying the very
+    traceability the warning exists to provide.
+
+    Deduped through an LRU rather than a plain set so it CANNOT grow without
+    bound in a long-lived server. The lifetime is therefore "until evicted":
+    process-scoped, capped at `_LABEL_WARN_CACHE` distinct over-long labels, and
+    a label evicted and then seen again warns again. That is the right failure
+    mode — a periodic re-notification, never a flood, and never unbounded memory
+    even against an endless stream of novel LLM-produced names.
+
+    Returns None and is cached for its SIDE EFFECT only; the caller must not
+    depend on the return value. Keyed on both arguments, but `bounded` is a pure
+    function of `label`, so the key is effectively the label alone.
+    """
+    logger.warning(
+        'AGE label %r is %d characters, over PostgreSQL\'s %d-character limit; '
+        'stored as %r (deterministic hash-suffix shortening, BUG-47). The full '
+        'name is preserved in the element\'s `name`/`labels` property. Further '
+        'occurrences of this label are not logged.',
+        label,
+        len(label),
+        _MAX_LABEL_LEN,
+        bounded,
+    )
 
 
 def _bounded_label(label: str) -> str:
@@ -96,26 +144,24 @@ def _bounded_label(label: str) -> str:
     that matters — two writers on one graph that shortened the same name
     differently would create two labels for one type. Hence `sha256` and not
     `hash()`: `hash()` of a str is salted per process by PYTHONHASHSEED, so it is
-    stable within one process and different in the next. Pure function of the
-    name, no per-process state, no counters.
+    stable within one process and different in the next. The RETURN VALUE is a
+    pure function of the name — no per-process state, no counters. (The warning
+    below is deduplicated through a cache, but that is a side effect only and
+    changes nothing about what this returns.)
 
     The result is identifier-safe whenever the input is: the kept prefix comes
     from a label the callers have already matched against `_IDENT_RE`, and '_'
     plus lowercase hex adds nothing new.
+
+    Quiet on the hot path in two senses: nothing is logged for a label within the
+    limit, and an over-long one is announced once per distinct name rather than
+    once per call (`_warn_label_shortened`).
     """
     if len(label) <= _MAX_LABEL_LEN:
         return label
     digest = hashlib.sha256(label.encode('utf-8')).hexdigest()[:_LABEL_DIGEST_LEN]
     bounded = label[: _MAX_LABEL_LEN - _LABEL_DIGEST_LEN - 1] + '_' + digest
-    logger.warning(
-        'AGE label %r is %d characters, over PostgreSQL\'s %d-character limit; '
-        'stored as %r (deterministic hash-suffix shortening, BUG-47). The full '
-        'name is preserved in the element\'s `name`/`labels` property.',
-        label,
-        len(label),
-        _MAX_LABEL_LEN,
-        bounded,
-    )
+    _warn_label_shortened(label, bounded)
     return bounded
 
 
@@ -293,6 +339,11 @@ class AGEGraphOperations(GraphOperationsInterface):
                 'BUG-48). Dropping those cache entries, re-checking the catalogue '
                 'and retrying the write once.',
                 sorted(declared),
+                # The caught error is the only record of WHICH SQLSTATE fired and
+                # on which relation. When the retry succeeds nothing else ever
+                # surfaces it, so a recovery would otherwise be indistinguishable
+                # in the log from a race that never happened.
+                exc_info=True,
             )
             for kind, label in declared:
                 driver.forget_label(kind, label)

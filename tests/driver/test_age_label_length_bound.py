@@ -56,9 +56,20 @@ from graphiti_core.driver.graph_operations.age_graph_operations import (
     _bounded_label,
     _edge_label,
     _node_label,
+    _warn_label_shortened,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _forget_warned_labels():
+    """The warn-once dedupe is process-scoped, so without this a label another
+    test already warned about would silently stop warning here — order-dependent
+    tests that pass alone and fail in a suite."""
+    _warn_label_shortened.cache_clear()
+    yield
+    _warn_label_shortened.cache_clear()
 
 
 # --------------------------------------------------------------- the boundary
@@ -236,6 +247,139 @@ def test_a_label_within_the_limit_logs_nothing(caplog):
     with caplog.at_level(logging.WARNING, logger='graphiti_core.driver.graph_operations'):
         _bounded_label('W' * _MAX_LABEL_LEN)
     assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_the_same_long_label_warns_once_however_many_times_it_is_seen(caplog):
+    """`_bounded_label` is called far more often than there are labels — the bulk
+    path runs `_node_label` three times per node — so a warning per CALL floods
+    the log and destroys the traceability it exists for. Measured before the
+    dedupe: 30 lines for a 10-node bulk of one label, ~15,000 on a 5,000-entity
+    ingest."""
+    label = 'F' * 120
+    with caplog.at_level(logging.WARNING, logger='graphiti_core.driver.graph_operations'):
+        results = {_bounded_label(label) for _ in range(200)}
+
+    assert len(results) == 1  # still the same answer every time
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+def test_a_different_long_label_still_warns(caplog):
+    """Deduping must be per NAME. Silencing the second distinct label would hide
+    exactly the case an operator needs to see."""
+    with caplog.at_level(logging.WARNING, logger='graphiti_core.driver.graph_operations'):
+        _bounded_label('G' * 120)
+        _bounded_label('G' * 120)
+        _bounded_label('H' * 120)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert 'G' * 120 in warnings[0].getMessage()
+    assert 'H' * 120 in warnings[1].getMessage()
+
+
+def test_the_dedupe_is_bounded_and_cannot_grow_without_limit():
+    """A plain seen-set would grow forever in a long-lived server fed an endless
+    stream of novel LLM-produced names. The LRU caps it: the lifetime is 'until
+    evicted', so an evicted label warns again — a re-notification, never a flood
+    and never unbounded memory."""
+    for i in range(3000):
+        _bounded_label(f'{"I" * 100}_{i}')
+
+    info = _warn_label_shortened.cache_info()
+    assert info.maxsize is not None
+    assert info.currsize <= info.maxsize
+
+
+@pytest.mark.asyncio
+async def test_a_bulk_save_of_one_long_label_warns_once_not_once_per_call(caplog):
+    """The measured shape, through the real bulk writer rather than the helper."""
+    from datetime import datetime, timezone
+
+    from graphiti_core.driver.graph_operations.age_graph_operations import AGEGraphOperations
+    from graphiti_core.nodes import EntityNode
+
+    long_class = 'Organizacion' + 'Criminal' * 12
+    rows = [
+        {
+            'uuid': f'bulk-largo-{i}',
+            'name': f'B{i}',
+            'group_id': 'bug47',
+            'summary': '',
+            'labels': ['Entity', long_class],
+            'created_at': datetime.now(timezone.utc),
+            'name_embedding': None,
+        }
+        for i in range(10)
+    ]
+
+    driver = _CapturingDriver()
+    with caplog.at_level(logging.WARNING, logger='graphiti_core.driver.graph_operations'):
+        await AGEGraphOperations().node_save_bulk(EntityNode, driver, None, rows)
+
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+# ------------------------------------------- the identifier gate is `\Z`-anchored
+
+
+@pytest.mark.parametrize('suffix', ['\n', '\n\n'])
+def test_a_name_with_a_trailing_newline_is_not_an_identifier(suffix):
+    """Python's `$` also matches just BEFORE a trailing newline, so a `$`-anchored
+    gate admitted `'BROADER\\n'`. One character, but it splits the two things that
+    must never disagree: the DECLARED label keeps the newline (it goes through a
+    `::name` parameter) while the MERGEd one ends at the whitespace in the Cypher
+    text. Declared `BROADER\\n`, merged `BROADER` — the write is back on implicit
+    DDL for a label nobody declared."""
+    assert not _IDENT_RE.match('BROADER' + suffix)
+    assert _edge_label('BROADER' + suffix) == 'RELATES_TO'
+    assert _node_label(['Entity', 'Persona' + suffix]) == 'Entity'
+
+
+def test_the_plain_name_without_the_newline_is_still_accepted():
+    """The control: closing the hole must not reject the legitimate name."""
+    assert _IDENT_RE.match('BROADER')
+    assert _edge_label('BROADER') == 'BROADER'
+    assert _node_label(['Entity', 'Persona']) == 'Persona'
+
+
+@pytest.mark.asyncio
+async def test_a_trailing_newline_name_never_reaches_the_declaration():
+    """The end-to-end consequence: whatever the writer declares is what it MERGEs
+    on, and neither of them carries a newline."""
+    from datetime import datetime, timezone
+
+    from graphiti_core.driver.graph_operations.age_graph_operations import AGEGraphOperations
+    from graphiti_core.edges import EntityEdge
+    from graphiti_core.nodes import EntityNode
+
+    driver = _CapturingDriver()
+    ops = AGEGraphOperations()
+    node = EntityNode(
+        name='N',
+        group_id='bug47',
+        labels=['Entity', 'Persona\n'],
+        created_at=datetime.now(timezone.utc),
+        summary='',
+        attributes={},
+    )
+    node.name_embedding = None
+    edge = EntityEdge(
+        source_node_uuid=node.uuid,
+        target_node_uuid=node.uuid,
+        name='BROADER\n',
+        group_id='bug47',
+        fact='f',
+        created_at=datetime.now(timezone.utc),
+    )
+    edge.fact_embedding = None
+
+    await ops.node_save(node, driver)
+    await ops.edge_save(edge, driver)
+
+    assert driver.ensured == [('v', 'Entity'), ('e', 'RELATES_TO')]
+    for _kind, label in driver.ensured:
+        assert '\n' not in label
+    assert _labels_named_in_merges(driver) - set(driver.ensured) == set()
 
 
 # ------------------------------------------- the write declares what it MERGEs
