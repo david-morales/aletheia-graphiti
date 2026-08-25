@@ -27,6 +27,8 @@ from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.decorators import handle_multiple_group_ids
 from graphiti_core.driver.driver import GraphDriver
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+from graphiti_core.driver.interface_dispatch import implements
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
 from graphiti_core.edges import (
     CommunityEdge,
@@ -416,13 +418,13 @@ class Graphiti:
         self, saga_uuid: str, current_episode_uuid: str
     ) -> str | None:
         """Find the most recent episode UUID in a saga, excluding the current one."""
-        if self.driver.graph_operations_interface:
-            try:
-                return await self.driver.graph_operations_interface.saga_get_previous_episode_uuid(
-                    self.driver, saga_uuid, current_episode_uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            self.driver.graph_operations_interface,
+            GraphOperationsInterface.saga_get_previous_episode_uuid,
+        ):
+            return await self.driver.graph_operations_interface.saga_get_previous_episode_uuid(
+                self.driver, saga_uuid, current_episode_uuid
+            )
 
         records, _, _ = await self.driver.execute_query(
             """
@@ -447,13 +449,13 @@ class Graphiti:
         limit: int = 200,
     ) -> list[tuple[str, datetime | None]] | None:
         """Retrieve (content, valid_at) per episode for summarization, using IoC if available."""
-        if self.driver.graph_operations_interface:
-            try:
-                return await self.driver.graph_operations_interface.saga_get_episode_contents(
-                    self.driver, saga_uuid, since=since, limit=limit
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            self.driver.graph_operations_interface,
+            GraphOperationsInterface.saga_get_episode_contents,
+        ):
+            return await self.driver.graph_operations_interface.saga_get_episode_contents(
+                self.driver, saga_uuid, since=since, limit=limit
+            )
         return None
 
     async def summarize_saga(self, saga_id: str) -> SagaNode:
@@ -1004,13 +1006,12 @@ class Graphiti:
         if driver is None:
             driver = self.clients.driver
 
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.retrieve_episodes(
-                    driver, reference_time, last_n, group_ids, source, saga
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.retrieve_episodes
+        ):
+            return await driver.graph_operations_interface.retrieve_episodes(
+                driver, reference_time, last_n, group_ids, source, saga
+            )
 
         return await retrieve_episodes(driver, reference_time, last_n, group_ids, source, saga)
 

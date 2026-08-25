@@ -401,21 +401,43 @@ class GraphitiService:
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
         try:
-            # Create clients using factories
-            llm_client = None
-            embedder_client = None
-
-            # Create LLM client based on configured provider
+            # Create clients using factories.
+            #
+            # These two are FATAL when their factory fails (BUG-96 follow-up a).
+            # They used to log a warning and leave the variable None, which is the
+            # same instruction to `Graphiti(...)` as omitting the argument: it
+            # substitutes its own `OpenAIClient()` / `OpenAIEmbedder()`, built with
+            # no `client=` and therefore carrying the openai SDK's 600 s ceiling —
+            # the unbounded client layer 1 exists to remove — while the server went
+            # on to log "Successfully initialized" and answer `get_status` green.
+            # The substitute is also OpenAI whatever the operator configured, so a
+            # failed Anthropic factory came up answering through whatever
+            # OPENAI_API_KEY was in the environment.
+            #
+            # Deliberately NOT symmetric with the reranker below, which is allowed
+            # to degrade: its substitute costs ranking quality, not a different
+            # provider serving writes on a credential nobody chose.
             try:
                 llm_client = LLMClientFactory.create(self.config.llm)
             except Exception as e:
-                logger.warning(f'Failed to create LLM client: {e}')
+                raise RuntimeError(
+                    f'Failed to create the LLM client for provider '
+                    f'{self.config.llm.provider!r}: {e}. Refusing to start: '
+                    'graphiti_core would substitute an unbounded OpenAI client '
+                    'here (BUG-96), so the server would run against the wrong '
+                    'provider with no request bound.'
+                ) from e
 
-            # Create embedder client based on configured provider
             try:
                 embedder_client = EmbedderFactory.create(self.config.embedder)
             except Exception as e:
-                logger.warning(f'Failed to create embedder client: {e}')
+                raise RuntimeError(
+                    f'Failed to create the embedder client for provider '
+                    f'{self.config.embedder.provider!r}: {e}. Refusing to start: '
+                    'graphiti_core would substitute an unbounded OpenAI embedder '
+                    'here (BUG-96), so the server would run against the wrong '
+                    'provider with no request bound.'
+                ) from e
 
             # Create the reranker client. Graphiti() builds its own unbounded one
             # when this is None, which is precisely the pre-BUG-96 behaviour — so a

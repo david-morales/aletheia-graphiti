@@ -27,6 +27,9 @@ from graphiti_core.driver.driver import (
     GraphDriver,
     GraphProvider,
 )
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+from graphiti_core.driver.interface_dispatch import implements
+from graphiti_core.driver.search_interface.search_interface import SearchInterface
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import (
     DEFAULT_ENTITY_EDGE_TYPE,
@@ -135,11 +138,8 @@ async def get_episodes_by_mentions(
 async def get_mentioned_nodes(
     driver: GraphDriver, episodes: list[EpisodicNode]
 ) -> list[EntityNode]:
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.get_mentioned_nodes(driver, episodes)
-        except NotImplementedError:
-            pass
+    if implements(driver.graph_operations_interface, GraphOperationsInterface.get_mentioned_nodes):
+        return await driver.graph_operations_interface.get_mentioned_nodes(driver, episodes)
 
     episode_uuids = [episode.uuid for episode in episodes]
 
@@ -162,11 +162,10 @@ async def get_mentioned_nodes(
 async def get_communities_by_nodes(
     driver: GraphDriver, nodes: list[EntityNode]
 ) -> list[CommunityNode]:
-    if driver.graph_operations_interface:
-        try:
-            return await driver.graph_operations_interface.get_communities_by_nodes(driver, nodes)
-        except NotImplementedError:
-            pass
+    if implements(
+        driver.graph_operations_interface, GraphOperationsInterface.get_communities_by_nodes
+    ):
+        return await driver.graph_operations_interface.get_communities_by_nodes(driver, nodes)
 
     node_uuids = [node.uuid for node in nodes]
 
@@ -602,13 +601,10 @@ async def edge_bfs_search(
     group_ids: list[str] | None = None,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityEdge]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.edge_bfs_search(
-                driver, bfs_origin_node_uuids, bfs_max_depth, search_filter, group_ids, limit
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.edge_bfs_search):
+        return await driver.search_interface.edge_bfs_search(
+            driver, bfs_origin_node_uuids, bfs_max_depth, search_filter, group_ids, limit
+        )
 
     # vector similarity search over embedded facts
     if bfs_origin_node_uuids is None or len(bfs_origin_node_uuids) == 0:
@@ -1027,13 +1023,10 @@ async def node_bfs_search(
     group_ids: list[str] | None = None,
     limit: int = RELEVANT_SCHEMA_LIMIT,
 ) -> list[EntityNode]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.node_bfs_search(
-                driver, bfs_origin_node_uuids, search_filter, bfs_max_depth, group_ids, limit
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.node_bfs_search):
+        return await driver.search_interface.node_bfs_search(
+            driver, bfs_origin_node_uuids, search_filter, bfs_max_depth, group_ids, limit
+        )
 
     if bfs_origin_node_uuids is None or len(bfs_origin_node_uuids) == 0 or bfs_max_depth < 1:
         return []
@@ -1213,13 +1206,10 @@ async def community_fulltext_search(
     group_ids: list[str] | None = None,
     limit=RELEVANT_SCHEMA_LIMIT,
 ) -> list[CommunityNode]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.community_fulltext_search(
-                driver, query, group_ids, limit
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.community_fulltext_search):
+        return await driver.search_interface.community_fulltext_search(
+            driver, query, group_ids, limit
+        )
 
     # BM25 search to get top communities
     fuzzy_query = fulltext_query(query, group_ids, driver)
@@ -1303,13 +1293,10 @@ async def community_similarity_search(
     limit=RELEVANT_SCHEMA_LIMIT,
     min_score=DEFAULT_MIN_SCORE,
 ) -> list[CommunityNode]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.community_similarity_search(
-                driver, search_vector, group_ids, limit, min_score
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.community_similarity_search):
+        return await driver.search_interface.community_similarity_search(
+            driver, search_vector, group_ids, limit, min_score
+        )
 
     # vector similarity search over entity names
     query_params: dict[str, Any] = {}
@@ -1667,13 +1654,10 @@ async def get_relevant_edges(
     # `vector.similarity.cosine`, which AGE rejects outright ("invalid
     # indirection syntax"). A provider whose storage model these queries do not
     # describe answers them itself, through the same seam as the reranker.
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.get_relevant_edges(
-                driver, edges, search_filter, min_score, limit
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.get_relevant_edges):
+        return await driver.search_interface.get_relevant_edges(
+            driver, edges, search_filter, min_score, limit
+        )
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
@@ -1865,13 +1849,10 @@ async def get_edge_invalidation_candidates(
     # BUG-104, the temporal half — same node-label defect as `get_relevant_edges`
     # above, same cure: the provider that owns a different storage model answers
     # for itself rather than having its labels leak into the shared query.
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.get_edge_invalidation_candidates(
-                driver, edges, search_filter, min_score, limit
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.get_edge_invalidation_candidates):
+        return await driver.search_interface.get_edge_invalidation_candidates(
+            driver, edges, search_filter, min_score, limit
+        )
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
@@ -2077,13 +2058,10 @@ async def node_distance_reranker(
     center_node_uuid: str,
     min_score: float = 0,
 ) -> tuple[list[str], list[float]]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.node_distance_reranker(
-                driver, node_uuids, center_node_uuid, min_score
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.node_distance_reranker):
+        return await driver.search_interface.node_distance_reranker(
+            driver, node_uuids, center_node_uuid, min_score
+        )
 
     # filter out node_uuid center node node uuid
     filtered_uuids = list(filter(lambda node_uuid: node_uuid != center_node_uuid, node_uuids))
@@ -2141,13 +2119,10 @@ async def node_distance_reranker(
 async def episode_mentions_reranker(
     driver: GraphDriver, node_uuids: list[list[str]], min_score: float = 0
 ) -> tuple[list[str], list[float]]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.episode_mentions_reranker(
-                driver, node_uuids, min_score
-            )
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.episode_mentions_reranker):
+        return await driver.search_interface.episode_mentions_reranker(
+            driver, node_uuids, min_score
+        )
 
     # use rrf as a preliminary ranker
     sorted_uuids, _ = rrf(node_uuids)
@@ -2260,11 +2235,8 @@ async def get_embeddings_for_nodes(
 async def get_embeddings_for_communities(
     driver: GraphDriver, communities: list[CommunityNode]
 ) -> dict[str, list[float]]:
-    if driver.search_interface:
-        try:
-            return await driver.search_interface.get_embeddings_for_communities(driver, communities)
-        except NotImplementedError:
-            pass
+    if implements(driver.search_interface, SearchInterface.get_embeddings_for_communities):
+        return await driver.search_interface.get_embeddings_for_communities(driver, communities)
 
     if driver.provider == GraphProvider.NEPTUNE:
         query = """

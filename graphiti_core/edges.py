@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field
 from typing_extensions import LiteralString
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
+from graphiti_core.driver.graph_operations.graph_operations import GraphOperationsInterface
+from graphiti_core.driver.interface_dispatch import implements
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError
 from graphiti_core.graph_queries import TYPED_EDGE_LABEL_PROVIDERS
@@ -58,11 +60,8 @@ class Edge(BaseModel, ABC):
     async def save(self, driver: GraphDriver): ...
 
     async def delete(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_delete(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.edge_delete):
+            return await driver.graph_operations_interface.edge_delete(self, driver)
 
         if driver.provider == GraphProvider.KUZU:
             await driver.execute_query(
@@ -112,13 +111,10 @@ class Edge(BaseModel, ABC):
 
     @classmethod
     async def delete_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_delete_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.edge_delete_by_uuids
+        ):
+            return await driver.graph_operations_interface.edge_delete_by_uuids(cls, driver, uuids)
 
         if driver.provider == GraphProvider.KUZU:
             await driver.execute_query(
@@ -174,11 +170,10 @@ class Edge(BaseModel, ABC):
 
 class EpisodicEdge(Edge):
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_edge_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.episodic_edge_save
+        ):
+            return await driver.graph_operations_interface.episodic_edge_save(self, driver)
 
         result = await driver.execute_query(
             EPISODIC_EDGE_SAVE,
@@ -195,13 +190,12 @@ class EpisodicEdge(Edge):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_edge_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.episodic_edge_get_by_uuid
+        ):
+            return await driver.graph_operations_interface.episodic_edge_get_by_uuid(
+                cls, driver, uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -221,13 +215,12 @@ class EpisodicEdge(Edge):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_edge_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.episodic_edge_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.episodic_edge_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -254,13 +247,13 @@ class EpisodicEdge(Edge):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.episodic_edge_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.episodic_edge_get_by_group_ids,
+        ):
+            return await driver.graph_operations_interface.episodic_edge_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -330,11 +323,10 @@ class EntityEdge(Edge):
         return self.fact_embedding
 
     async def load_fact_embedding(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_load_embeddings(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.edge_load_embeddings
+        ):
+            return await driver.graph_operations_interface.edge_load_embeddings(self, driver)
 
         query = """
             MATCH (n:Entity)-[e {uuid: $uuid}]->(m:Entity)
@@ -365,11 +357,8 @@ class EntityEdge(Edge):
         self.fact_embedding = records[0]['fact_embedding']
 
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.edge_save):
+            return await driver.graph_operations_interface.edge_save(self, driver)
 
         edge_data: dict[str, Any] = {
             'source_uuid': self.source_node_uuid,
@@ -408,11 +397,8 @@ class EntityEdge(Edge):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_get_by_uuid(cls, driver, uuid)
-            except NotImplementedError:
-                pass
+        if implements(driver.graph_operations_interface, GraphOperationsInterface.edge_get_by_uuid):
+            return await driver.graph_operations_interface.edge_get_by_uuid(cls, driver, uuid)
 
         match_query = """
             MATCH (n:Entity)-[e {uuid: $uuid}]->(m:Entity)
@@ -442,13 +428,12 @@ class EntityEdge(Edge):
     async def get_between_nodes(
         cls, driver: GraphDriver, source_node_uuid: str, target_node_uuid: str
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_get_between_nodes(
-                    cls, driver, source_node_uuid, target_node_uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.edge_get_between_nodes
+        ):
+            return await driver.graph_operations_interface.edge_get_between_nodes(
+                cls, driver, source_node_uuid, target_node_uuid
+            )
 
         match_query = """
             MATCH (n:Entity {uuid: $source_node_uuid})-[e]->(m:Entity {uuid: $target_node_uuid})
@@ -477,11 +462,10 @@ class EntityEdge(Edge):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_get_by_uuids(cls, driver, uuids)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.edge_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.edge_get_by_uuids(cls, driver, uuids)
 
         if len(uuids) == 0:
             return []
@@ -518,13 +502,12 @@ class EntityEdge(Edge):
         uuid_cursor: str | None = None,
         with_embeddings: bool = False,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.edge_get_by_group_ids
+        ):
+            return await driver.graph_operations_interface.edge_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -573,13 +556,12 @@ class EntityEdge(Edge):
 
     @classmethod
     async def get_by_node_uuid(cls, driver: GraphDriver, node_uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.edge_get_by_node_uuid(
-                    cls, driver, node_uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.edge_get_by_node_uuid
+        ):
+            return await driver.graph_operations_interface.edge_get_by_node_uuid(
+                cls, driver, node_uuid
+            )
 
         match_query = """
             MATCH (n:Entity {uuid: $node_uuid})-[e]-(m:Entity)
@@ -606,11 +588,10 @@ class EntityEdge(Edge):
 
 class CommunityEdge(Edge):
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_edge_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.community_edge_save
+        ):
+            return await driver.graph_operations_interface.community_edge_save(self, driver)
 
         result = await driver.execute_query(
             get_community_edge_save_query(driver.provider),
@@ -627,13 +608,12 @@ class CommunityEdge(Edge):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_edge_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.community_edge_get_by_uuid
+        ):
+            return await driver.graph_operations_interface.community_edge_get_by_uuid(
+                cls, driver, uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -651,13 +631,12 @@ class CommunityEdge(Edge):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_edge_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.community_edge_get_by_uuids
+        ):
+            return await driver.graph_operations_interface.community_edge_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -682,13 +661,13 @@ class CommunityEdge(Edge):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.community_edge_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.community_edge_get_by_group_ids,
+        ):
+            return await driver.graph_operations_interface.community_edge_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -720,11 +699,10 @@ class CommunityEdge(Edge):
 
 class HasEpisodeEdge(Edge):
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.has_episode_edge_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.has_episode_edge_save
+        ):
+            return await driver.graph_operations_interface.has_episode_edge_save(self, driver)
 
         result = await driver.execute_query(
             HAS_EPISODE_EDGE_SAVE,
@@ -740,11 +718,10 @@ class HasEpisodeEdge(Edge):
         return result
 
     async def delete(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.has_episode_edge_delete(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.has_episode_edge_delete
+        ):
+            return await driver.graph_operations_interface.has_episode_edge_delete(self, driver)
 
         await driver.execute_query(
             """
@@ -758,13 +735,12 @@ class HasEpisodeEdge(Edge):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.has_episode_edge_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.has_episode_edge_get_by_uuid
+        ):
+            return await driver.graph_operations_interface.has_episode_edge_get_by_uuid(
+                cls, driver, uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -784,13 +760,13 @@ class HasEpisodeEdge(Edge):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.has_episode_edge_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.has_episode_edge_get_by_uuids,
+        ):
+            return await driver.graph_operations_interface.has_episode_edge_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -815,13 +791,13 @@ class HasEpisodeEdge(Edge):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.has_episode_edge_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.has_episode_edge_get_by_group_ids,
+        ):
+            return await driver.graph_operations_interface.has_episode_edge_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
@@ -853,11 +829,10 @@ class HasEpisodeEdge(Edge):
 
 class NextEpisodeEdge(Edge):
     async def save(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.next_episode_edge_save(self, driver)
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.next_episode_edge_save
+        ):
+            return await driver.graph_operations_interface.next_episode_edge_save(self, driver)
 
         result = await driver.execute_query(
             NEXT_EPISODE_EDGE_SAVE,
@@ -873,13 +848,10 @@ class NextEpisodeEdge(Edge):
         return result
 
     async def delete(self, driver: GraphDriver):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.next_episode_edge_delete(
-                    self, driver
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface, GraphOperationsInterface.next_episode_edge_delete
+        ):
+            return await driver.graph_operations_interface.next_episode_edge_delete(self, driver)
 
         await driver.execute_query(
             """
@@ -893,13 +865,13 @@ class NextEpisodeEdge(Edge):
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.next_episode_edge_get_by_uuid(
-                    cls, driver, uuid
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.next_episode_edge_get_by_uuid,
+        ):
+            return await driver.graph_operations_interface.next_episode_edge_get_by_uuid(
+                cls, driver, uuid
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -919,13 +891,13 @@ class NextEpisodeEdge(Edge):
 
     @classmethod
     async def get_by_uuids(cls, driver: GraphDriver, uuids: list[str]):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.next_episode_edge_get_by_uuids(
-                    cls, driver, uuids
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.next_episode_edge_get_by_uuids,
+        ):
+            return await driver.graph_operations_interface.next_episode_edge_get_by_uuids(
+                cls, driver, uuids
+            )
 
         records, _, _ = await driver.execute_query(
             """
@@ -950,13 +922,13 @@ class NextEpisodeEdge(Edge):
         limit: int | None = None,
         uuid_cursor: str | None = None,
     ):
-        if driver.graph_operations_interface:
-            try:
-                return await driver.graph_operations_interface.next_episode_edge_get_by_group_ids(
-                    cls, driver, group_ids, limit, uuid_cursor
-                )
-            except NotImplementedError:
-                pass
+        if implements(
+            driver.graph_operations_interface,
+            GraphOperationsInterface.next_episode_edge_get_by_group_ids,
+        ):
+            return await driver.graph_operations_interface.next_episode_edge_get_by_group_ids(
+                cls, driver, group_ids, limit, uuid_cursor
+            )
 
         cursor_query: LiteralString = 'AND e.uuid < $uuid' if uuid_cursor else ''
         limit_query: LiteralString = 'LIMIT $limit' if limit is not None else ''
