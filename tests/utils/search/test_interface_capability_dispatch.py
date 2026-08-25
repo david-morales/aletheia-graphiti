@@ -167,6 +167,57 @@ def test_implements_accepts_a_duck_typed_interface():
     assert implements(duck, SearchInterface.edge_bfs_search) is True
 
 
+def test_implements_follows_an_instance_attribute_that_shadows_an_inherited_stub():
+    """Adversarial review F2 — the shape that makes the class lookup wrong.
+
+    A subclass that does NOT override inherits the base stub, so resolving on
+    `type(interface)` finds the stub and reports "not implemented". But an
+    instance attribute SHADOWS the inherited one, so the delegation call one
+    line later runs the real callable — and the generic leg runs too. That is
+    BUG-108's double execution reached from the other side, so the answer has
+    to follow what the call site resolves.
+    """
+
+    class Sub(SearchInterface):
+        pass
+
+    async def real_impl(*args, **kwargs):
+        return ['real result']
+
+    iface = Sub()
+    object.__setattr__(iface, 'edge_bfs_search', real_impl)
+
+    assert Sub.edge_bfs_search is SearchInterface.edge_bfs_search, (
+        'precondition: the CLASS still resolves to the inherited stub'
+    )
+    assert iface.edge_bfs_search is real_impl, (
+        'precondition: the call site reaches the instance attribute'
+    )
+    assert implements(iface, SearchInterface.edge_bfs_search) is True
+
+
+@pytest.mark.asyncio
+async def test_a_shadowing_instance_attribute_is_delegated_to_and_generic_is_not_run():
+    """The same shape driven through a real call site, end to end."""
+
+    class Sub(SearchInterface):
+        pass
+
+    async def real_impl(*args, **kwargs):
+        return ['real result']
+
+    iface = Sub()
+    object.__setattr__(iface, 'edge_bfs_search', real_impl)
+    driver = _driver(search_interface=iface)
+
+    result = await edge_bfs_search(driver, ['origin'], 2, SearchFilters())
+
+    assert result == ['real result']
+    assert driver.execute_query.await_count == 0, (
+        'the generic Cypher must not run alongside a real implementation'
+    )
+
+
 def test_implements_is_false_for_an_object_without_the_method():
     class Empty:
         pass

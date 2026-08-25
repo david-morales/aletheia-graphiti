@@ -507,10 +507,11 @@ class TestAFailedFactoryNeverLandsAnUnboundedClient:
             with pytest.raises(RuntimeError, match='no api key configured'):
                 await service.initialize()
 
-        passed = [call.kwargs.get('llm_client') for call in graphiti_cls.call_args_list]
-        assert all(value is not None for value in passed), (
-            f'Graphiti was constructed with llm_client={passed!r} — graphiti_core '
-            'substitutes an unbounded OpenAIClient() for None (BUG-96 follow-up a)'
+        assert graphiti_cls.call_args_list == [], (
+            f'Graphiti was constructed anyway, with '
+            f'{[c.kwargs.get("llm_client") for c in graphiti_cls.call_args_list]!r} — '
+            'graphiti_core substitutes an unbounded OpenAIClient() for a None '
+            'llm_client (BUG-96 follow-up a)'
         )
 
     @pytest.mark.asyncio
@@ -532,10 +533,11 @@ class TestAFailedFactoryNeverLandsAnUnboundedClient:
             with pytest.raises(RuntimeError, match='embedder misconfigured'):
                 await service.initialize()
 
-        passed = [call.kwargs.get('embedder') for call in graphiti_cls.call_args_list]
-        assert all(value is not None for value in passed), (
-            f'Graphiti was constructed with embedder={passed!r} — graphiti_core '
-            'substitutes an unbounded OpenAIEmbedder() for None (BUG-96 follow-up a)'
+        assert graphiti_cls.call_args_list == [], (
+            f'Graphiti was constructed anyway, with '
+            f'{[c.kwargs.get("embedder") for c in graphiti_cls.call_args_list]!r} — '
+            'graphiti_core substitutes an unbounded OpenAIEmbedder() for a None '
+            'embedder (BUG-96 follow-up a)'
         )
 
     @pytest.mark.asyncio

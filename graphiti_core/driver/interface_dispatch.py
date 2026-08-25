@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import inspect
 from typing import Any, TypeVar
 
 from typing_extensions import TypeIs
@@ -50,12 +51,22 @@ def implements(interface: TInterface | None, base_method: Any) -> TypeIs[TInterf
 
         # ... provider-generic fallback ...
 
-    `GraphDriver` declares these attributes as `SearchInterface | None` and
-    `GraphOperationsInterface | None`, so the class lookup is the real contract.
-    An object that supplies the method WITHOUT inheriting the base declaration —
-    a duck-typed adapter, or a test double such as `MagicMock`, whose attributes
-    live on the instance rather than the class — still has the capability, and
-    is treated as such: only the base class's own stub means "not implemented".
+    The lookup deliberately goes through the INSTANCE — `getattr(interface, …)`,
+    exactly what the call site one line below will do — rather than through
+    `type(interface)`. Resolving on the class instead looks equivalent and is
+    not: an instance attribute shadows an inherited one, so a subclass that
+    inherits the base stub but carries a real callable on the instance would be
+    reported as "not implemented" while the delegation call ran that callable.
+    The generic leg would then run *as well as* the real implementation — the
+    same double-execution BUG-108 is about, arrived at from the other side.
+
+    Because attribute access on an instance builds a fresh bound-method object
+    every time, identity is compared against `__func__` for genuine bound
+    methods. That is what lets a non-overriding subclass still answer False: its
+    bound method unwraps to the base declaration itself. Anything that is not a
+    bound method — a duck-typed adapter, a plain function assigned to the
+    instance, a `MagicMock` attribute — is compared as-is, so only the base
+    class's own stub means "not implemented".
 
     Args:
         interface: The interface instance to test, or None when the driver
@@ -74,8 +85,10 @@ def implements(interface: TInterface | None, base_method: Any) -> TypeIs[TInterf
     if interface is None:
         return False
 
-    name = base_method.__name__
-    override = getattr(type(interface), name, None)
-    if override is None:
-        override = getattr(interface, name, None)
-    return override is not None and override is not base_method
+    # Resolve it the way the delegation call will resolve it.
+    resolved = getattr(interface, base_method.__name__, None)
+    if resolved is None:
+        return False
+
+    func = resolved.__func__ if inspect.ismethod(resolved) else resolved
+    return func is not base_method
