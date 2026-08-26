@@ -348,6 +348,19 @@ CONTRACT_GUARDS = {
     'R7 the announced resource subscription has a publisher': (
         'test_resource_updated_notifications.py'
     ),
+    # R1 again, one level stricter: the catalogue must match what THIS
+    # CONFIGURATION serves, not what the codebase can serve. The four ontology
+    # tools were announced unconditionally and, without a companion ontology
+    # graph, could answer nothing but 'No ontology graph configured' (M11).
+    'R1 the announced surface is what this arm actually serves': (
+        'test_ontology_surface_gate.py'
+    ),
+    # ADR-015 R4's inner boundary. `error` is the FAILURE channel, so a
+    # not-found filed there makes a consumer count a working tool as failing and
+    # retry an answer that cannot change (M11 addendum).
+    'R4 a not-found is an answer, not a failure': (
+        'test_ontology_not_found_taxonomy.py'
+    ),
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'

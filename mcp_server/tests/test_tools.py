@@ -1484,7 +1484,18 @@ class TestSchemaConstraints:
 # ---------------------------------------------------------------------------
 
 class TestDynamicRegistration:
-    """Verify that dynamic tool registration and resources work."""
+    """Verify that dynamic tool registration and resources work.
+
+    CONTRACT-marked at CLASS scope, not module scope, and deliberately so. This
+    module is a behavioural unit suite — most of it asserts what arguments the
+    tools pass DOWN to `search_`/`add_episode`, which is implementation, not the
+    announced surface. Marking the whole file would widen `contract` from
+    "ADR-015/019 surface guards" to "any unit test", diluting the one marker the
+    CI job selects on. What registration puts into `tools/list` IS that surface,
+    so the class carries the marker and the rest of the module does not.
+    """
+
+    pytestmark = pytest.mark.contract
 
     def test_register_dynamic_tools_adds_tools_to_mcp(self, monkeypatch):
         import graphiti_mcp_server as srv

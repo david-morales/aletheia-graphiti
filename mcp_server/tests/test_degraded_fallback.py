@@ -24,7 +24,12 @@ import graphiti_mcp_server as srv
 from flavours.falkordb import FalkorDbFlavour
 from tool_annotations import ONTOLOGY_TOOLS, TOOL_ANNOTATIONS
 
-pytestmark = pytest.mark.asyncio
+# `contract` as well as `asyncio`: this module's whole subject is what
+# `tools/list`, `resources/list` and `instructions` SERVE when the profile build
+# fails — an ADR-019 surface guard by definition, needing no database and no API
+# key. It ran nowhere in CI until now, which for a BUG-50 regression guard is the
+# same as not existing (2026-08-06 analysis, F3).
+pytestmark = [pytest.mark.asyncio, pytest.mark.contract]
 
 NON_ONTOLOGY_TOOLS = frozenset(TOOL_ANNOTATIONS) - ONTOLOGY_TOOLS
 

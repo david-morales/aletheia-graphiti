@@ -891,9 +891,20 @@ to surface a protocol failure and discard the payload, which throws away the
 `hint` that would let the model fix its own query. Transport and protocol
 failures still surface as real MCP errors.
 
-One case is deliberately *not* an error at all: `explore_entity` with a uuid that
-does not exist returns a normal response with `center_node: null` and a message
-saying so. A miss is an answer.
+**A miss is an answer.** Three cases are deliberately *not* errors, and a consumer
+counting per-tool failures must not count them:
+
+- `explore_entity` — a name or uuid that matches nothing returns a normal response
+  with `center_node: null` and a `message` saying so.
+- `explore_ontology` — a class this ontology does not hold returns the same shape:
+  `center: null`, empty relationship and hierarchy structures, and a `message`.
+- `search_ontology` — a query that matches nothing returns a normal result whose
+  `message` reports zero nodes, edges and communities.
+
+In all three the graph was queried and it answered; the answer was empty. Filing
+one of these under `error` makes a working connector look degraded and invites a
+retry whose result cannot change — which is exactly what `explore_ontology` used
+to do before its not-found moved to `message`.
 
 ## Releasing
 

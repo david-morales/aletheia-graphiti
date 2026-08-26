@@ -24,6 +24,8 @@ against a live, configured ontology is.
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import jsonschema
@@ -86,9 +88,75 @@ def _explore(service, **kwargs):
         srv.graphiti_service = with_service
 
 
+def _run_with(service, config, coro_factory):
+    """Drive a tool with `graphiti_service` and `config` swapped in, then restore.
+
+    `config` is an annotation-only module global, so "restore" means DELETING it
+    again where it was never bound — putting a stub back would leak an ontology
+    config into every module that collects after this one.
+    """
+    previous_service = srv.graphiti_service
+    previous_config = srv.__dict__.get('config')
+    srv.graphiti_service = service
+    srv.config = config
+    try:
+        return asyncio.run(coro_factory())
+    finally:
+        srv.graphiti_service = previous_service
+        if previous_config is None:
+            srv.__dict__.pop('config', None)
+        else:
+            srv.config = previous_config
+
+
 def _failed(result: dict) -> bool:
     """What a consumer applying ADR-015 R4 concludes: `if result.get('error')`."""
     return bool(result.get('error'))
+
+
+# ---------------------------------------------------------------------------
+# The not-error cases, as executable drivers
+# ---------------------------------------------------------------------------
+#
+# These ARE the specification of "a miss is an answer", and the README's
+# enumeration is checked against them at the bottom of this module. Keeping the
+# DRIVERS as the source of truth — rather than a list of tool names — is what
+# makes that check non-circular: a tool can only be documented as a not-error
+# case if something here actually drives it into its miss and it actually
+# answers.
+
+
+def _drive_explore_ontology_miss():
+    return _explore(make_service([WIDGET_ROW]), node_name='NoSuchClass')
+
+
+def _drive_search_ontology_empty():
+    service = make_service([])
+    service.ontology_client.search_ = AsyncMock(
+        return_value=MagicMock(nodes=[], edges=[], communities=[])
+    )
+    cfg = GraphitiConfig()
+    cfg.graphiti.ontology_graph = 'test_ontology'
+    return _run_with(
+        service, cfg, lambda: srv.search_ontology(query='nothing matches this')
+    )
+
+
+def _drive_explore_entity_miss():
+    service = MagicMock()
+    client = MagicMock()
+    client.search_ = AsyncMock(return_value=MagicMock(nodes=[]))
+    service.get_client = AsyncMock(return_value=client)
+    cfg = GraphitiConfig()
+    cfg.graphiti.group_id = 'g'
+    return _run_with(service, cfg, lambda: srv.explore_entity(node_name='NoSuchEntity'))
+
+
+NOT_ERROR_CASES = {
+    'explore_entity': _drive_explore_entity_miss,
+    'explore_ontology': _drive_explore_ontology_miss,
+    'search_ontology': _drive_search_ontology_empty,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -203,26 +271,8 @@ def test_explore_ontology_and_explore_entity_file_a_not_found_the_same_way():
     `explore_entity` is the reference implementation: it has always answered
     'No node found matching "X"' under `message`.
     """
-    ontology = _explore(make_service([WIDGET_ROW]), node_name='NoSuchClass')
-
-    service = MagicMock()
-    client = MagicMock()
-    client.search_ = AsyncMock(return_value=MagicMock(nodes=[]))
-    service.get_client = AsyncMock(return_value=client)
-
-    cfg = GraphitiConfig()
-    cfg.graphiti.group_id = 'g'
-    previous_service, previous_config = srv.graphiti_service, srv.__dict__.get('config')
-    srv.graphiti_service = service
-    srv.config = cfg
-    try:
-        entity = asyncio.run(srv.explore_entity(node_name='NoSuchEntity'))
-    finally:
-        srv.graphiti_service = previous_service
-        if previous_config is None:
-            srv.__dict__.pop('config', None)
-        else:
-            srv.config = previous_config
+    ontology = _drive_explore_ontology_miss()
+    entity = _drive_explore_entity_miss()
 
     assert _failed(entity) == _failed(ontology) is False
     assert (entity.get('message') or '') and (ontology.get('message') or '')
@@ -233,24 +283,7 @@ def test_search_ontology_keeps_reporting_an_empty_result_as_a_message():
 
     Zero hits is the ontology answering, exactly as a zero-hit `search` is.
     """
-    service = make_service([])
-    service.ontology_client.search_ = AsyncMock(
-        return_value=MagicMock(nodes=[], edges=[], communities=[])
-    )
-    previous_service, previous_config = srv.graphiti_service, srv.__dict__.get('config')
-    cfg = GraphitiConfig()
-    cfg.graphiti.ontology_graph = 'test_ontology'
-    srv.graphiti_service = service
-    srv.config = cfg
-    try:
-        result = asyncio.run(srv.search_ontology(query='nothing matches this'))
-    finally:
-        srv.graphiti_service = previous_service
-        if previous_config is None:
-            srv.__dict__.pop('config', None)
-        else:
-            srv.config = previous_config
-
+    result = _drive_search_ontology_empty()
     assert not _failed(result)
     assert result.get('message')
 
@@ -280,3 +313,45 @@ def test_the_not_found_payload_survives_the_published_output_schema():
         'explore_ontology returns a `message` that its outputSchema never declares'
     )
     assert structured['message']
+
+
+# ---------------------------------------------------------------------------
+# ...and the README says the same thing
+# ---------------------------------------------------------------------------
+#
+# A-D5's lesson, applied to prose that is not a table: the README documented a
+# surface that did not exist, and it survived because nothing checked it. The
+# error-contract section named ONE not-error case and there are three — a
+# consumer reading it would build exactly the failure-counting loop the M11
+# addendum was raised about.
+
+_README = (pathlib.Path(__file__).parent.parent / 'README.md').read_text(encoding='utf-8')
+_NOT_ERROR_SECTION = _README.split('**A miss is an answer.**', 1)[-1].split('\n## ', 1)[0]
+
+
+def _documented_not_error_tools() -> set[str]:
+    """The tools named as not-error cases, as `- \\`name\\` —` bullets."""
+    return set(re.findall(r'^- `(\w+)`', _NOT_ERROR_SECTION, re.MULTILINE))
+
+
+def test_the_readme_still_has_a_not_error_section_to_check():
+    """The split above degrades to the whole file if the anchor is renamed, which
+    would make the guard below vacuous rather than red."""
+    assert '**A miss is an answer.**' in _README
+    assert len(_NOT_ERROR_SECTION) < len(_README)
+
+
+def test_the_readme_enumerates_exactly_the_code_s_not_error_cases():
+    """Both directions. A case in the prose that the code does not implement costs
+    a consumer a wrong assumption; a case in the code the prose omits is how this
+    section came to claim there was only one."""
+    assert _documented_not_error_tools() == set(NOT_ERROR_CASES)
+
+
+@pytest.mark.parametrize('tool_name', sorted(NOT_ERROR_CASES))
+def test_each_documented_not_error_case_really_answers(tool_name):
+    """The half that makes the enumeration non-circular: drive the tool into the
+    miss the README describes and check it answers rather than fails."""
+    result = NOT_ERROR_CASES[tool_name]()
+    assert not _failed(result), f'{tool_name} is documented as a not-error case but failed'
+    assert result.get('message'), f'{tool_name} answered without saying anything'

@@ -27,6 +27,11 @@ from tool_annotations import (
     apply_canonical_tool_order,
 )
 
+# The `tools/list` ORDER is a property of the served surface (2026-07-28 spec
+# SHOULD: list endpoints must not vary per connection), needs no database and no
+# API key, and had no CI job selecting it.
+pytestmark = pytest.mark.contract
+
 
 def _profile(group_id: str = 'order_graph') -> DomainProfile:
     return DomainProfile(

@@ -20,6 +20,12 @@ from config.schema import GraphitiConfig
 from flavours.age import AgeFlavour
 from flavours.falkordb import FalkorDbFlavour
 
+# These are served-payload guards — the FROZEN `get_ontology_structure` shape,
+# `explore_ontology`'s class-context envelope and its not-found taxonomy, plus
+# which of the four tools this arm registers at all. All ADR-015/019 surface,
+# all on stubs: no database, no API key. Nothing in CI selected them.
+pytestmark = pytest.mark.contract
+
 # ---------------------------------------------------------------------------
 # Fixture data — fake OntologyClass rows as the FalkorDB driver returns them
 # ---------------------------------------------------------------------------

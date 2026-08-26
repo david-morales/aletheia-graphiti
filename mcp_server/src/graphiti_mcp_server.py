@@ -1852,6 +1852,12 @@ async def explore_ontology(
     Returns:
         {center, relationships: {outgoing, incoming},
          hierarchy: {parents, children, siblings}, neighbors}
+
+        A class this ontology does not hold is an ANSWER, not a failure: the same
+        shape with `center: null`, empty relationship/hierarchy structures, and a
+        `message` naming what was not found. `error` is reserved for calls that
+        could not be answered at all — a bad argument, an unreachable ontology,
+        an unready server.
     """
     global graphiti_service
 
@@ -2887,7 +2893,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
 
 
 def register_fallback_tools(reason: str) -> None:
-    """Serve the FULL surface with static descriptions when introspection fails.
+    """Serve this arm's FULL surface with static descriptions when introspection fails.
 
     The old fallback re-registered four tools and left the other five profile-driven
     ones unregistered, so `get_schema` (the canonical ADR-019 R5 payload consumers
@@ -2895,6 +2901,12 @@ def register_fallback_tools(reason: str) -> None:
     ontology-bulk tools disappeared from `tools/list` while `/health` stayed green.
     Losing the profile costs the DESCRIPTIONS, never the TOOLS: every tool still
     works, it just describes itself from its docstring instead of from live data.
+
+    "FULL" is per-arm, not a constant: the four ontology tools belong to the served
+    surface only where a companion ontology graph is configured (M11), and a failed
+    census does not conjure one. Completeness here means every tool THIS connector
+    serves — re-registering the other four would re-open the announcement defect
+    under cover of preserving the surface.
 
     The announcement is rebuilt to say so, in the lead position, and keeps the
     backend dialect (the flavour is known even when the graph cannot be read).
