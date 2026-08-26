@@ -67,6 +67,7 @@ from starlette.responses import JSONResponse
 from config.schema import GraphitiConfig, ServerConfig
 from domain_profile import DomainProfile, build_domain_profile
 from tool_descriptions import (
+    _episode_leg_is_live,
     build_degraded_instructions,
     build_instructions,
     build_search_description,
@@ -706,14 +707,118 @@ INTENT_STRATEGIES: dict[str, dict] = {
 }
 
 
+def _episode_leg_is_live_here() -> bool:
+    """This server's episode-leg liveness, for paths holding no flavour.
+
+    `resolve_search_config` is a pure mapping function and `get_schema` reads the
+    flavour under a different name, but both have to answer the SAME question the
+    description builder answers, and answer it identically. So the predicate is
+    imported rather than restated: two copies of "can this backend do episodes"
+    is precisely the drift that let one channel gate the episode surface while
+    another advertised it.
+    """
+    flavour = graphiti_service.flavour if graphiti_service is not None else None
+    return _episode_leg_is_live(flavour)
+
+
+def valid_search_combinations(episode_leg_is_live: bool) -> dict[str, list[str]]:
+    """The mode -> accepted-rerankers mapping, derived from `SEARCH_RECIPES`.
+
+    The DATA behind both surfaces that carry this: the served prose (via
+    `describe_valid_search_combinations`) and `get_schema`'s
+    `tool_capabilities.search.rerankers`, which a planner reads as data and must
+    not have to parse out of a sentence.
+
+    `search_mode` and `reranker` are independent `Literal`s, so the inputSchema a
+    client reads announces their CROSS-PRODUCT — 25 pairs against the 17 that
+    resolve. Of the eight that raise:
+
+    * FIVE are inexpressible. `CommunityReranker` carries no `node_distance` and
+      no `episode_mentions`, and `EpisodeReranker` carries neither those nor
+      `mmr`. No recipe can be written for `communities` x {node_distance,
+      episode_mentions} or `episodes` x {mmr, node_distance, episode_mentions}.
+    * THREE are decisions, and being decisions they are recorded rather than
+      implied. `episodes` x `cross_encoder` IS expressible and is withheld
+      pending measurement (see `EPISODE_SEARCH_RRF`). `combined` x
+      {node_distance, episode_mentions} are also expressible — a `combined`
+      SearchConfig holds four INDEPENDENT per-leg rerankers, so the pair composes
+      mechanically: the edge and node legs take the requested reranker and the
+      episode and community legs keep rrf, since their enums have nothing else.
+      That composition is exactly why they are refused. This tool's `reranker` is
+      ONE parameter, so the answer would honour it for two legs of four and rank
+      the other two by rrf without saying so — a caller asking for proximity
+      ranking would get rrf for half the payload. That is the M10/M11 defect one
+      level down: not a pair that errors loudly, but a pair that half-works
+      quietly, which is the worse of the two. `intent='neighborhood'`
+      (edges x node_distance) and `explore_entity` are the honest routes to a
+      proximity-ranked answer, and both already exist.
+
+    So the announcement is constrained rather than the surface widened — the M11
+    doctrine: a capability announced where it cannot run costs a consumer a call
+    and a wrong conclusion about the connector.
+
+    `episode_leg_is_live` gates every episode-shaped entry, for the same reason
+    the rest of the episode surface is gated (`_episode_leg_is_live`): on a
+    backend that does not index episode content, `search_mode='episodes'` returns
+    nothing by construction, and `reranker='episode_mentions'` is no better off —
+    its fallback Cypher anchors on `(n:Entity {uuid: ...})`, the pattern AGE's
+    single-label storage cannot satisfy for an ontology-classed entity (BUG-104's
+    measured class), so every candidate scores `inf` and the reranker silently
+    degenerates to the rrf it preranked with. Both stay CALLABLE — an empty or
+    unreranked answer in-band beats a hard error — and neither is ANNOUNCED where
+    it cannot do what its name says.
+
+    No default, deliberately. Every caller here knows its arm, and a default in
+    either direction is a caller that silently gets the other arm's answer — the
+    review found exactly that: a `True` default sent the rejection text down the
+    error channel naming `episodes` on a graph that has none.
+    """
+    modes: dict[str, list[str]] = {}
+    for mode, reranker in SEARCH_RECIPES:
+        if not episode_leg_is_live and (mode == 'episodes' or reranker == 'episode_mentions'):
+            continue
+        modes.setdefault(mode, []).append(reranker)
+    return modes
+
+
+def describe_valid_search_combinations(episode_leg_is_live: bool) -> str:
+    """`valid_search_combinations` as the prose a client reads. See it for why."""
+    modes = valid_search_combinations(episode_leg_is_live)
+    # The header must not claim a rejection that is FALSE on this arm. Where the
+    # episode leg is gated, three pairs that ARE accepted (episodes x rrf,
+    # nodes/edges x episode_mentions) go unlisted on purpose — they answer, they
+    # are just not offered. "Any other pair is rejected" would be a lie about
+    # them, and a client that believed it would never call a working pair.
+    #
+    # "Valid combinations" stays verbatim in both: it is also the rejection text,
+    # and the ValueError contract that phrase belongs to is pinned by its own test.
+    header = (
+        'Valid combinations of search_mode x reranker (any other pair is rejected):'
+        if episode_leg_is_live
+        else 'Valid combinations of search_mode x reranker offered on this graph '
+        '(a pair not listed here is not offered, and some are also rejected):'
+    )
+    lines = [header]
+    lines += [f'- {mode}: {", ".join(rerankers)}' for mode, rerankers in modes.items()]
+    return '\n'.join(lines)
+
+
 def resolve_search_config(search_mode: str, reranker: str, limit: int) -> SearchConfig:
     """Map search_mode + reranker to a SearchConfig recipe."""
     key = (search_mode.lower(), reranker.lower())
     recipe = SEARCH_RECIPES.get(key)
     if recipe is None:
+        # The rendered mapping rather than `list(SEARCH_RECIPES.keys())`: a caller
+        # that got here needs to know which reranker its MODE accepts, and 17
+        # raw tuples is a worse answer to that than five lines grouped by mode.
+        #
+        # Gated on THIS server's arm. `search` serves this string in-band as
+        # `SearchResult(error=...)`, so it is an announcement like any other: an
+        # unqualified render here offered `episodes` and `episode_mentions` as
+        # alternatives on a graph that indexes no episode content.
         raise ValueError(
             f"Invalid search_mode='{search_mode}' + reranker='{reranker}'. "
-            f"Valid combinations: {list(SEARCH_RECIPES.keys())}"
+            f'{describe_valid_search_combinations(_episode_leg_is_live_here())}'
         )
     config = recipe.model_copy(deep=True)
     config.limit = limit
@@ -989,7 +1094,16 @@ async def search(
                      or "combined" (default; its episode sample is capped).
         reranker: Reranking strategy — "rrf" (default), "mmr", "cross_encoder",
                   "node_distance" (requires center_node_uuid), or "episode_mentions".
-                  search_mode="episodes" accepts only "rrf".
+                  NOT every mode accepts every reranker, and two independent
+                  enums cannot express that. This docstring deliberately does not
+                  restate which pairs: the list is generated from the recipes and
+                  gated to what THIS graph offers, and a fixed string cannot
+                  track either. Call get_schema and read
+                  `tool_capabilities.search.rerankers` — a per-mode map, computed
+                  live, and correct even when this text is being served because
+                  the description layer is degraded. An unaccepted pairing is
+                  rejected before the search runs, and the rejection itself names
+                  the alternatives for the mode you asked for.
         center_node_uuid: Rerank results by proximity to this node.
         bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
         entity_types: Only return nodes carrying these labels. This graph's labels are
@@ -2346,11 +2460,27 @@ async def get_schema() -> SchemaResponse:
             )
             search_covers['episodes'] = True
 
+        # DERIVED, and gated on the same `episode_leg` as everything else in this
+        # block. Both of these were hand-written: a flat five-reranker list that
+        # said nothing about which MODE accepts which — so a planner reading it
+        # would compose `combined` x `node_distance` and get an error — and the
+        # whole `INTENT_STRATEGIES` dict, which advertised `narrative` (episodes)
+        # and `importance` (nodes x episode_mentions) on arms that serve neither.
+        # An intent is offered here only if the pair it names survives the gate.
+        offered_combinations = valid_search_combinations(episode_leg)
+        offered_strategies = {
+            name: strategy
+            for name, strategy in INTENT_STRATEGIES.items()
+            if strategy['reranker'] in offered_combinations.get(strategy['search_mode'], ())
+        }
+
         schema['tool_capabilities'] = {
             'search': {
                 'search_methods': search_methods,
-                'strategies': INTENT_STRATEGIES,
-                'rerankers': ['rrf', 'mmr', 'cross_encoder', 'node_distance', 'episode_mentions'],
+                'strategies': offered_strategies,
+                # Per mode, as DATA: a planner must not have to parse a sentence
+                # to learn that `combined` does not take `node_distance`.
+                'rerankers': offered_combinations,
                 'covers': search_covers,
                 'does_not_cover': {
                     'entity_fields': ['domain_attribute_properties'],

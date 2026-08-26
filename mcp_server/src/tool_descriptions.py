@@ -528,6 +528,27 @@ def build_search_description(
             'in full.',
         ]
 
+    # Which mode x reranker pairs actually run (M10). The inputSchema announces
+    # the CROSS-PRODUCT of two independent Literals — 25 pairs against 17 that
+    # resolve — and JSON Schema drawn from type hints cannot express the joint
+    # constraint. So it is stated here, in the text every call is made against.
+    # `get_schema` serves the same mapping as DATA for a planner; this is the
+    # prose copy for the agent reading a description.
+    #
+    # Gated on the same predicate as the episode prose above, and for the same
+    # reason: an arm that does not index episode content must not name `episodes`
+    # or `episode_mentions` ANYWHERE in this description. That silence is a
+    # standing guard, not a preference — see `describe_valid_search_combinations`.
+    #
+    # Imported inside the function on purpose: `graphiti_mcp_server` imports THIS
+    # module at import time, so a module-level import back into it is a cycle.
+    # The recipes are the search tool's own data and stay there; this builder
+    # renders what that module derives rather than keeping a second copy, which
+    # is what stops the served text from going stale.
+    from graphiti_mcp_server import describe_valid_search_combinations
+
+    parts += ['', describe_valid_search_combinations(_episode_leg_is_live(flavour))]
+
     if profile.entity_types:
         names = ', '.join(profile.entity_type_names())
         parts.append(f'\nAvailable entity_types: {names}')
