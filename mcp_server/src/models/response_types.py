@@ -443,11 +443,20 @@ class OntologyHierarchy(TypedDict, total=False):
 
 
 class OntologyClassContextResponse(TypedDict, total=False):
-    """explore_ontology payload — ONE class in full context."""
+    """explore_ontology payload — ONE class in full context.
+
+    `message` carries the NOT-FOUND answer, `error` a failure — the same split
+    `explore_entity` and `search` have always used. A configured, reachable
+    ontology that holds no class by that name has ANSWERED, and a consumer
+    applying ADR-015 R4 (`if result.get("error")`) must not read that as a tool
+    failure: it would retry a call whose answer cannot change and downgrade a
+    connector that is working.
+    """
     center: OntologyClassEntry | None
     relationships: OntologyRelationshipSets | None
     hierarchy: OntologyHierarchy | None
     neighbors: list[OntologyClassRef] | None
+    message: str | None  # the not-found answer; never a failure
     error: str | None  # ADR-015 R4 error path
 
 

@@ -1900,8 +1900,26 @@ async def explore_ontology(
                         center_row = by_name[match.name]
                         break
         if center_row is None:
+            # An ANSWER, not a failure. The ontology graph is configured,
+            # reachable and was just queried three ways (uuid, exact name,
+            # case-insensitive name, semantic rank) — it holds no such class,
+            # and that is the true answer to the question asked.
+            #
+            # Under `error` a consumer applying ADR-015 R4 counted this as a tool
+            # FAILURE: it retried a call whose answer cannot change and marked a
+            # working connector degraded. `explore_entity` and `search` have
+            # always filed the identical situation under `message`; this is the
+            # same split, applied consistently (audit M11 addendum, 2026-08-15).
+            #
+            # Shaped like a found result with nothing in it, mirroring
+            # explore_entity's `nodes=[], edges=[], communities=[]`, so a caller
+            # can iterate the payload without branching on which answer it got.
             return OntologyClassContextResponse(
-                error=f'No ontology class found matching "{node_name or node_uuid}"'
+                message=f'No ontology class found matching "{node_name or node_uuid}"',
+                center=None,
+                relationships={'outgoing': [], 'incoming': []},
+                hierarchy={'parents': [], 'children': [], 'siblings': []},
+                neighbors=[],
             )
 
         center_name = center_row.get('name') or ''

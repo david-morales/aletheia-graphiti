@@ -822,7 +822,15 @@ class TestExploreOntologyClassContext:
         assert [n['name'] for n in result['neighbors']] == ['Gadget']
 
     @pytest.mark.asyncio
-    async def test_explore_unknown_class_error_contract(self):
+    async def test_explore_unknown_class_answers_rather_than_fails(self):
+        """A configured, reachable ontology that holds no such class has ANSWERED.
+
+        This used to assert the opposite — `'error' in result` — and that filing
+        made a consumer applying ADR-015 R4 count a not-found as a tool FAILURE
+        (audit M11 addendum, 2026-08-15). `explore_entity` and `search` have
+        always used `message` for the identical situation. Full taxonomy guard:
+        `test_ontology_not_found_taxonomy.py`.
+        """
         from graphiti_mcp_server import explore_ontology
 
         svc = make_service([widget_row()])
@@ -830,8 +838,8 @@ class TestExploreOntologyClassContext:
         with patch('graphiti_mcp_server.graphiti_service', svc):
             result = await explore_ontology(node_name='Nonexistent')
 
-        assert 'error' in result
-        assert 'Nonexistent' in result['error']
+        assert not result.get('error')
+        assert 'Nonexistent' in result['message']
 
     @pytest.mark.asyncio
     async def test_explore_resolves_by_uuid(self):
