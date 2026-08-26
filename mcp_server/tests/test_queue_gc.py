@@ -294,6 +294,64 @@ class TestTheClaimIsReleasedOnEveryPath:
         finally:
             await _cancel_live_workers()
 
+    @pytest.mark.asyncio
+    async def test_a_late_callback_from_a_superseded_task_leaves_the_live_claim(self):
+        """The mirror image, and the reason the release is guarded rather than
+        unconditional: a release that fires for a task which no longer owns the
+        slot must not free the claim its successor is holding.
+
+        Freeing it hands ONE group_id a second worker — which is BUG-134,
+        restored by the fix meant to close it. No public path reaches this
+        today; the callback is delivered directly, because the invariant is
+        worth holding independently of who can currently reach it.
+        """
+        svc = QueueService()
+        group_id = 'late-callback-group'
+        order: list[str] = []
+
+        try:
+            await svc.add_episode_task(group_id, _tracking_process(order, 'A'))
+            superseded = svc._worker_tasks[group_id]
+            superseded.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await superseded
+            await asyncio.sleep(0)  # its release lands: slot empty, claim free
+
+            await svc.add_episode_task(group_id, _tracking_process(order, 'B'))
+            live = svc._worker_tasks[group_id]
+            assert live is not superseded
+
+            # THE late callback, arriving after the successor claimed.
+            svc._release_worker(group_id, superseded)
+
+            assert svc._worker_tasks[group_id] is live, (
+                'the late callback dropped the live worker’s reference'
+            )
+            assert svc.is_worker_running(group_id) is True, (
+                'the late callback released a claim it does not own — the next '
+                'enqueue will start a second worker on this group_id, which is '
+                'BUG-134 itself'
+            )
+
+            await svc.add_episode_task(group_id, _tracking_process(order, 'C'))
+            workers = _live_worker_tasks()
+            assert len(workers) == 1, (
+                f'{len(workers)} workers on one group_id after a late callback'
+            )
+            # A was queued before the first worker was cancelled without ever
+            # running, so the survivor drains all three, in order.
+            await _wait_for(lambda: len(order) == 6)
+            assert order == [
+                'start:A',
+                'end:A',
+                'start:B',
+                'end:B',
+                'start:C',
+                'end:C',
+            ], order
+        finally:
+            await _cancel_live_workers()
+
 
 class _QueueThatBreaksAfterOneGet(asyncio.Queue):
     """Serves one item, then raises from `get`.
@@ -394,36 +452,101 @@ class TestAClaimIsNeverFreeWhileAStaleReferenceRemains:
             await _cancel_live_workers()
 
 
+FLAG_ATTR = '_queue_workers'
+
+MUTATING_DICT_METHODS = frozenset({'pop', 'clear', 'popitem', 'setdefault', 'update'})
+"""Every dict method that can change the flag state. `get`, `keys`, `items` and
+friends are deliberately absent: reading the flag is what the rest of the class
+does, and a guard that fails on reads would be deleted within a week."""
+
+
+def _refers_to_the_flag(node: ast.expr) -> bool:
+    """True for `<something>._queue_workers` and for a subscript into it."""
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    return isinstance(node, ast.Attribute) and node.attr == FLAG_ATTR
+
+
+def _flag_writers(module) -> set[str]:
+    """Name every function that can CHANGE the busy flag.
+
+    AST, not substring matching, and deliberately wider than assignment: an
+    entry can be removed (`del`, `pop`), the whole mapping can be emptied
+    (`clear`) or swapped out (`self._queue_workers = {}`), and every one of
+    those is a way to hand a group_id a second worker without ever writing
+    `= True` anywhere.
+    """
+    writers: set[str] = set()
+
+    for node in ast.walk(module):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for inner in ast.walk(node):
+            targets: list[ast.expr] = []
+            if isinstance(inner, ast.Assign):
+                targets = list(inner.targets)
+            elif isinstance(inner, ast.AugAssign | ast.AnnAssign):
+                targets = [inner.target]
+            elif isinstance(inner, ast.Delete):
+                targets = list(inner.targets)
+            elif (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr in MUTATING_DICT_METHODS
+                and _refers_to_the_flag(inner.func.value)
+            ):
+                writers.add(node.name)
+
+            if any(_refers_to_the_flag(target) for target in targets):
+                writers.add(node.name)
+
+    return writers
+
+
 class TestTheBusyFlagHasOneWriterPerTransition:
     """The defect was not a wrong value, it was two owners: the flag was set in
     the worker and read in the enqueue. Locking the writer set keeps a future
     edit from reintroducing the split.
+
+    The guard is per-FUNCTION, which is the honest limit: it catches a new site
+    touching the flag, not a second write added inside a site that already owns
+    one.
     """
 
-    def test_only_the_claim_and_the_release_write_the_flag(self):
-        """AST, not substring matching: find every assignment whose target is a
-        `self._queue_workers[...]` subscript and name the function it sits in."""
-        tree = ast.parse(inspect.getsource(queue_service_module))
-        writers: set[str] = set()
+    def test_only_the_constructor_the_claim_and_the_release_touch_the_flag(self):
+        writers = _flag_writers(ast.parse(inspect.getsource(queue_service_module)))
 
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            for inner in ast.walk(node):
-                targets: list[ast.expr] = []
-                if isinstance(inner, ast.Assign):
-                    targets = list(inner.targets)
-                elif isinstance(inner, ast.AugAssign | ast.AnnAssign):
-                    targets = [inner.target]
-                for target in targets:
-                    if (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.value, ast.Attribute)
-                        and target.value.attr == '_queue_workers'
-                    ):
-                        writers.add(node.name)
-
-        assert writers == {'add_episode_task', '_release_worker'}, (
-            f'the busy flag is written from {sorted(writers)}; it must be claimed '
-            f'in add_episode_task and released in _release_worker, nowhere else'
+        assert writers == {'__init__', 'add_episode_task', '_release_worker'}, (
+            f'the busy flag is touched from {sorted(writers)}; it may only be '
+            f'created in __init__, claimed in add_episode_task and released in '
+            f'_release_worker'
         )
+
+    def test_the_guard_sees_the_edits_that_are_not_assignments(self):
+        """The guard's own regression test. Each of these silently passed the
+        assignment-only version, and each frees a claim: `is_worker_running`
+        reads `.get(group_id, False)`, so a removed entry reads exactly like a
+        released one.
+        """
+        removals = (
+            'del self._queue_workers[group_id]',
+            'self._queue_workers.pop(group_id, None)',
+            'self._queue_workers.clear()',
+            'self._queue_workers = {}',
+        )
+        for statement in removals:
+            source = f'class C:\n    def somewhere_else(self, group_id):\n        {statement}\n'
+            assert _flag_writers(ast.parse(source)) == {'somewhere_else'}, statement
+
+    def test_the_guard_stays_quiet_on_reads(self):
+        """A guard that fires on reads is a guard that gets deleted."""
+        reads = (
+            'return self._queue_workers.get(group_id, False)',
+            'return dict(self._queue_workers)',
+            'return self._queue_workers[group_id]',
+            'return group_id in self._queue_workers',
+            'return list(self._queue_workers.keys())',
+        )
+        for statement in reads:
+            source = f'class C:\n    def reader(self, group_id):\n        {statement}\n'
+            assert _flag_writers(ast.parse(source)) == set(), statement

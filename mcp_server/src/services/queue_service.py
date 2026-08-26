@@ -96,11 +96,15 @@ class QueueService:
         after this returns, so it cannot have its reference popped by a
         predecessor's callback.
         """
-        if self._worker_tasks.get(group_id) is task:
-            del self._worker_tasks[group_id]
-        # Released unconditionally, deliberately: the two failure directions are
-        # not symmetric. Releasing a claim that somehow is not ours costs at
-        # worst one extra worker; failing to release ours costs the partition.
+        # Both writers move the reference and the claim together, so the slot
+        # settles the ownership question on its own: if it does not hold THIS
+        # task, then either a successor owns the claim — releasing it would put
+        # a second worker on one group_id, which is BUG-134 itself, not a
+        # cheaper failure than it — or the slot is empty and the claim is
+        # already released. Neither is ours to release.
+        if self._worker_tasks.get(group_id) is not task:
+            return
+        del self._worker_tasks[group_id]
         self._queue_workers[group_id] = False
 
     async def _process_episode_queue(self, group_id: str) -> None:
@@ -166,7 +170,16 @@ class QueueService:
         return self._episode_queues[group_id].qsize()
 
     def is_worker_running(self, group_id: str) -> bool:
-        """Check if a worker is running for a group_id."""
+        """Whether a worker is CLAIMED for a group_id.
+
+        Claimed is not the same as running, and the difference is the fix for
+        BUG-134: this reads True from the moment `add_episode_task` claims the
+        slot, which is before the worker task has run a single step, and it
+        stays True for one loop hop after a worker dies, until its done callback
+        releases the claim. Callers wanting "is anything being processed" want
+        `get_queue_size`; what this answers is "would an enqueue start a new
+        worker", which is the question the queue's own sequencing turns on.
+        """
         return self._queue_workers.get(group_id, False)
 
     async def initialize(self, graphiti_client: Any) -> None:
