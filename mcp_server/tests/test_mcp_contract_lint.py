@@ -384,9 +384,11 @@ CONTRACT_GUARDS = {
     'the dynamic pass registers every tool this arm announces': 'test_tools.py',
     # M10, and R1 one level deeper than a tool name: `search_mode` and `reranker`
     # are independent Literals, so the inputSchema announces their CROSS-PRODUCT
-    # (25 pairs) against the 17 that resolve. The gap is not implementable away —
-    # graphiti-core's own reranker enums do not carry those pairs — so the
-    # announcement is what has to be honest about it.
+    # (25 pairs) against the 17 that resolve. Five of the eight are inexpressible
+    # (graphiti-core's community and episode reranker enums do not carry them);
+    # three are recorded decisions. Either way the announcement is what has to be
+    # honest about it, on every channel that carries it — description, docstring,
+    # `get_schema` data, and the in-band rejection.
     'R1 an announced mode x reranker pair can actually run': (
         'test_search_combination_surface.py'
     ),

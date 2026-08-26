@@ -532,6 +532,8 @@ def build_search_description(
     # the CROSS-PRODUCT of two independent Literals — 25 pairs against 17 that
     # resolve — and JSON Schema drawn from type hints cannot express the joint
     # constraint. So it is stated here, in the text every call is made against.
+    # `get_schema` serves the same mapping as DATA for a planner; this is the
+    # prose copy for the agent reading a description.
     #
     # Gated on the same predicate as the episode prose above, and for the same
     # reason: an arm that does not index episode content must not name `episodes`
