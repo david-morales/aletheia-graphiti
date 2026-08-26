@@ -295,6 +295,105 @@ class TestTheClaimIsReleasedOnEveryPath:
             await _cancel_live_workers()
 
 
+class _QueueThatBreaksAfterOneGet(asyncio.Queue):
+    """Serves one item, then raises from `get`.
+
+    The worker's inner `try` only covers `process_func`, so this reaches the
+    OUTER handler — the path on which a worker dies unexpectedly rather than
+    being cancelled, and the only one on which its `finally` runs while the
+    service is otherwise healthy.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._gets = 0
+
+    async def get(self):
+        self._gets += 1
+        if self._gets > 1:
+            raise RuntimeError('the queue broke')
+        return await super().get()
+
+
+class TestAClaimIsNeverFreeWhileAStaleReferenceRemains:
+    """The other route to the dropped reference, and the reason the release and
+    the reference-drop have to be the same step.
+
+    Measured on the unfixed code: the worker cleared the flag in its own
+    `finally`, but its reference was dropped in a later callback. That leaves a
+    turn where the claim is free while the dead task still owns the slot — an
+    enqueue there installs a live worker whose reference the dead task's
+    callback then pops, which is precisely the GC exposure `_worker_tasks`
+    exists to close (#1176):
+
+        BASE  turn 0: worker_done=True flag=False ref_is_dead_task=True
+              -> new worker installed, then unreferenced while still alive
+        FIXED turn 0: worker_done=True flag=True  ref_is_dead_task=True
+              turn 1: claim released and reference dropped together
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_dead_worker_holds_its_claim_until_its_reference_is_dropped(self):
+        svc = QueueService()
+        group_id = 'dying-group'
+        svc._episode_queues[group_id] = _QueueThatBreaksAfterOneGet()
+        order: list[str] = []
+
+        def instant(tag: str):
+            """No suspension inside processing, unlike `_tracking_process`: the
+            worker has to reach its own death within the zero-length turns below,
+            and a real sleep inside `process_func` would park it past them."""
+
+            async def process() -> None:
+                order.append(tag)
+
+            return process
+
+        await svc.add_episode_task(group_id, instant('first'))
+        dead = svc._worker_tasks[group_id]
+
+        # Turn by turn, deliberately: the hazard window is ONE loop iteration
+        # wide — the worker's `finally` runs during its own final step while its
+        # done callback is only scheduled — so any real sleep here overshoots it
+        # and the test silently stops testing anything.
+        for _ in range(20):
+            await asyncio.sleep(0)
+            claim_free = not svc.is_worker_running(group_id)
+            stale_reference = svc._worker_tasks.get(group_id) is dead
+            assert not (claim_free and stale_reference), (
+                'the claim was released while the dead worker still owned the '
+                'reference slot — a worker started here would be unreferenced '
+                'as soon as the dead task’s callback ran'
+            )
+            if dead.done() and claim_free:
+                break
+        else:  # pragma: no cover - the release is one callback away
+            pytest.fail(
+                f'worker never both died and released: done={dead.done()} '
+                f'claimed={svc.is_worker_running(group_id)}'
+            )
+
+        assert dead.done(), 'the worker did not die; the fixture no longer bites'
+        assert group_id not in svc._worker_tasks
+
+        # And the consequence the invariant protects: the replacement worker
+        # keeps its reference and drains the partition.
+        svc._episode_queues[group_id] = asyncio.Queue()
+        try:
+            await svc.add_episode_task(group_id, instant('second'))
+            replacement = svc._worker_tasks[group_id]
+            assert replacement is not dead
+
+            await _wait_for(lambda: 'second' in order)
+            assert svc._worker_tasks.get(group_id) is replacement, (
+                'the dead worker’s callback popped the replacement’s reference'
+            )
+            assert not replacement.done()
+            assert order == ['first', 'second'], order
+        finally:
+            await _cancel_live_workers()
+
+
 class TestTheBusyFlagHasOneWriterPerTransition:
     """The defect was not a wrong value, it was two owners: the flag was set in
     the worker and read in the enqueue. Locking the writer set keeps a future
