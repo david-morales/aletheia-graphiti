@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import inspect
 from unittest.mock import AsyncMock
 
@@ -46,10 +47,8 @@ async def _cancel_live_workers() -> None:
     for task in tasks:
         task.cancel()
     for task in tasks:
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
     await asyncio.sleep(0)
 
 
@@ -94,10 +93,8 @@ class TestTaskStoredAfterAdd:
 
         # Clean up: cancel the long-lived worker so it doesn't block
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
 
 class TestTaskCleanedUpAfterDone:
@@ -117,10 +114,8 @@ class TestTaskCleanedUpAfterDone:
 
         # Cancel the worker to make it finish
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
         # Allow the event loop to run the done callback
         await asyncio.sleep(0)
@@ -280,10 +275,8 @@ class TestTheClaimIsReleasedOnEveryPath:
         await svc.add_episode_task(group_id, AsyncMock())
         task = svc._worker_tasks[group_id]
         task.cancel()  # no await since create_task: the body never ran
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
         await asyncio.sleep(0)
 
         assert svc.is_worker_running(group_id) is False, (

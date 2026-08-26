@@ -25,7 +25,10 @@ class QueueService:
         """
         # Dictionary to store queues for each group_id
         self._episode_queues: dict[str, asyncio.Queue] = {}
-        # Dictionary to track if a worker is running for each group_id
+        # Whether a worker is CLAIMED for each group_id. Claimed, not "running":
+        # the claim is taken synchronously in `add_episode_task` before the
+        # worker task exists, and released only by `_release_worker`. Anything
+        # that writes it from a third place reopens BUG-134.
         self._queue_workers: dict[str, bool] = {}
         # Strong references to worker tasks to prevent garbage collection
         self._worker_tasks: dict[str, asyncio.Task] = {}
@@ -52,22 +55,68 @@ class QueueService:
         # Add the episode processing function to the queue
         await self._episode_queues[group_id].put(process_func)
 
-        # Start a worker for this queue if one isn't already running
+        # Start a worker for this queue if one isn't already claimed.
+        #
+        # The claim is taken HERE and synchronously. `asyncio.create_task` only
+        # schedules the coroutine, so a worker that sets the flag itself has not
+        # set it yet when this call returns — two enqueues arriving before the
+        # first worker's first step would both read False and both spawn a
+        # worker, interleaving extraction on one group_id (BUG-134).
+        #
+        # Single-threaded asyncio makes check-then-claim atomic if and only if
+        # no await intervenes between them, which is why the claim sits directly
+        # under the check with nothing awaitable in between. Do not insert one.
         if not self._queue_workers.get(group_id, False):
-            task = asyncio.create_task(self._process_episode_queue(group_id))
+            self._queue_workers[group_id] = True
+            try:
+                task = asyncio.create_task(self._process_episode_queue(group_id))
+            except BaseException:
+                # `create_task` fails on a loop that is closing. The claim is
+                # already in place, and a claim with no task to release it is a
+                # permanently dead partition — worse than the race.
+                self._queue_workers[group_id] = False
+                raise
             self._worker_tasks[group_id] = task
-            task.add_done_callback(lambda _t: self._worker_tasks.pop(group_id, None))
+            task.add_done_callback(lambda t: self._release_worker(group_id, t))
 
         return self._episode_queues[group_id].qsize()
+
+    def _release_worker(self, group_id: str, task: asyncio.Task) -> None:
+        """Release the worker claim for `group_id`, and drop its strong reference.
+
+        Runs as the worker task's done callback, which is the ONLY site that
+        pairs with every claim. A task cancelled before its first step never
+        executes its coroutine body — so a release living in the worker's own
+        `finally` silently never fires and the claim latches forever — but its
+        done callback still runs. Every other terminal state (return, exception,
+        cancellation mid-flight) reaches both, so the callback is a superset.
+
+        Releasing the claim and dropping the reference in the same synchronous
+        step is what keeps them consistent: the next claim can only be taken
+        after this returns, so it cannot have its reference popped by a
+        predecessor's callback.
+        """
+        if self._worker_tasks.get(group_id) is task:
+            del self._worker_tasks[group_id]
+        # Released unconditionally, deliberately: the two failure directions are
+        # not symmetric. Releasing a claim that somehow is not ours costs at
+        # worst one extra worker; failing to release ours costs the partition.
+        self._queue_workers[group_id] = False
 
     async def _process_episode_queue(self, group_id: str) -> None:
         """Process episodes for a specific group_id sequentially.
 
         This function runs as a long-lived task that processes episodes
         from the queue one at a time.
+
+        It does NOT touch the busy flag. `add_episode_task` claimed it before
+        this task existed, and `_release_worker` releases it when this task
+        reaches any terminal state; a set here would be the second writer that
+        BUG-134 was made of. There is also no normal exit: the loop below parks
+        in `await queue.get()` when the queue drains, so the only ways out are
+        cancellation and an unexpected exception.
         """
         logger.info(f'Starting episode queue worker for group_id: {group_id}')
-        self._queue_workers[group_id] = True
 
         try:
             while True:
@@ -91,7 +140,6 @@ class QueueService:
         except Exception as e:
             logger.error(f'Unexpected error in queue worker for group_id {group_id}: {str(e)}')
         finally:
-            self._queue_workers[group_id] = False
             logger.info(f'Stopped episode queue worker for group_id: {group_id}')
 
     def _notify_episode_processed(self, group_id: str) -> None:
