@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jsonschema
 import pytest
@@ -152,10 +152,42 @@ def _drive_explore_entity_miss():
     return _run_with(service, cfg, lambda: srv.explore_entity(node_name='NoSuchEntity'))
 
 
+def _drive_search_empty():
+    service = MagicMock()
+    client = MagicMock()
+    client.search_ = AsyncMock(
+        return_value=MagicMock(nodes=[], edges=[], episodes=[], communities=[])
+    )
+    service.get_client = AsyncMock(return_value=client)
+    cfg = GraphitiConfig()
+    cfg.graphiti.group_id = 'g'
+    return _run_with(service, cfg, lambda: srv.search(query='nothing matches this'))
+
+
+def _drive_get_episodes_empty():
+    """A partition with no episodes in it.
+
+    Patches the LOOKUP rather than passing `group_ids=[]`: the empty-list argument
+    reaches a different branch ("no group IDs specified", which short-circuits
+    before querying) and would prove nothing about what the tool does when the
+    graph genuinely answers with nothing.
+    """
+    from graphiti_core.nodes import EpisodicNode
+
+    service = MagicMock()
+    service.get_client = AsyncMock(return_value=MagicMock())
+    cfg = GraphitiConfig()
+    cfg.graphiti.group_id = 'g'
+    with patch.object(EpisodicNode, 'get_by_group_ids', AsyncMock(return_value=[])):
+        return _run_with(service, cfg, lambda: srv.get_episodes())
+
+
 NOT_ERROR_CASES = {
+    'search': _drive_search_empty,
     'explore_entity': _drive_explore_entity_miss,
-    'explore_ontology': _drive_explore_ontology_miss,
     'search_ontology': _drive_search_ontology_empty,
+    'explore_ontology': _drive_explore_ontology_miss,
+    'get_episodes': _drive_get_episodes_empty,
 }
 
 
@@ -355,3 +387,25 @@ def test_each_documented_not_error_case_really_answers(tool_name):
     result = NOT_ERROR_CASES[tool_name]()
     assert not _failed(result), f'{tool_name} is documented as a not-error case but failed'
     assert result.get('message'), f'{tool_name} answered without saying anything'
+
+
+def test_the_get_episodes_driver_really_queries_the_graph():
+    """`get_episodes` reaches the same `message` from two branches — a real empty
+    partition, and the short-circuit for "no group IDs specified" that returns
+    before querying at all. Identical payloads, so the payload cannot tell them
+    apart: this checks the LOOKUP ran, which is what makes the driver evidence
+    about a graph that answered rather than about a call that never asked.
+    """
+    from graphiti_core.nodes import EpisodicNode
+
+    lookup = AsyncMock(return_value=[])
+    service = MagicMock()
+    service.get_client = AsyncMock(return_value=MagicMock())
+    cfg = GraphitiConfig()
+    cfg.graphiti.group_id = 'g'
+    with patch.object(EpisodicNode, 'get_by_group_ids', lookup):
+        result = _run_with(service, cfg, lambda: srv.get_episodes())
+
+    assert lookup.called, 'the driver short-circuited instead of querying'
+    assert not _failed(result)
+    assert result.get('message')

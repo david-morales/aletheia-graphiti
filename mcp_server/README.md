@@ -891,20 +891,28 @@ to surface a protocol failure and discard the payload, which throws away the
 `hint` that would let the model fix its own query. Transport and protocol
 failures still surface as real MCP errors.
 
-**A miss is an answer.** Three cases are deliberately *not* errors, and a consumer
+**A miss is an answer.** Five cases are deliberately *not* errors, and a consumer
 counting per-tool failures must not count them:
 
+- `search` — a query that matches nothing returns a normal result whose `message`
+  reports zero nodes, edges, episodes and communities.
 - `explore_entity` — a name or uuid that matches nothing returns a normal response
   with `center_node: null` and a `message` saying so.
-- `explore_ontology` — a class this ontology does not hold returns the same shape:
-  `center: null`, empty relationship and hierarchy structures, and a `message`.
-- `search_ontology` — a query that matches nothing returns a normal result whose
-  `message` reports zero nodes, edges and communities.
+- `search_ontology` — as `search`, over the companion ontology graph.
+- `explore_ontology` — a class this ontology does not hold returns the
+  `explore_entity` shape: `center: null`, empty relationship and hierarchy
+  structures, and a `message`.
+- `get_episodes` — a partition holding no episodes returns `episodes: []` and a
+  `message` saying so.
 
-In all three the graph was queried and it answered; the answer was empty. Filing
+In all five the graph was queried and it answered; the answer was empty. Filing
 one of these under `error` makes a working connector look degraded and invites a
 retry whose result cannot change — which is exactly what `explore_ontology` used
 to do before its not-found moved to `message`.
+
+This list is not maintained by hand: `test_ontology_not_found_taxonomy.py` drives
+each tool named here into its miss and asserts the set matches, so a case added
+to the code without a bullet — or a bullet without a case — is a red test.
 
 ## Releasing
 
