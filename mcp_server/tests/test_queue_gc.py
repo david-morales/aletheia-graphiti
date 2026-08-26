@@ -1,18 +1,65 @@
-"""Tests for queue worker task GC prevention (#1176).
+"""Tests for the queue worker task's lifecycle: GC prevention (#1176) and the
+per-group_id sequential guarantee (BUG-134).
 
-Verifies that QueueService stores strong references to asyncio.Task objects
-created for queue workers, preventing the garbage collector from cancelling
-them mid-execution.
+Two properties of the same object, and the second one is why the first one was
+not enough. `QueueService` keeps strong references to the worker `asyncio.Task`
+objects so the garbage collector cannot cancel them mid-execution — but a
+reference only protects the task it still points at, and a second worker
+spawned for the same group_id both overwrote that reference AND broke the
+sequential processing the queue exists to provide.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import contextlib
+import inspect
 from unittest.mock import AsyncMock
 
 import pytest
 
+from services import queue_service as queue_service_module
 from services.queue_service import QueueService
+
+WORKER_COROUTINE = '_process_episode_queue'
+
+
+def _live_worker_tasks() -> list[asyncio.Task]:
+    """Every pending worker task on this loop, found by coroutine rather than
+    by the service's own bookkeeping.
+
+    `_worker_tasks` cannot answer "how many workers are running": the BUG-134
+    defect was a second worker *overwriting* that dict entry, so the dict reads
+    1 while two workers race. The loop is the only honest witness.
+    """
+    return [
+        task
+        for task in asyncio.all_tasks()
+        if getattr(task.get_coro(), '__qualname__', '').endswith(WORKER_COROUTINE)
+    ]
+
+
+async def _cancel_live_workers() -> None:
+    """Stop every worker this test started, including ones the service lost
+    track of — an abandoned worker would otherwise leak into the next test."""
+    tasks = _live_worker_tasks()
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    await asyncio.sleep(0)
+
+
+async def _wait_for(predicate, timeout: float = 2.0) -> None:
+    """Poll until `predicate()` holds, so a failure reports the state rather
+    than hanging the suite."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
 
 
 class TestWorkerTasksDict:
@@ -46,10 +93,8 @@ class TestTaskStoredAfterAdd:
 
         # Clean up: cancel the long-lived worker so it doesn't block
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
 
 class TestTaskCleanedUpAfterDone:
@@ -69,13 +114,439 @@ class TestTaskCleanedUpAfterDone:
 
         # Cancel the worker to make it finish
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
         # Allow the event loop to run the done callback
         await asyncio.sleep(0)
 
         # The done callback should have removed the entry
         assert group_id not in svc._worker_tasks
+
+
+def _tracking_process(order: list[str], tag: str):
+    """A process_func that records when it starts and when it ends, with a real
+    suspension in between — exactly where LLM extraction lives, and the only
+    window in which a second worker can interleave."""
+
+    async def process() -> None:
+        order.append(f'start:{tag}')
+        await asyncio.sleep(0.02)
+        order.append(f'end:{tag}')
+
+    return process
+
+
+class TestOneWorkerPerGroupId:
+    """BUG-134 — the busy flag was set INSIDE the worker coroutine but read in
+    `add_episode_task`, so two enqueues landing before the first worker got its
+    first step both read False and both spawned a worker.
+
+    `asyncio.create_task` only *schedules*; the enqueue that created the task
+    returns before the worker runs a single line. On the default ingest path
+    (`group_id` omitted → all traffic shares one) this put concurrent LLM
+    extraction on one partition, which is the single thing the queue exists to
+    prevent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_flag_is_claimed_before_the_worker_gets_its_first_step(self):
+        """The mechanism, in one assertion: the claim must be visible the moment
+        the enqueue returns, not one loop iteration later."""
+        svc = QueueService()
+        try:
+            await svc.add_episode_task('claim-group', AsyncMock())
+
+            assert svc.is_worker_running('claim-group') is True, (
+                'the busy flag is still False after the enqueue returned — it is '
+                'being set inside the worker coroutine, so the next enqueue will '
+                'spawn a second worker (BUG-134)'
+            )
+        finally:
+            await _cancel_live_workers()
+
+    @pytest.mark.asyncio
+    async def test_two_immediate_enqueues_spawn_exactly_one_worker(self):
+        """The measured reproduction: two enqueues with no await between them."""
+        svc = QueueService()
+        group_id = 'race-group'
+        order: list[str] = []
+
+        try:
+            await svc.add_episode_task(group_id, _tracking_process(order, 'A'))
+            await svc.add_episode_task(group_id, _tracking_process(order, 'B'))
+
+            workers = _live_worker_tasks()
+            assert len(workers) == 1, (
+                f'{len(workers)} workers running for one group_id — the second '
+                f'enqueue spawned its own (BUG-134)'
+            )
+
+            await _wait_for(lambda: len(order) == 4)
+            assert order == ['start:A', 'end:A', 'start:B', 'end:B'], (
+                f'processing was not sequential on one group_id: {order}'
+            )
+        finally:
+            await _cancel_live_workers()
+
+    @pytest.mark.asyncio
+    async def test_the_first_workers_reference_survives_a_second_enqueue(self):
+        """The GC half. The second worker overwrote `_worker_tasks[group_id]`,
+        dropping the first task's only strong reference — the exact protection
+        this module was written for (#1176)."""
+        svc = QueueService()
+        group_id = 'reference-group'
+        order: list[str] = []
+
+        try:
+            await svc.add_episode_task(group_id, _tracking_process(order, 'A'))
+            first = svc._worker_tasks[group_id]
+
+            await svc.add_episode_task(group_id, _tracking_process(order, 'B'))
+
+            assert svc._worker_tasks[group_id] is first, (
+                'the second enqueue replaced the first worker task reference, '
+                'leaving the running worker unprotected from GC (BUG-134)'
+            )
+        finally:
+            await _cancel_live_workers()
+
+    @pytest.mark.asyncio
+    async def test_distinct_group_ids_still_get_their_own_worker(self):
+        """The no-regression half: the guarantee is per-group_id, not global.
+        Separate partitions must still run concurrently."""
+        svc = QueueService()
+        group_ids = ('g1', 'g2', 'g3')
+        order: list[str] = []
+
+        try:
+            for group_id in group_ids:
+                await svc.add_episode_task(group_id, _tracking_process(order, group_id))
+
+            assert len(_live_worker_tasks()) == len(group_ids)
+            assert {svc._worker_tasks[g] for g in group_ids} == set(_live_worker_tasks())
+            for group_id in group_ids:
+                assert svc.is_worker_running(group_id) is True
+
+            await _wait_for(lambda: len(order) == 2 * len(group_ids))
+            assert sorted(order) == sorted(
+                [f'{prefix}:{g}' for g in group_ids for prefix in ('start', 'end')]
+            ), order
+        finally:
+            await _cancel_live_workers()
+
+
+class TestTheClaimIsReleasedOnEveryPath:
+    """A latched flag is worse than the race it prevents: no worker will ever be
+    spawned for that group_id again, so its queue fills and nothing drains it —
+    a permanently dead partition. Every claim therefore needs a release that
+    cannot be skipped."""
+
+    @pytest.mark.asyncio
+    async def test_a_create_task_failure_does_not_latch_the_claim(self, monkeypatch):
+        """`create_task` raises on a loop that is shutting down. The claim is
+        already in place by then, so the failure path has to undo it."""
+        svc = QueueService()
+        group_id = 'no-loop-group'
+
+        def exploding_create_task(*_args, **_kwargs):
+            raise RuntimeError('no running event loop')
+
+        monkeypatch.setattr(asyncio, 'create_task', exploding_create_task)
+
+        with pytest.raises(RuntimeError):
+            await svc.add_episode_task(group_id, AsyncMock())
+
+        assert svc.is_worker_running(group_id) is False, (
+            'the busy flag stayed latched after create_task failed — this '
+            'group_id can never start a worker again'
+        )
+        assert group_id not in svc._worker_tasks
+
+    @pytest.mark.asyncio
+    async def test_a_worker_cancelled_before_its_first_step_releases_the_claim(self):
+        """Measured asyncio semantics: a task cancelled before it runs a single
+        step never executes its coroutine body, so a release living in the
+        worker's own `finally` never fires. The done callback does fire, which
+        is why the release lives there."""
+        svc = QueueService()
+        group_id = 'stillborn-group'
+
+        await svc.add_episode_task(group_id, AsyncMock())
+        task = svc._worker_tasks[group_id]
+        task.cancel()  # no await since create_task: the body never ran
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+        assert svc.is_worker_running(group_id) is False, (
+            'a worker that never got a first step left the claim latched, '
+            'killing this group_id permanently'
+        )
+        assert group_id not in svc._worker_tasks
+
+        # And the partition is genuinely revivable, not just flag-clean.
+        order: list[str] = []
+        try:
+            await svc.add_episode_task(group_id, _tracking_process(order, 'after'))
+            await _wait_for(lambda: order == ['start:after', 'end:after'])
+            assert order == ['start:after', 'end:after'], order
+        finally:
+            await _cancel_live_workers()
+
+    @pytest.mark.asyncio
+    async def test_a_late_callback_from_a_superseded_task_leaves_the_live_claim(self):
+        """The mirror image, and the reason the release is guarded rather than
+        unconditional: a release that fires for a task which no longer owns the
+        slot must not free the claim its successor is holding.
+
+        Freeing it hands ONE group_id a second worker — which is BUG-134,
+        restored by the fix meant to close it. No public path reaches this
+        today; the callback is delivered directly, because the invariant is
+        worth holding independently of who can currently reach it.
+        """
+        svc = QueueService()
+        group_id = 'late-callback-group'
+        order: list[str] = []
+
+        try:
+            await svc.add_episode_task(group_id, _tracking_process(order, 'A'))
+            superseded = svc._worker_tasks[group_id]
+            superseded.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await superseded
+            await asyncio.sleep(0)  # its release lands: slot empty, claim free
+
+            await svc.add_episode_task(group_id, _tracking_process(order, 'B'))
+            live = svc._worker_tasks[group_id]
+            assert live is not superseded
+
+            # THE late callback, arriving after the successor claimed.
+            svc._release_worker(group_id, superseded)
+
+            assert svc._worker_tasks[group_id] is live, (
+                'the late callback dropped the live worker’s reference'
+            )
+            assert svc.is_worker_running(group_id) is True, (
+                'the late callback released a claim it does not own — the next '
+                'enqueue will start a second worker on this group_id, which is '
+                'BUG-134 itself'
+            )
+
+            await svc.add_episode_task(group_id, _tracking_process(order, 'C'))
+            workers = _live_worker_tasks()
+            assert len(workers) == 1, (
+                f'{len(workers)} workers on one group_id after a late callback'
+            )
+            # A was queued before the first worker was cancelled without ever
+            # running, so the survivor drains all three, in order.
+            await _wait_for(lambda: len(order) == 6)
+            assert order == [
+                'start:A',
+                'end:A',
+                'start:B',
+                'end:B',
+                'start:C',
+                'end:C',
+            ], order
+        finally:
+            await _cancel_live_workers()
+
+
+class _QueueThatBreaksAfterOneGet(asyncio.Queue):
+    """Serves one item, then raises from `get`.
+
+    The worker's inner `try` only covers `process_func`, so this reaches the
+    OUTER handler — the path on which a worker dies unexpectedly rather than
+    being cancelled, and the only one on which its `finally` runs while the
+    service is otherwise healthy.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._gets = 0
+
+    async def get(self):
+        self._gets += 1
+        if self._gets > 1:
+            raise RuntimeError('the queue broke')
+        return await super().get()
+
+
+class TestAClaimIsNeverFreeWhileAStaleReferenceRemains:
+    """The other route to the dropped reference, and the reason the release and
+    the reference-drop have to be the same step.
+
+    Measured on the unfixed code: the worker cleared the flag in its own
+    `finally`, but its reference was dropped in a later callback. That leaves a
+    turn where the claim is free while the dead task still owns the slot — an
+    enqueue there installs a live worker whose reference the dead task's
+    callback then pops, which is precisely the GC exposure `_worker_tasks`
+    exists to close (#1176):
+
+        BASE  turn 0: worker_done=True flag=False ref_is_dead_task=True
+              -> new worker installed, then unreferenced while still alive
+        FIXED turn 0: worker_done=True flag=True  ref_is_dead_task=True
+              turn 1: claim released and reference dropped together
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_dead_worker_holds_its_claim_until_its_reference_is_dropped(self):
+        svc = QueueService()
+        group_id = 'dying-group'
+        svc._episode_queues[group_id] = _QueueThatBreaksAfterOneGet()
+        order: list[str] = []
+
+        def instant(tag: str):
+            """No suspension inside processing, unlike `_tracking_process`: the
+            worker has to reach its own death within the zero-length turns below,
+            and a real sleep inside `process_func` would park it past them."""
+
+            async def process() -> None:
+                order.append(tag)
+
+            return process
+
+        await svc.add_episode_task(group_id, instant('first'))
+        dead = svc._worker_tasks[group_id]
+
+        # Turn by turn, deliberately: the hazard window is ONE loop iteration
+        # wide — the worker's `finally` runs during its own final step while its
+        # done callback is only scheduled — so any real sleep here overshoots it
+        # and the test silently stops testing anything.
+        for _ in range(20):
+            await asyncio.sleep(0)
+            claim_free = not svc.is_worker_running(group_id)
+            stale_reference = svc._worker_tasks.get(group_id) is dead
+            assert not (claim_free and stale_reference), (
+                'the claim was released while the dead worker still owned the '
+                'reference slot — a worker started here would be unreferenced '
+                'as soon as the dead task’s callback ran'
+            )
+            if dead.done() and claim_free:
+                break
+        else:  # pragma: no cover - the release is one callback away
+            pytest.fail(
+                f'worker never both died and released: done={dead.done()} '
+                f'claimed={svc.is_worker_running(group_id)}'
+            )
+
+        assert dead.done(), 'the worker did not die; the fixture no longer bites'
+        assert group_id not in svc._worker_tasks
+
+        # And the consequence the invariant protects: the replacement worker
+        # keeps its reference and drains the partition.
+        svc._episode_queues[group_id] = asyncio.Queue()
+        try:
+            await svc.add_episode_task(group_id, instant('second'))
+            replacement = svc._worker_tasks[group_id]
+            assert replacement is not dead
+
+            await _wait_for(lambda: 'second' in order)
+            assert svc._worker_tasks.get(group_id) is replacement, (
+                'the dead worker’s callback popped the replacement’s reference'
+            )
+            assert not replacement.done()
+            assert order == ['first', 'second'], order
+        finally:
+            await _cancel_live_workers()
+
+
+FLAG_ATTR = '_queue_workers'
+
+MUTATING_DICT_METHODS = frozenset({'pop', 'clear', 'popitem', 'setdefault', 'update'})
+"""Every dict method that can change the flag state. `get`, `keys`, `items` and
+friends are deliberately absent: reading the flag is what the rest of the class
+does, and a guard that fails on reads would be deleted within a week."""
+
+
+def _refers_to_the_flag(node: ast.expr) -> bool:
+    """True for `<something>._queue_workers` and for a subscript into it."""
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    return isinstance(node, ast.Attribute) and node.attr == FLAG_ATTR
+
+
+def _flag_writers(module) -> set[str]:
+    """Name every function that can CHANGE the busy flag.
+
+    AST, not substring matching, and deliberately wider than assignment: an
+    entry can be removed (`del`, `pop`), the whole mapping can be emptied
+    (`clear`) or swapped out (`self._queue_workers = {}`), and every one of
+    those is a way to hand a group_id a second worker without ever writing
+    `= True` anywhere.
+    """
+    writers: set[str] = set()
+
+    for node in ast.walk(module):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for inner in ast.walk(node):
+            targets: list[ast.expr] = []
+            if isinstance(inner, ast.Assign):
+                targets = list(inner.targets)
+            elif isinstance(inner, ast.AugAssign | ast.AnnAssign):
+                targets = [inner.target]
+            elif isinstance(inner, ast.Delete):
+                targets = list(inner.targets)
+            elif (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr in MUTATING_DICT_METHODS
+                and _refers_to_the_flag(inner.func.value)
+            ):
+                writers.add(node.name)
+
+            if any(_refers_to_the_flag(target) for target in targets):
+                writers.add(node.name)
+
+    return writers
+
+
+class TestTheBusyFlagHasOneWriterPerTransition:
+    """The defect was not a wrong value, it was two owners: the flag was set in
+    the worker and read in the enqueue. Locking the writer set keeps a future
+    edit from reintroducing the split.
+
+    The guard is per-FUNCTION, which is the honest limit: it catches a new site
+    touching the flag, not a second write added inside a site that already owns
+    one.
+    """
+
+    def test_only_the_constructor_the_claim_and_the_release_touch_the_flag(self):
+        writers = _flag_writers(ast.parse(inspect.getsource(queue_service_module)))
+
+        assert writers == {'__init__', 'add_episode_task', '_release_worker'}, (
+            f'the busy flag is touched from {sorted(writers)}; it may only be '
+            f'created in __init__, claimed in add_episode_task and released in '
+            f'_release_worker'
+        )
+
+    def test_the_guard_sees_the_edits_that_are_not_assignments(self):
+        """The guard's own regression test. Each of these silently passed the
+        assignment-only version, and each frees a claim: `is_worker_running`
+        reads `.get(group_id, False)`, so a removed entry reads exactly like a
+        released one.
+        """
+        removals = (
+            'del self._queue_workers[group_id]',
+            'self._queue_workers.pop(group_id, None)',
+            'self._queue_workers.clear()',
+            'self._queue_workers = {}',
+        )
+        for statement in removals:
+            source = f'class C:\n    def somewhere_else(self, group_id):\n        {statement}\n'
+            assert _flag_writers(ast.parse(source)) == {'somewhere_else'}, statement
+
+    def test_the_guard_stays_quiet_on_reads(self):
+        """A guard that fires on reads is a guard that gets deleted."""
+        reads = (
+            'return self._queue_workers.get(group_id, False)',
+            'return dict(self._queue_workers)',
+            'return self._queue_workers[group_id]',
+            'return group_id in self._queue_workers',
+            'return list(self._queue_workers.keys())',
+        )
+        for statement in reads:
+            source = f'class C:\n    def reader(self, group_id):\n        {statement}\n'
+            assert _flag_writers(ast.parse(source)) == set(), statement
