@@ -13,13 +13,15 @@ safe to call.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 from flavours.age import AgeFlavour
 from flavours.falkordb import FalkorDbFlavour
 from tests.retired_tool_names import RETIRED_TOOL_NAMES
-from tool_annotations import TOOL_ANNOTATIONS
+from tool_annotations import ONTOLOGY_TOOLS, TOOL_ANNOTATIONS
 from tool_descriptions import build_degraded_instructions, build_instructions
 
 # Selected by the CI `contract` job (.github/workflows/mcp-server-tests.yml):
@@ -40,36 +42,69 @@ def _profile() -> DomainProfile:
 
 @pytest.fixture(
     params=[
-        (state, flavour)
+        (state, flavour, ontology)
         for state in ('healthy', 'healthy-empty', 'degraded')
         for flavour in ('age', 'falkordb')
+        for ontology in (True, False)
     ],
-    ids=lambda p: f'{p[0]}-{p[1]}',
+    ids=lambda p: f'{p[0]}-{p[1]}-{"onto" if p[2] else "no-onto"}',
 )
-def instructions(request) -> str:
-    """Every state in which a client can read the announcement, on both backends.
+def arm(request) -> tuple[str, bool]:
+    """Every state in which a client can read the announcement, on both backends,
+    in both ontology configurations. Returns (announcement, has_ontology).
 
-    BOTH FLAVOURS, and that is not decoration. `_search_catalog_entry` has two
+    BOTH FLAVOURS, and that is not decoration. `_search_catalog_body` has two
     branches — the episode leg is announced only where the backend can serve it —
     so the catalog's `search` entry exists twice in the source. This fixture used
     to build every arm with `AgeFlavour()` alone, which exercised the branch that
     is NOT the default deployment: deleting the whole announcement from the
     FalkorDB branch left 241 tests green. A duplicated block needs a guard per
     copy or only one copy is guarded.
+
+    BOTH ONTOLOGY ARMS for the same reason (M11): the catalogue is now
+    configuration-dependent, and a guard that only ever ran on the configured
+    arm would not notice the un-configured one announcing four tools it cannot
+    serve — nor the un-configured one losing an entry it should keep.
     """
-    state, flavour_name = request.param
+    state, flavour_name, has_ontology = request.param
     flavour = AgeFlavour() if flavour_name == 'age' else FalkorDbFlavour()
     if state == 'healthy':
-        return build_instructions(_profile(), flavour)
-    if state == 'healthy-empty':
-        return build_instructions(DomainProfile(group_id='empty'), flavour)
-    return build_degraded_instructions(
-        group_id='catalog_graph', flavour=flavour, reason='boom', marker='!! DEGRADED !!'
-    )
+        text = build_instructions(_profile(), flavour, has_ontology=has_ontology)
+    elif state == 'healthy-empty':
+        text = build_instructions(
+            DomainProfile(group_id='empty'), flavour, has_ontology=has_ontology
+        )
+    else:
+        text = build_degraded_instructions(
+            group_id='catalog_graph',
+            flavour=flavour,
+            reason='boom',
+            marker='!! DEGRADED !!',
+            has_ontology=has_ontology,
+        )
+    return text, has_ontology
+
+
+@pytest.fixture
+def instructions(arm) -> str:
+    return arm[0]
+
+
+def _served_here(has_ontology: bool) -> set[str]:
+    """The tools this arm ANNOUNCES — which is the set it also serves (M11)."""
+    if has_ontology:
+        return set(TOOL_ANNOTATIONS)
+    return set(TOOL_ANNOTATIONS) - ONTOLOGY_TOOLS
 
 
 @pytest.mark.parametrize('tool_name', sorted(TOOL_ANNOTATIONS))
-def test_every_served_tool_appears_in_the_catalog(instructions, tool_name):
+def test_every_served_tool_appears_in_the_catalog(arm, tool_name):
+    """Completeness, per arm. An ontology-less connector does not SERVE the four
+    ontology tools, so announcing them would be the opposite failure — see
+    `test_ontology_surface_gate.py` for the honesty half."""
+    instructions, has_ontology = arm
+    if tool_name not in _served_here(has_ontology):
+        pytest.skip(f'{tool_name} is not served on this arm')
     assert tool_name in instructions, (
         f'ADR-019 R1: {tool_name} is served but never announced'
     )
@@ -237,19 +272,41 @@ def _squash(text: str) -> str:
     return ' '.join(text.split())
 
 
-def _numbered_entry(instructions: str, start: str, end: str) -> str:
-    """A numbered catalog item, squashed, scoped between its marker and the next.
+_NUMBERED_ITEM = re.compile(r'^(\d+)\. (\w+) --')
 
-    Deliberately not `_catalog_entry`: that one finds the FIRST line containing
-    the name, and these entries now cross-reference each other by name.
+
+def _numbered_entry(instructions: str, tool_name: str) -> str:
+    """A numbered catalog item, squashed, scoped to its own lines.
+
+    Anchored on the NUMBERED line, not on the first line containing the name:
+    these entries cross-reference each other, which is what `_catalog_entry`
+    would trip over.
+
+    Anchored on the tool NAME, not on its number, because the number is
+    arm-dependent since M11 — an ontology-less connector drops entries 3, 4, 9
+    and 10 and renumbers the survivors 1..14, so a pin reading '3. search_ontology'
+    would silently address a different tool on the other arm.
     """
-    assert start in instructions, f'the catalog has no {start!r} entry'
-    assert end in instructions, f'the catalog has no {end!r} entry'
-    return _squash(instructions.split(start, 1)[1].split(end, 1)[0])
+    lines = instructions.split('\n')
+    start = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if (m := _NUMBERED_ITEM.match(line)) and m.group(2) == tool_name
+        ),
+        None,
+    )
+    assert start is not None, f'the catalog has no {tool_name!r} entry'
+    entry = [lines[start]]
+    for line in lines[start + 1:]:
+        if not line.strip():
+            break
+        entry.append(line)
+    return _squash('\n'.join(entry))
 
 
 def test_the_search_entry_announces_that_it_returns_a_sample(instructions):
-    entry = _numbered_entry(instructions, '1. search', '2. explore_entity')
+    entry = _numbered_entry(instructions, 'search')
     assert 'RANKED TOP-K SAMPLE, not an enumeration' in entry
     assert 'there is no offset' in entry
     assert 'however many times you call it' in entry
@@ -258,18 +315,18 @@ def test_the_search_entry_announces_that_it_returns_a_sample(instructions):
 def test_the_search_entry_routes_aggregation_to_graph_query(instructions):
     """The routing line is a SEPARATE claim from the sample line above: either
     can be deleted without the other, so each gets its own guard."""
-    entry = _numbered_entry(instructions, '1. search', '2. explore_entity')
+    entry = _numbered_entry(instructions, 'search')
     assert ROUTING_SENTENCE in entry
 
 
 def test_the_explore_entity_entry_announces_it_is_non_exhaustive(instructions):
-    entry = _numbered_entry(instructions, '2. explore_entity', '3. search_ontology')
+    entry = _numbered_entry(instructions, 'explore_entity')
     assert 'ranked by proximity and cut at `limit`' in entry
     assert 'not exhaustive, and it aggregates nothing' in entry
 
 
 def test_the_explore_entity_entry_routes_aggregation_to_graph_query(instructions):
-    entry = _numbered_entry(instructions, '2. explore_entity', '3. search_ontology')
+    entry = _numbered_entry(instructions, 'explore_entity')
     assert ROUTING_SENTENCE in entry
 
 
@@ -278,7 +335,7 @@ def test_the_graph_query_entry_claims_the_aggregation_surface(instructions):
     two shapes the measured failure actually needed — a ranking and a
     superlative — and to the exhaustiveness that distinguishes it from search.
     """
-    entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data')
+    entry = _numbered_entry(instructions, 'graph_query')
     assert 'THE surface for counts, rankings and superlatives' in entry
     assert 'EVERY matching row in the whole graph, not over a retrieved sample' in entry
     assert 'unless your own query limits its input first' in entry
@@ -286,5 +343,5 @@ def test_the_graph_query_entry_claims_the_aggregation_surface(instructions):
 
 def test_the_graph_query_entry_scopes_the_row_cap(instructions):
     """Read naively, the 200-row cap cancels the claim above it."""
-    entry = _numbered_entry(instructions, '7. graph_query', '8. profile_data')
+    entry = _numbered_entry(instructions, 'graph_query')
     assert 'the cap bounds the rows RETURNED, not the rows aggregated over' in entry

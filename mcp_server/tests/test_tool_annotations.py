@@ -69,8 +69,28 @@ def _profile() -> DomainProfile:
 
 
 @pytest.fixture
-def served_tools():
-    """The full 18-tool surface, exactly as `tools/list` would serve it."""
+def served_tools(monkeypatch):
+    """The full 18-tool surface, exactly as `tools/list` would serve it.
+
+    An ontology graph is configured on purpose: the four ontology tools are
+    served only where one is (M11), and this module's subject is that EVERY
+    served tool declares truthful annotations — which needs the arm that serves
+    all eighteen, not the one that serves fourteen.
+    """
+    monkeypatch.setattr(
+        srv,
+        'config',
+        type(
+            'C',
+            (),
+            {
+                'graphiti': type(
+                    'G', (), {'ontology_graph': 'onto_v1', 'group_id': 'annotations_test'}
+                )
+            },
+        ),
+        raising=False,
+    )
     srv.register_dynamic_tools(_profile())
     return srv.mcp._tool_manager._tools
 

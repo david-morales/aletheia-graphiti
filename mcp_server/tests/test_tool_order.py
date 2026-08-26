@@ -20,6 +20,7 @@ from mcp.server.mcpserver import MCPServer
 import graphiti_mcp_server as srv
 from domain_profile import DomainProfile, EdgeTypeInfo, EntityTypeInfo
 from tool_annotations import (
+    ONTOLOGY_TOOLS,
     TOOL_ANNOTATIONS,
     TOOL_ORDER,
     annotations_for,
@@ -38,6 +39,34 @@ def _profile(group_id: str = 'order_graph') -> DomainProfile:
 
 def _names(mcp_server: MCPServer) -> list[str]:
     return [t.name for t in asyncio.run(mcp_server.list_tools())]
+
+
+@pytest.fixture(params=[None, 'onto_v1'], ids=['without-ontology', 'with-ontology'])
+def registered_order(request, monkeypatch) -> list[str]:
+    """The order the DYNAMIC path emits, on both ontology configurations.
+
+    The four ontology tools are served only where a companion ontology graph is
+    configured (M11), so `TOOL_ORDER` filtered by the arm — not `TOOL_ORDER`
+    itself — is what the registration path can emit. The ORDER contract is the
+    same on both: relative position never moves, which is what
+    `test_a_partial_surface_keeps_relative_order` states independently.
+    """
+    monkeypatch.setattr(
+        srv,
+        'config',
+        type(
+            'C',
+            (),
+            {
+                'graphiti': type(
+                    'G', (), {'ontology_graph': request.param, 'group_id': 'order_graph'}
+                )
+            },
+        ),
+        raising=False,
+    )
+    served = set(TOOL_ANNOTATIONS) if request.param else set(TOOL_ANNOTATIONS) - ONTOLOGY_TOOLS
+    return [name for name in TOOL_ORDER if name in served]
 
 
 def test_the_order_contract_covers_exactly_the_served_surface():
@@ -70,26 +99,26 @@ def test_listing_twice_returns_the_same_order():
     assert _names(server) == _names(server)
 
 
-def test_the_dynamic_registration_path_emits_the_canonical_order():
+def test_the_dynamic_registration_path_emits_the_canonical_order(registered_order):
     srv.register_dynamic_tools(_profile())
-    assert list(srv.mcp._tool_manager._tools) == list(TOOL_ORDER)
+    assert list(srv.mcp._tool_manager._tools) == registered_order
 
 
-def test_re_registration_does_not_reshuffle():
+def test_re_registration_does_not_reshuffle(registered_order):
     """`register_dynamic_tools` deletes and re-adds nine tools; without the
     canonical pass they would migrate to the end of the dict every time."""
     srv.register_dynamic_tools(_profile())
     before = list(srv.mcp._tool_manager._tools)
     srv.register_dynamic_tools(_profile('other_graph'))
-    assert list(srv.mcp._tool_manager._tools) == before == list(TOOL_ORDER)
+    assert list(srv.mcp._tool_manager._tools) == before == registered_order
 
 
-def test_the_degraded_path_emits_the_same_order_as_the_healthy_one():
+def test_the_degraded_path_emits_the_same_order_as_the_healthy_one(registered_order):
     """A profile failure must not reorder the catalog on top of everything else."""
     srv.register_dynamic_tools(_profile())
     healthy = list(srv.mcp._tool_manager._tools)
     srv.register_fallback_tools(reason='boom')
-    assert list(srv.mcp._tool_manager._tools) == healthy
+    assert list(srv.mcp._tool_manager._tools) == healthy == registered_order
 
 
 def test_an_unknown_tool_is_appended_rather_than_dropped():

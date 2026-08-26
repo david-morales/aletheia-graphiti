@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from domain_profile import DomainProfile
+from tool_annotations import ONTOLOGY_TOOLS
 from utils.formatting import COMBINED_EPISODE_LIMIT, EPISODE_CONTENT_CAP
 from version import CONNECTOR_BUILD
 
@@ -28,56 +29,192 @@ def _episode_leg_is_live(flavour: Flavour | None) -> bool:
     return bool(flavour is not None and flavour.searches_episode_content())
 
 
-def _search_catalog_entry(flavour: Flavour | None) -> list[str]:
-    """The catalog's `search` entry, with the episode half only where it is real."""
+def _search_catalog_body(flavour: Flavour | None) -> list[str]:
+    """The catalog's `search` entry, with the episode half only where it is real.
+
+    Body lines only — UNNUMBERED and UNINDENTED. `_key_tools_lines` owns both,
+    because the number an entry carries depends on which entries this arm serves.
+    """
     if not _episode_leg_is_live(flavour):
         return [
-            '1. search -- Find entities, facts, or communities by natural language query.',
-            '   Use when: the user asks a question or wants to find something.',
-            '   Use explore_entity instead when: you already know which entity to examine.',
-            '   RANKED TOP-K SAMPLE, not an enumeration: it returns the best matches up',
-            '   to `limit`, and there is no offset -- calling it again with the same',
-            '   query returns the same sample. It cannot produce a count, a ranking or',
-            '   a superlative, however many times you call it.',
-            '   Use graph_query instead for counts, rankings, superlatives and anything',
-            '   computed exhaustively over the whole graph.',
-            '',
+            'search -- Find entities, facts, or communities by natural language query.',
+            'Use when: the user asks a question or wants to find something.',
+            'Use explore_entity instead when: you already know which entity to examine.',
+            'RANKED TOP-K SAMPLE, not an enumeration: it returns the best matches up',
+            'to `limit`, and there is no offset -- calling it again with the same',
+            'query returns the same sample. It cannot produce a count, a ranking or',
+            'a superlative, however many times you call it.',
+            'Use graph_query instead for counts, rankings, superlatives and anything',
+            'computed exhaustively over the whole graph.',
         ]
     return [
-        '1. search -- Find entities, facts, source narratives or communities by',
-        '   natural language query.',
-        '   Use when: the user asks a question or wants to find something.',
-        '   Use explore_entity instead when: you already know which entity to examine.',
-        '   RANKED TOP-K SAMPLE, not an enumeration: it returns the best matches up',
-        '   to `limit`, and there is no offset -- calling it again with the same',
-        '   query returns the same sample. It cannot produce a count, a ranking or',
-        '   a superlative, however many times you call it.',
-        '   Use graph_query instead for counts, rankings, superlatives and anything',
-        '   computed exhaustively over the whole graph.',
-        '   ALSO SEARCHES THE SOURCE TEXT. Alongside nodes and edges the result',
-        '   carries `episodes` -- the ingested documents themselves, matched on',
-        '   their full text. Extraction lifts only part of a document into',
-        '   entities and relationships, so a detail absent from every node and',
-        '   edge can still be present in an episode narrative: when nodes and',
-        '   edges come back thin, READ `episodes` BEFORE CONCLUDING THE GRAPH',
-        '   DOES NOT HOLD THE ANSWER.',
-        f'   Other modes return at most {COMBINED_EPISODE_LIMIT} episodes; '
+        'search -- Find entities, facts, source narratives or communities by',
+        'natural language query.',
+        'Use when: the user asks a question or wants to find something.',
+        'Use explore_entity instead when: you already know which entity to examine.',
+        'RANKED TOP-K SAMPLE, not an enumeration: it returns the best matches up',
+        'to `limit`, and there is no offset -- calling it again with the same',
+        'query returns the same sample. It cannot produce a count, a ranking or',
+        'a superlative, however many times you call it.',
+        'Use graph_query instead for counts, rankings, superlatives and anything',
+        'computed exhaustively over the whole graph.',
+        'ALSO SEARCHES THE SOURCE TEXT. Alongside nodes and edges the result',
+        'carries `episodes` -- the ingested documents themselves, matched on',
+        'their full text. Extraction lifts only part of a document into',
+        'entities and relationships, so a detail absent from every node and',
+        'edge can still be present in an episode narrative: when nodes and',
+        'edges come back thin, READ `episodes` BEFORE CONCLUDING THE GRAPH',
+        'DOES NOT HOLD THE ANSWER.',
+        f'Other modes return at most {COMBINED_EPISODE_LIMIT} episodes; '
         'intent="narrative"',
-        '   (or search_mode="episodes") searches ONLY that text and returns the',
-        '   full limit, for when the question is about what a document says.',
-        f'   Content is cut at {EPISODE_CONTENT_CAP} characters with',
-        '   `content_truncated: true`; get_episode_context(episode_uuids=[uuid])',
-        '   returns that episode\'s content in full.',
-        '',
+        '(or search_mode="episodes") searches ONLY that text and returns the',
+        'full limit, for when the question is about what a document says.',
+        f'Content is cut at {EPISODE_CONTENT_CAP} characters with',
+        '`content_truncated: true`; get_episode_context(episode_uuids=[uuid])',
+        'returns that episode\'s content in full.',
     ]
 
 
-def _key_tools_lines(flavour: Flavour | None = None) -> list[str]:
-    """The capability catalog (ADR-019 R1) — ALL 18 served tools.
+def _catalog_bodies(flavour: Flavour | None) -> dict[str, list[str]]:
+    """Every catalog entry's body, keyed by tool name.
+
+    UNNUMBERED and UNINDENTED, both supplied by the renderer. An entry that
+    carried its own '9. ' could only ever be ninth, which is precisely what made
+    a conditional catalogue impossible before M11.
+    """
+    return {
+        'search': _search_catalog_body(flavour),
+        'explore_entity': [
+            "explore_entity -- Expand a known entity's neighborhood.",
+            'Use when: you have a specific entity name and want its connections.',
+            "Use search instead when: you don't know which entity to start from.",
+            'A neighborhood expansion around ONE entity, ranked by proximity and cut',
+            'at `limit`: not exhaustive, and it aggregates nothing.',
+            'Use graph_query instead for counts, rankings, superlatives and anything',
+            'computed exhaustively over the whole graph.',
+        ],
+        'search_ontology': [
+            'search_ontology -- Look up schema definitions in the companion ontology.',
+            'Use when: you need to understand what types or properties are defined.',
+            'Use search instead when: you want actual data, not schema definitions.',
+        ],
+        'explore_ontology': [
+            'explore_ontology -- Expand a specific ontology class.',
+            'Use when: you want properties and parent classes for a specific type.',
+        ],
+        'sample_subgraph': [
+            'sample_subgraph -- Sample nodes plus the edges among them, already',
+            'normalized across backends (labels are the full hierarchy, unordered).',
+            'Use when: a client needs a renderable slice of the graph (graph view).',
+            'Use search instead when: you are answering a question -- this samples,',
+            'it does not rank or filter by meaning.',
+        ],
+        'get_schema': [
+            "get_schema -- This graph's labels, relationship types, counts, property",
+            'keys and the backend `dialect_reference`. Call it before writing Cypher.',
+        ],
+        'graph_query': [
+            'graph_query -- Read-only Cypher for counts, aggregations and path queries.',
+            'THE surface for counts, rankings and superlatives: aggregation runs over',
+            'EVERY matching row in the whole graph, not over a retrieved sample --',
+            'unless your own query limits its input first, since a LIMIT before the',
+            'aggregation truncates what it sees. Written without one, a count is exact',
+            'and an ORDER BY ... LIMIT n is the real top n. search and explore_entity',
+            'return ranked samples and can answer none of these.',
+            'Writes are rejected; 200 rows are auto-limited (the cap bounds the rows',
+            'RETURNED, not the rows aggregated over).',
+        ],
+        'profile_data': [
+            'profile_data -- Property coverage, sample values, detected languages and',
+            'relationship cardinality. Use when you need to judge data QUALITY before',
+            'trusting a count.',
+        ],
+        'get_ontology_structure': [
+            'get_ontology_structure -- Every ontology class in one compact call: the',
+            'surface map. Cheaper than search_ontology when you want the whole list.',
+        ],
+        'get_ontology_documentation': [
+            'get_ontology_documentation -- The FULL ontology reference: complete prose',
+            'and per-class property definitions. LARGE -- prefer the three tools above',
+            'for agent use; this one is for UIs, exports and batch consumers.',
+        ],
+        'get_episodes': [
+            'get_episodes -- List recent episodes for a graph partition.',
+        ],
+        'get_episode_context': [
+            'get_episode_context -- The nodes and edges a given episode produced.',
+            'Use when: you need to trace a fact back to its source document.',
+        ],
+        'add_memory': [
+            'add_memory -- Ingest an episode (text, JSON or message). Single episodes',
+            'are queued and processed asynchronously; pass `episodes` for a bulk load',
+            'that returns when done. This is the ONLY ingestion path.',
+        ],
+        'get_status': [
+            'get_status -- Server and database reachability, and this connector build.',
+        ],
+        'build_communities': [
+            'build_communities -- DESTRUCTIVE despite the name. Within the group_ids',
+            'you pass, it DELETES the existing communities before re-clustering, so',
+            'any Community uuid you already hold for those partitions stops resolving.',
+            'Partitions you did not name are left alone. Run it after a significant',
+            'ingestion, on a connector whose graph you own, then search with',
+            'search_mode="communities".',
+        ],
+        'delete_entity_edge': [
+            'delete_entity_edge -- DESTRUCTIVE. Deletes one relationship by uuid.',
+        ],
+        'delete_episode': [
+            'delete_episode -- DESTRUCTIVE. Deletes an episode AND everything extracted',
+            'from it.',
+        ],
+        'clear_graph': [
+            'clear_graph -- DESTRUCTIVE and IRREVERSIBLE. Deletes ALL data in the named',
+            'graph partitions. There is no undo and no backup on this side.',
+        ],
+    }
+
+
+_CATALOG_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ('Key tools:', ('search', 'explore_entity', 'search_ontology', 'explore_ontology',
+                    'sample_subgraph')),
+    ('Schema and structure:', ('get_schema', 'graph_query', 'profile_data',
+                               'get_ontology_structure', 'get_ontology_documentation')),
+    ('Episodes (the ingested source documents):', ('get_episodes', 'get_episode_context')),
+    ('Writing to the graph:', ('add_memory',)),
+    ('Health:', ('get_status',)),
+    (
+        'Destructive -- these REMOVE data and cannot be undone:',
+        ('build_communities', 'delete_entity_edge', 'delete_episode', 'clear_graph'),
+    ),
+)
+"""The catalog's shape: headings, and which tools sit under each.
+
+Names only. The bodies live in `_catalog_bodies` and the numbers are assigned at
+render time, so an arm that serves fewer tools gets a contiguous 1..N list rather
+than an 18-item list with holes punched in it.
+"""
+
+
+def _key_tools_lines(
+    flavour: Flavour | None = None, has_ontology: bool = False
+) -> list[str]:
+    """The capability catalog (ADR-019 R1) — every tool THIS ARM serves.
 
     Profile-independent on purpose: the tools a connector serves do not depend on
     what its graph happens to contain, so the healthy and the DEGRADED
     announcements serve the same catalog and cannot drift apart.
+
+    Configuration-dependent, though, and that is M11. Without a companion
+    ontology graph the four ontology tools are not registered, so announcing them
+    would send an agent at a capability `tools/list` does not offer. They are
+    dropped from the catalog by the SAME signal that drops them from the
+    registration — `has_ontology` — and the survivors are renumbered, because a
+    numbered list with gaps reads as a truncated document.
+
+    ``has_ontology`` defaults to False: positive evidence only, the same rule the
+    flavour gating follows. Under-announcing costs a capability; over-announcing
+    costs a wrong answer.
 
     Completeness is the contract (A-D9). The catalog used to name 7 of 18, omitting
     `add_memory` — the connector's only ingestion path — along with `profile_data`
@@ -85,92 +222,23 @@ def _key_tools_lines(flavour: Flavour | None = None) -> list[str]:
     learn that half the surface exists. The three destructive tools are named AND
     marked: announcing one without saying what it does is worse than omitting it.
     """
-    return [
-        '',
-        'Key tools:',
-        '',
-        *_search_catalog_entry(flavour),
-        "2. explore_entity -- Expand a known entity's neighborhood.",
-        '   Use when: you have a specific entity name and want its connections.',
-        "   Use search instead when: you don't know which entity to start from.",
-        '   A neighborhood expansion around ONE entity, ranked by proximity and cut',
-        '   at `limit`: not exhaustive, and it aggregates nothing.',
-        '   Use graph_query instead for counts, rankings, superlatives and anything',
-        '   computed exhaustively over the whole graph.',
-        '',
-        '3. search_ontology -- Look up schema definitions in the companion ontology.',
-        '   Use when: you need to understand what types or properties are defined.',
-        '   Use search instead when: you want actual data, not schema definitions.',
-        '',
-        '4. explore_ontology -- Expand a specific ontology class.',
-        '   Use when: you want properties and parent classes for a specific type.',
-        '',
-        '5. sample_subgraph -- Sample nodes plus the edges among them, already',
-        '   normalized across backends (labels are the full hierarchy, unordered).',
-        '   Use when: a client needs a renderable slice of the graph (graph view).',
-        '   Use search instead when: you are answering a question -- this samples,',
-        '   it does not rank or filter by meaning.',
-        '',
-        'Schema and structure:',
-        '',
-        '6. get_schema -- This graph\'s labels, relationship types, counts, property',
-        '   keys and the backend `dialect_reference`. Call it before writing Cypher.',
-        '',
-        '7. graph_query -- Read-only Cypher for counts, aggregations and path queries.',
-        '   THE surface for counts, rankings and superlatives: aggregation runs over',
-        '   EVERY matching row in the whole graph, not over a retrieved sample --',
-        '   unless your own query limits its input first, since a LIMIT before the',
-        '   aggregation truncates what it sees. Written without one, a count is exact',
-        '   and an ORDER BY ... LIMIT n is the real top n. search and explore_entity',
-        '   return ranked samples and can answer none of these.',
-        '   Writes are rejected; 200 rows are auto-limited (the cap bounds the rows',
-        '   RETURNED, not the rows aggregated over).',
-        '',
-        '8. profile_data -- Property coverage, sample values, detected languages and',
-        '   relationship cardinality. Use when you need to judge data QUALITY before',
-        '   trusting a count.',
-        '',
-        '9. get_ontology_structure -- Every ontology class in one compact call: the',
-        '   surface map. Cheaper than search_ontology when you want the whole list.',
-        '',
-        '10. get_ontology_documentation -- The FULL ontology reference: complete prose',
-        '    and per-class property definitions. LARGE -- prefer the three tools above',
-        '    for agent use; this one is for UIs, exports and batch consumers.',
-        '',
-        'Episodes (the ingested source documents):',
-        '',
-        '11. get_episodes -- List recent episodes for a graph partition.',
-        '',
-        '12. get_episode_context -- The nodes and edges a given episode produced.',
-        '    Use when: you need to trace a fact back to its source document.',
-        '',
-        'Writing to the graph:',
-        '',
-        '13. add_memory -- Ingest an episode (text, JSON or message). Single episodes',
-        '    are queued and processed asynchronously; pass `episodes` for a bulk load',
-        '    that returns when done. This is the ONLY ingestion path.',
-        '',
-        'Health:',
-        '',
-        '14. get_status -- Server and database reachability, and this connector build.',
-        '',
-        'Destructive -- these REMOVE data and cannot be undone:',
-        '',
-        '15. build_communities -- DESTRUCTIVE despite the name. Within the group_ids',
-        '    you pass, it DELETES the existing communities before re-clustering, so',
-        '    any Community uuid you already hold for those partitions stops resolving.',
-        '    Partitions you did not name are left alone. Run it after a significant',
-        '    ingestion, on a connector whose graph you own, then search with',
-        '    search_mode="communities".',
-        '',
-        '16. delete_entity_edge -- DESTRUCTIVE. Deletes one relationship by uuid.',
-        '',
-        '17. delete_episode -- DESTRUCTIVE. Deletes an episode AND everything extracted',
-        '    from it.',
-        '',
-        '18. clear_graph -- DESTRUCTIVE and IRREVERSIBLE. Deletes ALL data in the named',
-        '    graph partitions. There is no undo and no backup on this side.',
-    ]
+    bodies = _catalog_bodies(flavour)
+    lines: list[str] = []
+    number = 0
+    for heading, names in _CATALOG_SECTIONS:
+        served = [
+            name for name in names if has_ontology or name not in ONTOLOGY_TOOLS
+        ]
+        if not served:
+            continue
+        lines += ['', heading]
+        for name in served:
+            number += 1
+            body = bodies[name]
+            indent = ' ' * (len(str(number)) + 2)
+            lines += ['', f'{number}. {body[0]}']
+            lines += [f'{indent}{line}' for line in body[1:]]
+    return lines
 
 
 def _analytical_queries_lines() -> list[str]:
@@ -262,6 +330,7 @@ def build_degraded_instructions(
     flavour: Flavour | None,
     reason: str,
     marker: str,
+    has_ontology: bool = False,
 ) -> str:
     """Announce a connector whose graph introspection failed (BUG-50 / A-D2).
 
@@ -269,6 +338,10 @@ def build_degraded_instructions(
     announcement says exactly that, in the lead position, so a consumer that
     captures `instructions` once can see that what it captured is a fallback —
     and never reads "with no entities yet" off a graph it simply could not probe.
+
+    ``has_ontology`` is read from the CONFIG, not from the profile, so it is
+    known even here: a failed census does not conjure an ontology graph, and the
+    degraded catalog names the same tools the degraded `tools/list` serves (M11).
     """
     parts = [
         marker,
@@ -292,7 +365,7 @@ def build_degraded_instructions(
         '`domain_summary`, `entity_catalog` and `relationship_types` resources are',
         'rendered from the domain profile and cannot be built without one.',
     ]
-    parts += _key_tools_lines(flavour)
+    parts += _key_tools_lines(flavour, has_ontology)
     parts += _analytical_queries_lines()
     parts += _census_caveat_lines(flavour)
     parts += _dialect_lines(flavour)
@@ -300,8 +373,18 @@ def build_degraded_instructions(
     return '\n'.join(parts)
 
 
-def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None) -> str:
-    """Build the MCP server instructions from a DomainProfile (and the backend flavour)."""
+def build_instructions(
+    profile: DomainProfile,
+    flavour: 'Flavour | None' = None,
+    has_ontology: bool = False,
+) -> str:
+    """Build the MCP server instructions from a DomainProfile (and the backend flavour).
+
+    ``has_ontology`` gates the four ontology tools out of the announced catalog on
+    a connector that does not configure a companion ontology graph — the same
+    signal that keeps them out of `tools/list` (M11). Announcing a tool the arm
+    does not serve is the registration defect one layer up.
+    """
     # Which build wrote this guidance (A-D11). It travels with the announcement a
     # consumer captures and caches, so a stale cache is identifiable after the fact.
     parts = [f'Connector: {CONNECTOR_BUILD}', '']
@@ -345,7 +428,7 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
             parts.append(f'- {info.name} ({info.count}){desc}')
 
     # Tool guidance (shared with the degraded announcement — one catalog)
-    parts += _key_tools_lines(flavour)
+    parts += _key_tools_lines(flavour, has_ontology)
 
     # Tips
     if profile.entity_types or profile.edge_types:
@@ -375,11 +458,19 @@ def build_instructions(profile: DomainProfile, flavour: 'Flavour | None' = None)
 
 
 def build_search_description(
-    profile: DomainProfile, flavour: Flavour | None = None
+    profile: DomainProfile,
+    flavour: Flavour | None = None,
+    has_ontology: bool = False,
 ) -> str:
     """Build the search tool description from a DomainProfile (and the backend flavour).
 
     The flavour gates the episode half: see `_episode_leg_is_live`.
+
+    ``has_ontology`` gates the "use search_ontology instead" redirect. A tool
+    DESCRIPTION is read by the same agent as the announcement and carries the same
+    promise, so routing schema questions at a tool this arm does not announce is
+    the M11 defect in its third copy — reached, unlike the other two, on every
+    single call.
     """
     parts = [
         'Search this knowledge graph for entities, facts, and communities.',
@@ -400,7 +491,11 @@ def build_search_description(
         '',
         'Do NOT use when:',
         '- You already know which entity to examine -- use explore_entity instead',
-        '- You need schema or ontology definitions -- use search_ontology instead',
+        *(
+            ['- You need schema or ontology definitions -- use search_ontology instead']
+            if has_ontology
+            else []
+        ),
         '- You need a count, a ranking, a superlative (most/least/largest/first/'
         'longest) or any total computed exhaustively over the whole graph -- a '
         'ranked sample cannot answer these. Use graph_query instead.',

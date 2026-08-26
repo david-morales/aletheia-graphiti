@@ -1486,7 +1486,8 @@ class TestSchemaConstraints:
 class TestDynamicRegistration:
     """Verify that dynamic tool registration and resources work."""
 
-    def test_register_dynamic_tools_adds_tools_to_mcp(self):
+    def test_register_dynamic_tools_adds_tools_to_mcp(self, monkeypatch):
+        import graphiti_mcp_server as srv
         from domain_profile import DomainProfile, EntityTypeInfo, EdgeTypeInfo
         from graphiti_mcp_server import register_dynamic_tools, mcp
 
@@ -1501,6 +1502,22 @@ class TestDynamicRegistration:
             time_range=None,
         )
 
+        # The ontology tools are served only where an ontology graph is
+        # configured (M11) — configure one, since this asserts they register.
+        monkeypatch.setattr(
+            srv,
+            'config',
+            type(
+                'C',
+                (),
+                {
+                    'graphiti': type(
+                        'G', (), {'ontology_graph': 'onto_v1', 'group_id': 'test_graph'}
+                    )
+                },
+            ),
+            raising=False,
+        )
         register_dynamic_tools(profile)
 
         # Verify tools are registered with dynamic descriptions

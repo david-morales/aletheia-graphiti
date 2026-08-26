@@ -767,6 +767,14 @@ The full contract is announced, not documented: every tool publishes a typed
 `outputSchema` and machine-readable `annotations` (`readOnlyHint`,
 `destructiveHint`), and `get_schema` returns the canonical schema payload.
 
+**Four of these tools are conditional.** `search_ontology`, `explore_ontology`,
+`get_ontology_structure` and `get_ontology_documentation` read a companion
+ontology graph, so they are announced only where `graphiti.ontology_graph` is
+configured. A connector without one serves fourteen tools, names fourteen in its
+`instructions`, and never points at the other four from a tool description —
+`tools/list` is the contract, and announcing a capability that can only answer
+"no ontology graph configured" costs a consumer a call and a wrong conclusion.
+
 ### Retrieval
 
 | Tool | Read-only | Purpose |
