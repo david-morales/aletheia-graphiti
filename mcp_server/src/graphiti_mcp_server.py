@@ -706,14 +706,63 @@ INTENT_STRATEGIES: dict[str, dict] = {
 }
 
 
+def describe_valid_search_combinations(episode_leg_is_live: bool = True) -> str:
+    """The mode -> accepted-rerankers mapping, rendered from `SEARCH_RECIPES`.
+
+    `search_mode` and `reranker` are independent `Literal`s, so the inputSchema a
+    client reads announces their CROSS-PRODUCT — 25 pairs against the 17 that
+    resolve. The eight that raise are not an omission to implement away: they are
+    a limit of graphiti-core's reranker enums. `CommunityReranker` has no
+    `node_distance` and no `episode_mentions` (so neither `communities` nor
+    `combined`, whose community leg would have nothing to rank by, can take
+    them), and `EpisodeReranker` offers only rrf and a cross_encoder that is
+    deliberately withheld pending measurement. Seven are inexpressible and the
+    eighth is a recorded decision.
+
+    So the announcement is constrained instead of the surface being widened —
+    the M11 doctrine: a capability announced where it cannot run costs a consumer
+    a call and a wrong conclusion about the connector. This text is what makes
+    the restriction visible BEFORE the call rather than as a ValueError after it.
+
+    DERIVED, never restated. A recipe added or removed changes this text in the
+    same commit, which is what stops the announcement from going stale — the
+    failure mode that let the docstring's half-answer sit next to a silent served
+    description for as long as it did.
+
+    `episode_leg_is_live` gates every episode-shaped entry, for the same reason
+    the rest of the episode surface is gated (`_episode_leg_is_live`): on a
+    backend that does not index episode content, `search_mode='episodes'` returns
+    nothing by construction, and `reranker='episode_mentions'` is no better off —
+    its fallback Cypher anchors on `(n:Entity {uuid: ...})`, the pattern AGE's
+    single-label storage cannot satisfy for an ontology-classed entity (BUG-104's
+    measured class), so every candidate scores `inf` and the reranker silently
+    degenerates to the rrf it preranked with. Both stay CALLABLE — an empty or
+    unreranked answer in-band beats a hard error — and neither is ANNOUNCED where
+    it cannot do what its name says.
+    """
+    modes: dict[str, list[str]] = {}
+    for mode, reranker in SEARCH_RECIPES:
+        if not episode_leg_is_live and (mode == 'episodes' or reranker == 'episode_mentions'):
+            continue
+        modes.setdefault(mode, []).append(reranker)
+    # "Valid combinations" verbatim: it is also the rejection text, and the
+    # ValueError contract that phrase belongs to is pinned by its own test.
+    lines = ['Valid combinations of search_mode x reranker (any other pair is rejected):']
+    lines += [f'- {mode}: {", ".join(rerankers)}' for mode, rerankers in modes.items()]
+    return '\n'.join(lines)
+
+
 def resolve_search_config(search_mode: str, reranker: str, limit: int) -> SearchConfig:
     """Map search_mode + reranker to a SearchConfig recipe."""
     key = (search_mode.lower(), reranker.lower())
     recipe = SEARCH_RECIPES.get(key)
     if recipe is None:
+        # The rendered mapping rather than `list(SEARCH_RECIPES.keys())`: a caller
+        # that got here needs to know which reranker its MODE accepts, and 17
+        # raw tuples is a worse answer to that than five lines grouped by mode.
         raise ValueError(
             f"Invalid search_mode='{search_mode}' + reranker='{reranker}'. "
-            f"Valid combinations: {list(SEARCH_RECIPES.keys())}"
+            f'{describe_valid_search_combinations()}'
         )
     config = recipe.model_copy(deep=True)
     config.limit = limit
@@ -989,7 +1038,15 @@ async def search(
                      or "combined" (default; its episode sample is capped).
         reranker: Reranking strategy — "rrf" (default), "mmr", "cross_encoder",
                   "node_distance" (requires center_node_uuid), or "episode_mentions".
-                  search_mode="episodes" accepts only "rrf".
+                  NOT every mode accepts every reranker, and two independent
+                  enums cannot express that: "node_distance" and
+                  "episode_mentions" are available ONLY for search_mode="nodes"
+                  or "edges". search_mode="communities" and the default
+                  "combined" accept "rrf", "mmr" and "cross_encoder";
+                  search_mode="episodes" accepts only "rrf". Any other pairing is
+                  rejected before the search runs, and this tool's served
+                  description carries the same list generated from the recipes
+                  themselves.
         center_node_uuid: Rerank results by proximity to this node.
         bfs_origin_node_uuids: Start BFS graph traversal from these nodes.
         entity_types: Only return nodes carrying these labels. This graph's labels are

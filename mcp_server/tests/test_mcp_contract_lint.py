@@ -382,6 +382,14 @@ CONTRACT_GUARDS = {
     # a behavioural unit suite, deliberately outside this gate — see the class
     # docstring for why widening the marker would dilute it.
     'the dynamic pass registers every tool this arm announces': 'test_tools.py',
+    # M10, and R1 one level deeper than a tool name: `search_mode` and `reranker`
+    # are independent Literals, so the inputSchema announces their CROSS-PRODUCT
+    # (25 pairs) against the 17 that resolve. The gap is not implementable away —
+    # graphiti-core's own reranker enums do not carry those pairs — so the
+    # announcement is what has to be honest about it.
+    'R1 an announced mode x reranker pair can actually run': (
+        'test_search_combination_surface.py'
+    ),
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'
