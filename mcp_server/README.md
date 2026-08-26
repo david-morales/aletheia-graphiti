@@ -767,6 +767,14 @@ The full contract is announced, not documented: every tool publishes a typed
 `outputSchema` and machine-readable `annotations` (`readOnlyHint`,
 `destructiveHint`), and `get_schema` returns the canonical schema payload.
 
+**Four of these tools are conditional.** `search_ontology`, `explore_ontology`,
+`get_ontology_structure` and `get_ontology_documentation` read a companion
+ontology graph, so they are announced only where `graphiti.ontology_graph` is
+configured. A connector without one serves fourteen tools, names fourteen in its
+`instructions`, and never points at the other four from a tool description —
+`tools/list` is the contract, and announcing a capability that can only answer
+"no ontology graph configured" costs a consumer a call and a wrong conclusion.
+
 ### Retrieval
 
 | Tool | Read-only | Purpose |
@@ -883,9 +891,28 @@ to surface a protocol failure and discard the payload, which throws away the
 `hint` that would let the model fix its own query. Transport and protocol
 failures still surface as real MCP errors.
 
-One case is deliberately *not* an error at all: `explore_entity` with a uuid that
-does not exist returns a normal response with `center_node: null` and a message
-saying so. A miss is an answer.
+**A miss is an answer.** Five cases are deliberately *not* errors, and a consumer
+counting per-tool failures must not count them:
+
+- `search` — a query that matches nothing returns a normal result whose `message`
+  reports zero nodes, edges, episodes and communities.
+- `explore_entity` — a name or uuid that matches nothing returns a normal response
+  with `center_node: null` and a `message` saying so.
+- `search_ontology` — as `search`, over the companion ontology graph.
+- `explore_ontology` — a class this ontology does not hold returns the
+  `explore_entity` shape: `center: null`, empty relationship and hierarchy
+  structures, and a `message`.
+- `get_episodes` — a partition holding no episodes returns `episodes: []` and a
+  `message` saying so.
+
+In all five the graph was queried and it answered; the answer was empty. Filing
+one of these under `error` makes a working connector look degraded and invites a
+retry whose result cannot change — which is exactly what `explore_ontology` used
+to do before its not-found moved to `message`.
+
+This list is not maintained by hand: `test_ontology_not_found_taxonomy.py` drives
+each tool named here into its miss and asserts the set matches, so a case added
+to the code without a bullet — or a bullet without a case — is a red test.
 
 ## Releasing
 

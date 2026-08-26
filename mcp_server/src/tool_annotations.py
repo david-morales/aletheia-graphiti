@@ -106,6 +106,30 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
 }
 
 
+ONTOLOGY_TOOLS: frozenset[str] = frozenset(
+    {
+        'search_ontology',
+        'explore_ontology',
+        'get_ontology_structure',
+        'get_ontology_documentation',
+    }
+)
+"""The tools that need a CONFIGURED companion ontology graph to answer anything.
+
+They are announced only where `config.graphiti.ontology_graph` is set (M11).
+Registration used to be unconditional, with the check inside each handler, so an
+ontology-less connector announced 4 of 18 tools that could return nothing but
+'No ontology graph configured' — a quarter of the catalogue that existed to fail.
+Announcement is a promise (ADR-019 R1): a consumer resolves its capabilities
+against `tools/list` and treats an absence as the real answer, so the smaller
+honest surface is the correct contract.
+
+Lives HERE, next to the annotations and the order, because three places need the
+same membership — both registration paths and the announcement builder — and a
+per-site literal is how the fourth copy of a roster starts.
+"""
+
+
 # The order `tools/list` serves, declared rather than emergent (2026-07-28 spec
 # SHOULD: list endpoints must not vary per connection). It mirrors the capability
 # catalog in the server instructions, so the two announcements agree — an agent

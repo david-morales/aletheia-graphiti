@@ -106,7 +106,7 @@ from services.factories import (
     EmbedderFactory,
     LLMClientFactory,
 )
-from tool_annotations import annotations_for, apply_canonical_tool_order
+from tool_annotations import ONTOLOGY_TOOLS, annotations_for, apply_canonical_tool_order
 from version import CONNECTOR_VERSION
 from services.queue_service import QueueService
 from graph_profiler import profile_graph as _run_profile_graph
@@ -227,6 +227,13 @@ GRAPHITI_MCP_INSTRUCTIONS = build_degraded_instructions(
     flavour=None,
     reason='the server is still starting up and has not introspected its graph',
     marker=DEGRADED_INSTRUCTIONS_MARKER,
+    # No config has been loaded at import time, so there is no positive evidence
+    # of a companion ontology graph and the seed catalog does not claim one (M11).
+    # Same rule as `_ontology_is_configured`, which reads an absent config the
+    # same way: under-announcing costs a capability, over-announcing costs a
+    # wrong answer. Both registration paths overwrite this before the server
+    # serves anything.
+    has_ontology=False,
 )
 
 # Read host from env to set the DNS rebinding policy. When FASTMCP_HOST=0.0.0.0
@@ -1845,6 +1852,12 @@ async def explore_ontology(
     Returns:
         {center, relationships: {outgoing, incoming},
          hierarchy: {parents, children, siblings}, neighbors}
+
+        A class this ontology does not hold is an ANSWER, not a failure: the same
+        shape with `center: null`, empty relationship/hierarchy structures, and a
+        `message` naming what was not found. `error` is reserved for calls that
+        could not be answered at all — a bad argument, an unreachable ontology,
+        an unready server.
     """
     global graphiti_service
 
@@ -1893,8 +1906,26 @@ async def explore_ontology(
                         center_row = by_name[match.name]
                         break
         if center_row is None:
+            # An ANSWER, not a failure. The ontology graph is configured,
+            # reachable and was just queried three ways (uuid, exact name,
+            # case-insensitive name, semantic rank) — it holds no such class,
+            # and that is the true answer to the question asked.
+            #
+            # Under `error` a consumer applying ADR-015 R4 counted this as a tool
+            # FAILURE: it retried a call whose answer cannot change and marked a
+            # working connector degraded. `explore_entity` and `search` have
+            # always filed the identical situation under `message`; this is the
+            # same split, applied consistently (audit M11 addendum, 2026-08-15).
+            #
+            # Shaped like a found result with nothing in it, mirroring
+            # explore_entity's `nodes=[], edges=[], communities=[]`, so a caller
+            # can iterate the payload without branching on which answer it got.
             return OntologyClassContextResponse(
-                error=f'No ontology class found matching "{node_name or node_uuid}"'
+                message=f'No ontology class found matching "{node_name or node_uuid}"',
+                center=None,
+                relationships={'outgoing': [], 'incoming': []},
+                hierarchy={'parents': [], 'children': [], 'siblings': []},
+                neighbors=[],
             )
 
         center_name = center_row.get('name') or ''
@@ -2740,6 +2771,11 @@ async def profile_data(sample_size: int = 5) -> ProfileGraphResponse:
 # descriptions are rendered from the live DomainProfile. ONE list: the dynamic
 # path and the degraded fallback both walk it, so a tool can never be served by
 # one and forgotten by the other (the bug behind A-D2).
+#
+# It is the DELETE list as well as the add list, and stays complete for that
+# reason: four of the nine are served only where an ontology graph is configured
+# (M11, `_serves`), and a re-registration that stopped deleting them would leave
+# a previous arm's ontology tools announced after the config moved.
 _DYNAMIC_TOOLS = (
     search,
     explore_entity,
@@ -2756,21 +2792,33 @@ _DYNAMIC_TOOLS = (
 def _ontology_is_configured() -> bool:
     """Is a companion ontology graph configured for this connector?
 
-    Tool registration is UNCONDITIONAL, so without one the ontology tools are
-    served and answer every call with 'No ontology graph configured'. Any
-    description that claims classification questions there routes an agent into
-    a dead end — and with graph_query simultaneously disclaiming them, no tool
-    would admit to the question at all. So the claims are gated on this.
+    THE gate for the whole ontology surface (M11). Without one, the four
+    ontology tools are not registered, are not named in the announced catalog,
+    and are not cross-referenced from any served description — because each of
+    those is a promise, and every one of them was false on an ontology-less arm.
+    The handlers' own `_ensure_ontology_client` guards stay as defence in depth:
+    reaching one now means a caller invoked a tool this server never announced.
 
     Read defensively: `config` is an annotation-only module global, unbound
     until startup assigns it, and this runs on the registration path that a
     degraded boot also takes. A gating signal that can itself raise would turn
     a missing ontology into a collapsed tool surface — which is exactly the
     failure `register_fallback_tools` exists to contain, reached for a reason
-    that is not an error at all.
+    that is not an error at all. Absent config reads as NO ontology: positive
+    evidence only, the same rule the flavour gating follows.
     """
     graphiti_cfg = getattr(globals().get('config'), 'graphiti', None)
     return bool(getattr(graphiti_cfg, 'ontology_graph', None))
+
+
+def _serves(fn, has_ontology: bool) -> bool:
+    """Does THIS connector serve this dynamic tool?
+
+    One predicate, both registration paths. The healthy path and the degraded
+    fallback used to agree only by both listing `_DYNAMIC_TOOLS` in full; a
+    condition applied to one of them alone is the A-D2 drift re-opened.
+    """
+    return has_ontology or fn.__name__ not in ONTOLOGY_TOOLS
 
 
 def register_dynamic_tools(profile: DomainProfile) -> None:
@@ -2791,7 +2839,7 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     # source the static @mcp.tool() decorators read — the two paths cannot drift.
     mcp.add_tool(
         search,
-        description=build_search_description(profile, flavour),
+        description=build_search_description(profile, flavour, has_ontology),
         annotations=annotations_for('search'),
     )
     mcp.add_tool(
@@ -2799,26 +2847,34 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
         description=build_explore_entity_description(profile),
         annotations=annotations_for('explore_entity'),
     )
-    mcp.add_tool(
-        search_ontology,
-        description=build_search_ontology_description(profile, has_ontology),
-        annotations=annotations_for('search_ontology'),
-    )
-    mcp.add_tool(
-        explore_ontology,
-        description=build_explore_ontology_description(profile, has_ontology),
-        annotations=annotations_for('explore_ontology'),
-    )
+    # The four ontology tools are served only where a companion ontology graph is
+    # configured (M11). Without one they can answer nothing but 'No ontology
+    # graph configured', and announcing a capability that exists to fail costs a
+    # consumer a call and a wrong conclusion about what this connector can do.
+    if has_ontology:
+        mcp.add_tool(
+            search_ontology,
+            description=build_search_ontology_description(profile, has_ontology),
+            annotations=annotations_for('search_ontology'),
+        )
+        mcp.add_tool(
+            explore_ontology,
+            description=build_explore_ontology_description(profile, has_ontology),
+            annotations=annotations_for('explore_ontology'),
+        )
     mcp.add_tool(
         get_schema,
         description=build_get_schema_description(profile),
         annotations=annotations_for('get_schema'),
     )
-    mcp.add_tool(get_ontology_structure, annotations=annotations_for('get_ontology_structure'))
-    mcp.add_tool(
-        get_ontology_documentation,
-        annotations=annotations_for('get_ontology_documentation'),
-    )
+    if has_ontology:
+        mcp.add_tool(
+            get_ontology_structure, annotations=annotations_for('get_ontology_structure')
+        )
+        mcp.add_tool(
+            get_ontology_documentation,
+            annotations=annotations_for('get_ontology_documentation'),
+        )
     mcp.add_tool(
         graph_query,
         description=build_graph_query_description(profile, flavour, has_ontology),
@@ -2831,13 +2887,13 @@ def register_dynamic_tools(profile: DomainProfile) -> None:
     apply_canonical_tool_order(mcp._tool_manager._tools)
 
     # Update MCP instructions
-    mcp._lowlevel_server.instructions = build_instructions(profile, flavour)
+    mcp._lowlevel_server.instructions = build_instructions(profile, flavour, has_ontology)
 
     logger.info('Registered tools with dynamic descriptions')
 
 
 def register_fallback_tools(reason: str) -> None:
-    """Serve the FULL surface with static descriptions when introspection fails.
+    """Serve this arm's FULL surface with static descriptions when introspection fails.
 
     The old fallback re-registered four tools and left the other five profile-driven
     ones unregistered, so `get_schema` (the canonical ADR-019 R5 payload consumers
@@ -2845,6 +2901,12 @@ def register_fallback_tools(reason: str) -> None:
     ontology-bulk tools disappeared from `tools/list` while `/health` stayed green.
     Losing the profile costs the DESCRIPTIONS, never the TOOLS: every tool still
     works, it just describes itself from its docstring instead of from live data.
+
+    "FULL" is per-arm, not a constant: the four ontology tools belong to the served
+    surface only where a companion ontology graph is configured (M11), and a failed
+    census does not conjure one. Completeness here means every tool THIS connector
+    serves — re-registering the other four would re-open the announcement defect
+    under cover of preserving the surface.
 
     The announcement is rebuilt to say so, in the lead position, and keeps the
     backend dialect (the flavour is known even when the graph cannot be read).
@@ -2862,11 +2924,17 @@ def register_fallback_tools(reason: str) -> None:
     cfg = globals().get('config')
     group_id = cfg.graphiti.group_id if cfg is not None else 'unknown'
 
+    has_ontology = _ontology_is_configured()
+
     for fn in _DYNAMIC_TOOLS:
         name = fn.__name__
+        # Delete unconditionally, re-add conditionally: a prior registration made
+        # while an ontology WAS configured must not survive into an arm that no
+        # longer serves it.
         if name in mcp._tool_manager._tools:
             del mcp._tool_manager._tools[name]
-        mcp.add_tool(fn, annotations=annotations_for(name))
+        if _serves(fn, has_ontology):
+            mcp.add_tool(fn, annotations=annotations_for(name))
 
     apply_canonical_tool_order(mcp._tool_manager._tools)
 
@@ -2883,6 +2951,7 @@ def register_fallback_tools(reason: str) -> None:
         flavour=flavour,
         reason=reason,
         marker=DEGRADED_INSTRUCTIONS_MARKER,
+        has_ontology=has_ontology,
     )
 
     logger.error(

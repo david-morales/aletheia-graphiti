@@ -20,6 +20,12 @@ from config.schema import GraphitiConfig
 from flavours.age import AgeFlavour
 from flavours.falkordb import FalkorDbFlavour
 
+# These are served-payload guards — the FROZEN `get_ontology_structure` shape,
+# `explore_ontology`'s class-context envelope and its not-found taxonomy, plus
+# which of the four tools this arm registers at all. All ADR-015/019 surface,
+# all on stubs: no database, no API key. Nothing in CI selected them.
+pytestmark = pytest.mark.contract
+
 # ---------------------------------------------------------------------------
 # Fixture data — fake OntologyClass rows as the FalkorDB driver returns them
 # ---------------------------------------------------------------------------
@@ -822,7 +828,15 @@ class TestExploreOntologyClassContext:
         assert [n['name'] for n in result['neighbors']] == ['Gadget']
 
     @pytest.mark.asyncio
-    async def test_explore_unknown_class_error_contract(self):
+    async def test_explore_unknown_class_answers_rather_than_fails(self):
+        """A configured, reachable ontology that holds no such class has ANSWERED.
+
+        This used to assert the opposite — `'error' in result` — and that filing
+        made a consumer applying ADR-015 R4 count a not-found as a tool FAILURE
+        (audit M11 addendum, 2026-08-15). `explore_entity` and `search` have
+        always used `message` for the identical situation. Full taxonomy guard:
+        `test_ontology_not_found_taxonomy.py`.
+        """
         from graphiti_mcp_server import explore_ontology
 
         svc = make_service([widget_row()])
@@ -830,8 +844,8 @@ class TestExploreOntologyClassContext:
         with patch('graphiti_mcp_server.graphiti_service', svc):
             result = await explore_ontology(node_name='Nonexistent')
 
-        assert 'error' in result
-        assert 'Nonexistent' in result['error']
+        assert not result.get('error')
+        assert 'Nonexistent' in result['message']
 
     @pytest.mark.asyncio
     async def test_explore_resolves_by_uuid(self):
@@ -1201,7 +1215,8 @@ class TestAgeOntologyReadPath:
 # ---------------------------------------------------------------------------
 
 class TestRegistration:
-    def test_get_ontology_documentation_registered(self):
+    def test_get_ontology_documentation_registered(self, monkeypatch):
+        import graphiti_mcp_server as srv
         from domain_profile import DomainProfile, EntityTypeInfo
         from graphiti_mcp_server import mcp, register_dynamic_tools
 
@@ -1214,8 +1229,53 @@ class TestRegistration:
             time_range=None,
         )
 
+        # An ontology graph is what makes these two servable at all (M11).
+        monkeypatch.setattr(
+            srv,
+            'config',
+            type(
+                'C',
+                (),
+                {
+                    'graphiti': type(
+                        'G', (), {'ontology_graph': 'onto_v1', 'group_id': 'test_graph'}
+                    )
+                },
+            ),
+            raising=False,
+        )
         register_dynamic_tools(profile)
 
         tools = mcp._tool_manager._tools
         assert 'get_ontology_documentation' in tools
         assert 'get_ontology_structure' in tools
+
+    def test_the_ontology_tiers_are_not_registered_without_an_ontology_graph(
+        self, monkeypatch
+    ):
+        """The other arm of the same fact (M11): the two bulk tiers exist to read
+        a companion ontology graph, so a connector without one does not announce
+        them."""
+        import graphiti_mcp_server as srv
+        from domain_profile import DomainProfile
+        from graphiti_mcp_server import mcp, register_dynamic_tools
+
+        monkeypatch.setattr(
+            srv,
+            'config',
+            type(
+                'C',
+                (),
+                {
+                    'graphiti': type(
+                        'G', (), {'ontology_graph': None, 'group_id': 'test_graph'}
+                    )
+                },
+            ),
+            raising=False,
+        )
+        register_dynamic_tools(DomainProfile(group_id='test_graph'))
+
+        tools = mcp._tool_manager._tools
+        assert 'get_ontology_documentation' not in tools
+        assert 'get_ontology_structure' not in tools

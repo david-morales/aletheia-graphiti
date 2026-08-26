@@ -136,7 +136,14 @@ FLAT_SURFACE: dict[str, dict] = {
             'neighbors': [{'name': 'Gadget', 'summary_line': 'A gadget.', 'via': 'USES'}],
         },
         'error': {'error': 'Ontology explore error: boom'},
-        'required_keys': ('center', 'relationships', 'hierarchy', 'neighbors', 'error'),
+        # `message` carries the NOT-FOUND answer and must be published, not merely
+        # returned: MCPServer validates structured content against this schema
+        # before sending, so an undeclared field escapes the ADR-015 envelope as a
+        # protocol error. The live round trip is in
+        # `test_ontology_not_found_taxonomy.py`.
+        'required_keys': (
+            'center', 'relationships', 'hierarchy', 'neighbors', 'message', 'error',
+        ),
     },
 }
 

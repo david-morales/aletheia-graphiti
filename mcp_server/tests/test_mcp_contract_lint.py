@@ -62,6 +62,7 @@ same as no guard (2026-08-06 analysis, F3).
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import types
@@ -348,18 +349,178 @@ CONTRACT_GUARDS = {
     'R7 the announced resource subscription has a publisher': (
         'test_resource_updated_notifications.py'
     ),
+    # R1 again, one level stricter: the catalogue must match what THIS
+    # CONFIGURATION serves, not what the codebase can serve. The four ontology
+    # tools were announced unconditionally and, without a companion ontology
+    # graph, could answer nothing but 'No ontology graph configured' (M11).
+    'R1 the announced surface is what this arm actually serves': (
+        'test_ontology_surface_gate.py'
+    ),
+    # ADR-015 R4's inner boundary. `error` is the FAILURE channel, so a
+    # not-found filed there makes a consumer count a working tool as failing and
+    # retry an answer that cannot change (M11 addendum).
+    'R4 a not-found is an answer, not a failure': (
+        'test_ontology_not_found_taxonomy.py'
+    ),
+    # A-D2. A census failure must not shrink what tools/list, resources/list and
+    # instructions serve — only what the descriptions are rendered from. The
+    # original fallback dropped five tools while /health stayed green.
+    'A-D2 a failed census does not shrink the served surface': (
+        'test_degraded_fallback.py'
+    ),
+    # The 2026-07-28 spec SHOULD: list endpoints must not vary per connection.
+    # Registration order alone is emergent — two paths delete and re-add, which
+    # migrates their tools to the end of the dict on every pass.
+    'tools/list serves a declared, stable order': 'test_tool_order.py',
+    # The ontology tools' served payloads: get_ontology_structure's FROZEN map
+    # shape, explore_ontology's class-context envelope, and the same fields read
+    # off both FalkorDB's flat properties and AGE's nested attributes.
+    'the ontology tools serve a frozen payload shape on both flavours': (
+        'test_ontology_tiers.py'
+    ),
+    # Class-scoped marker (TestDynamicRegistration). The rest of that module is
+    # a behavioural unit suite, deliberately outside this gate — see the class
+    # docstring for why widening the marker would dilute it.
+    'the dynamic pass registers every tool this arm announces': 'test_tools.py',
 }
 
 CI_WORKFLOW = REPO / '.github' / 'workflows' / 'mcp-server-tests.yml'
 
+TESTS_DIR = pathlib.Path(__file__).parent
+
+
+def _declares_contract_marker(source: str) -> bool:
+    """Does this module declare the `contract` marker anywhere pytest will see it?
+
+    PARSED, not string-matched. The literal this replaced —
+    `'pytestmark = pytest.mark.contract' in source` — recognised exactly one of
+    the three spellings the tree now uses, and its failure message
+    ("does not declare the contract marker") was factually false for the other
+    two. A lint that lies about why it failed is worse than no lint.
+
+    Covered, all real:
+      * `pytestmark = pytest.mark.contract`            — the common case
+      * `pytestmark = [pytest.mark.asyncio, ...]`      — an async surface guard
+        must carry both marks, and a list is the only way to say that
+      * a `pytestmark` inside a `class` body            — a module whose surface
+        guard is one class, with the rest deliberately out of the gate
+
+    Multi-line lists and tuples come free from parsing rather than being three
+    more regexes. `ast.walk` reaches class-scope assignments, which is exactly
+    what an indentation-anchored pattern would have missed.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == 'pytestmark'
+            for target in node.targets
+        ):
+            continue
+        for sub in ast.walk(node.value):
+            if (
+                isinstance(sub, ast.Attribute)
+                and sub.attr == 'contract'
+                and isinstance(sub.value, ast.Attribute)
+                and sub.value.attr == 'mark'
+            ):
+                return True
+    return False
+
+
+def _marked_modules() -> set[str]:
+    """Every test module that declares the marker, by filename."""
+    return {
+        path.name
+        for path in sorted(TESTS_DIR.glob('test_*.py'))
+        if _declares_contract_marker(path.read_text(encoding='utf-8'))
+    }
+
 
 @pytest.mark.parametrize(('dimension', 'module'), sorted(CONTRACT_GUARDS.items()))
 def test_every_contract_dimension_has_a_marked_guard(dimension, module):
-    source = (pathlib.Path(__file__).parent / module).read_text(encoding='utf-8')
-    assert 'pytestmark = pytest.mark.contract' in source, (
+    source = (TESTS_DIR / module).read_text(encoding='utf-8')
+    assert _declares_contract_marker(source), (
         f'{module} guards "{dimension}" but does not declare the contract marker, '
         f'so the CI job does not select it'
     )
+
+
+def test_every_marked_guard_names_the_dimension_it_guards():
+    """The direction this registry was missing, and the reason it drifted.
+
+    Only the forward direction was checked — every REGISTERED dimension has a
+    marked module — so a module could join the CI gate without ever declaring
+    what it guards. At `mcp-v2.9.0` the correspondence happened to be exact
+    (10 marked, 10 registered); the M11 branch marked six more and registered
+    two, and nothing went red. An unregistered guard can lose its marker in a
+    later edit with nothing to notice, which is the F3 failure one step removed.
+    """
+    unregistered = _marked_modules() - set(CONTRACT_GUARDS.values())
+    assert not unregistered, (
+        f'these modules run in the CI contract job but name no dimension in '
+        f'CONTRACT_GUARDS, so nothing would notice their marker being removed: '
+        f'{sorted(unregistered)}'
+    )
+
+
+def test_the_registry_points_only_at_modules_that_exist():
+    """A registry entry for a renamed or deleted module is a guard that silently
+    guards nothing — and `test_every_contract_dimension_has_a_marked_guard`
+    would fail on a missing FILE with a confusing message about markers."""
+    missing = sorted(m for m in CONTRACT_GUARDS.values() if not (TESTS_DIR / m).is_file())
+    assert not missing, f'CONTRACT_GUARDS names modules that do not exist: {missing}'
+
+
+class TestTheMarkerDetectorRecognisesEverySpelling:
+    """Pin the predicate itself: it is the thing that failed, not the registry.
+
+    Each case is a spelling in real use in this directory. A detector that
+    recognised only the first would report "does not declare the contract
+    marker" about a module that plainly does — which is how a factually false
+    lint message reaches a reviewer.
+    """
+
+    def test_the_plain_module_level_spelling(self):
+        assert _declares_contract_marker('pytestmark = pytest.mark.contract\n')
+
+    def test_the_list_spelling_an_async_guard_needs(self):
+        assert _declares_contract_marker(
+            'pytestmark = [pytest.mark.asyncio, pytest.mark.contract]\n'
+        )
+
+    def test_a_list_spelling_split_over_lines(self):
+        assert _declares_contract_marker(
+            'pytestmark = [\n    pytest.mark.asyncio,\n    pytest.mark.contract,\n]\n'
+        )
+
+    def test_a_class_scoped_marker(self):
+        assert _declares_contract_marker(
+            'class TestSomething:\n    pytestmark = pytest.mark.contract\n'
+        )
+
+    def test_a_registered_module_using_the_list_spelling_passes(self):
+        """The exact case the old literal got wrong, against the real file."""
+        source = (TESTS_DIR / 'test_degraded_fallback.py').read_text(encoding='utf-8')
+        assert 'pytestmark = [' in source, (
+            'this test exists to cover the LIST spelling — if that module moved to '
+            'the plain one, point this at whichever module uses a list, or drop it'
+        )
+        assert _declares_contract_marker(source)
+
+    def test_an_unmarked_module_is_not_a_false_positive(self):
+        """The control. Without it the detector could return True for anything."""
+        assert not _declares_contract_marker(
+            'pytestmark = pytest.mark.integration\n'
+        )
+
+    def test_a_mention_outside_a_pytestmark_assignment_does_not_count(self):
+        """This module itself talks ABOUT the marker in prose and in assertions;
+        only an assignment pytest actually collects may satisfy the detector."""
+        assert not _declares_contract_marker(
+            '"""Mentions pytest.mark.contract in a docstring."""\n'
+            'OTHER = pytest.mark.contract\n'
+        )
 
 
 def test_ci_runs_the_contract_marker():

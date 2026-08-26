@@ -22,9 +22,30 @@ import pytest
 
 import graphiti_mcp_server as srv
 from flavours.falkordb import FalkorDbFlavour
-from tool_annotations import TOOL_ANNOTATIONS
+from tool_annotations import ONTOLOGY_TOOLS, TOOL_ANNOTATIONS
 
-pytestmark = pytest.mark.asyncio
+# `contract` as well as `asyncio`: this module's whole subject is what
+# `tools/list`, `resources/list` and `instructions` SERVE when the profile build
+# fails — an ADR-019 surface guard by definition, needing no database and no API
+# key. It ran nowhere in CI until now, which for a BUG-50 regression guard is the
+# same as not existing (2026-08-06 analysis, F3).
+pytestmark = [pytest.mark.asyncio, pytest.mark.contract]
+
+NON_ONTOLOGY_TOOLS = frozenset(TOOL_ANNOTATIONS) - ONTOLOGY_TOOLS
+
+
+def _expected(service) -> set[str]:
+    """What COMPLETE means for this arm.
+
+    Losing the domain profile costs the DESCRIPTIONS, never the TOOLS — and it
+    does not conjure a companion ontology graph either. On a connector that
+    configures none, the four ontology tools are not part of the served surface
+    in ANY state (M11), so a degraded fallback that registered them would be
+    re-opening the announcement defect rather than preserving completeness.
+    """
+    if service.config.graphiti.ontology_graph:
+        return set(TOOL_ANNOTATIONS)
+    return set(NON_ONTOLOGY_TOOLS)
 
 
 @pytest.fixture(autouse=True)
@@ -51,26 +72,31 @@ class _StubClient:
 class _StubService:
     """Enough of GraphitiService for the domain-surface build to reach its except."""
 
-    def __init__(self):
+    def __init__(self, ontology_graph: str | None = None):
         self.flavour = FalkorDbFlavour()
         self.ontology_client = None
         self.domain_profile = None
         self.config = srv.GraphitiConfig()
+        self.config.graphiti.ontology_graph = ontology_graph
 
     async def get_client(self):
         return _StubClient()
 
 
-@pytest.fixture
-def degraded(monkeypatch):
+@pytest.fixture(params=[None, 'onto_v1'], ids=['without-ontology', 'with-ontology'])
+def degraded(request, monkeypatch):
     """Run the real domain-surface build with introspection guaranteed to fail.
+
+    Both ontology configurations, because "COMPLETE" is per-arm since M11 and a
+    guard pinned to one of them would not notice the fallback re-announcing four
+    tools the other arm cannot serve.
 
     The P4 content-baseline leak this module used to cause is closed at source
     by `_restore_last_served_bodies` above — autouse, so no test can bypass it
     the way a per-fixture save/restore could be (and the healthy-arm test did).
     The freshness suites keep their own clear-on-entry as defence in depth.
     """
-    service = _StubService()
+    service = _StubService(ontology_graph=request.param)
     monkeypatch.setattr(srv, 'graphiti_service', service)
     monkeypatch.setattr(srv, 'config', service.config, raising=False)
 
@@ -81,14 +107,25 @@ def degraded(monkeypatch):
     yield service
 
 
-async def test_the_degraded_surface_still_serves_all_eighteen_tools(degraded):
+async def test_the_degraded_surface_still_serves_every_tool_this_arm_has(degraded):
     await srv._build_and_register_domain_surface()
 
     served = set(srv.mcp._tool_manager._tools)
-    assert served == set(TOOL_ANNOTATIONS), (
+    expected = _expected(degraded)
+    assert served == expected, (
         'a profile failure must not shrink the served surface; '
-        f'missing={sorted(set(TOOL_ANNOTATIONS) - served)}'
+        f'missing={sorted(expected - served)}, extra={sorted(served - expected)}'
     )
+
+
+async def test_the_degraded_surface_is_all_eighteen_where_an_ontology_is_configured(
+    degraded,
+):
+    """The BUG-50 number, stated as a number, on the arm where 18 is the answer."""
+    if not degraded.config.graphiti.ontology_graph:
+        pytest.skip('this arm serves 14 — see the guard above')
+    await srv._build_and_register_domain_surface()
+    assert len(srv.mcp._tool_manager._tools) == 18
 
 
 @pytest.mark.parametrize(
@@ -97,6 +134,8 @@ async def test_the_degraded_surface_still_serves_all_eighteen_tools(degraded):
      'get_ontology_documentation'],
 )
 async def test_the_tools_the_old_fallback_dropped_are_served(degraded, tool_name):
+    if tool_name not in _expected(degraded):
+        pytest.skip(f'{tool_name} is not served on this arm')
     await srv._build_and_register_domain_surface()
     assert tool_name in srv.mcp._tool_manager._tools
 
@@ -147,9 +186,10 @@ async def test_the_degradation_is_logged_at_error(degraded, caplog):
     )
 
 
-async def test_a_healthy_profile_leaves_no_degraded_marker(monkeypatch):
+@pytest.mark.parametrize('ontology_graph', [None, 'onto_v1'])
+async def test_a_healthy_profile_leaves_no_degraded_marker(monkeypatch, ontology_graph):
     """The happy path must not inherit the degraded announcement from a prior run."""
-    service = _StubService()
+    service = _StubService(ontology_graph=ontology_graph)
     monkeypatch.setattr(srv, 'graphiti_service', service)
     monkeypatch.setattr(srv, 'config', service.config, raising=False)
 
@@ -171,7 +211,7 @@ async def test_a_healthy_profile_leaves_no_degraded_marker(monkeypatch):
     instructions = srv.mcp._lowlevel_server.instructions or ''
     assert srv.DEGRADED_INSTRUCTIONS_MARKER not in instructions
     assert 'Widget' in instructions
-    assert set(srv.mcp._tool_manager._tools) == set(TOOL_ANNOTATIONS)
+    assert set(srv.mcp._tool_manager._tools) == _expected(service)
 
 
 async def test_the_degraded_resource_set_is_pruned_and_declared(degraded):
@@ -199,7 +239,15 @@ async def test_the_pre_startup_announcement_is_itself_a_degraded_one():
     """
     seed = srv.GRAPHITI_MCP_INSTRUCTIONS
     assert seed.startswith(srv.DEGRADED_INSTRUCTIONS_MARKER)
-    for name in TOOL_ANNOTATIONS:
+    # Built at IMPORT time, before any config is loaded, so it has no positive
+    # evidence of a companion ontology graph and does not claim one (M11) —
+    # the same reading `_ontology_is_configured` gives an absent config.
+    for name in NON_ONTOLOGY_TOOLS:
         assert name in seed, f'{name} missing from the pre-startup catalog'
+    for name in ONTOLOGY_TOOLS:
+        assert name not in seed, (
+            f'{name} is claimed by the pre-startup catalog, which cannot know '
+            f'whether this connector configures an ontology graph'
+        )
     entry = next(ln for ln in seed.split('\n') if 'clear_graph' in ln)
     assert 'DESTRUCTIVE' in entry.upper()
